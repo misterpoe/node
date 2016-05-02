@@ -31,7 +31,6 @@ static void CollectTypes(HandleAndZoneScope* handles, const char* source,
 
   i::ParseInfo info(handles->main_zone(), script);
   i::Parser parser(&info);
-  parser.set_allow_harmony_sloppy(true);
   info.set_global();
   info.set_lazy(false);
   info.set_allow_lazy_parsing(false);
@@ -375,17 +374,23 @@ TEST(VisitYield) {
         CHECK_VAR(.generator_object, Bounds::Unbounded());
         CHECK_EXPR(Assignment, Bounds::Unbounded()) {
           CHECK_VAR(.generator_object, Bounds::Unbounded());
-          CHECK_EXPR(CallRuntime, Bounds::Unbounded());
+          CHECK_EXPR(CallRuntime, Bounds::Unbounded()) {
+            CHECK_EXPR(ThisFunction, Bounds::Unbounded());
+            CHECK_EXPR(VariableProxy, Bounds::Unbounded());
+          }
         }
       }
-      // Explicit yield
+      // Explicit yield (argument wrapped with CreateIterResultObject)
       CHECK_EXPR(Yield, Bounds::Unbounded()) {
         CHECK_VAR(.generator_object, Bounds::Unbounded());
-        CHECK_EXPR(Literal, Bounds::Unbounded());
+        CHECK_EXPR(CallRuntime, Bounds::Unbounded()) {
+          CHECK_EXPR(Literal, Bounds::Unbounded());
+          CHECK_EXPR(Literal, Bounds::Unbounded());
+        }
       }
-      // Implicit final yield
-      CHECK_EXPR(Yield, Bounds::Unbounded()) {
-        CHECK_VAR(.generator_object, Bounds::Unbounded());
+      // Argument to implicit final return
+      CHECK_EXPR(CallRuntime, Bounds::Unbounded()) {  // CreateIterResultObject
+        CHECK_EXPR(Literal, Bounds::Unbounded());
         CHECK_EXPR(Literal, Bounds::Unbounded());
       }
       // Implicit finally clause

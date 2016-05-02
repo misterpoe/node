@@ -78,7 +78,8 @@ void Assembler::emit_code_target(Handle<Code> target,
 void Assembler::emit_runtime_entry(Address entry, RelocInfo::Mode rmode) {
   DCHECK(RelocInfo::IsRuntimeEntry(rmode));
   RecordRelocInfo(rmode);
-  emitl(static_cast<uint32_t>(entry - isolate()->code_range()->start()));
+  emitl(static_cast<uint32_t>(
+      entry - isolate()->heap()->memory_allocator()->code_range()->start()));
 }
 
 
@@ -299,7 +300,8 @@ Handle<Object> Assembler::code_target_object_handle_at(Address pc) {
 
 
 Address Assembler::runtime_entry_at(Address pc) {
-  return Memory::int32_at(pc) + isolate()->code_range()->start();
+  return Memory::int32_at(pc) +
+         isolate()->heap()->memory_allocator()->code_range()->start();
 }
 
 // -----------------------------------------------------------------------------
@@ -326,6 +328,10 @@ Address RelocInfo::target_address() {
   return Assembler::target_address_at(pc_, host_);
 }
 
+Address RelocInfo::wasm_memory_reference() {
+  DCHECK(IsWasmMemoryReference(rmode_));
+  return Memory::Address_at(pc_);
+}
 
 Address RelocInfo::target_address_address() {
   DCHECK(IsCodeTarget(rmode_) || IsRuntimeEntry(rmode_)
@@ -364,6 +370,20 @@ void RelocInfo::set_target_address(Address target,
   }
 }
 
+void RelocInfo::update_wasm_memory_reference(
+    Address old_base, Address new_base, size_t old_size, size_t new_size,
+    ICacheFlushMode icache_flush_mode) {
+  DCHECK(IsWasmMemoryReference(rmode_));
+  DCHECK(old_base <= wasm_memory_reference() &&
+         wasm_memory_reference() < old_base + old_size);
+  Address updated_reference = new_base + (wasm_memory_reference() - old_base);
+  DCHECK(new_base <= updated_reference &&
+         updated_reference < new_base + new_size);
+  Memory::Address_at(pc_) = updated_reference;
+  if (icache_flush_mode != SKIP_ICACHE_FLUSH) {
+    Assembler::FlushICache(isolate_, pc_, sizeof(int64_t));
+  }
+}
 
 Object* RelocInfo::target_object() {
   DCHECK(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
@@ -410,8 +430,8 @@ void RelocInfo::set_target_object(Object* target,
   if (write_barrier_mode == UPDATE_WRITE_BARRIER &&
       host() != NULL &&
       target->IsHeapObject()) {
-    host()->GetHeap()->incremental_marking()->RecordWrite(
-        host(), &Memory::Object_at(pc_), HeapObject::cast(target));
+    host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(
+        host(), this, HeapObject::cast(target));
   }
 }
 
@@ -520,7 +540,7 @@ void RelocInfo::set_debug_call_address(Address target) {
   }
 }
 
-
+template <typename ObjectVisitor>
 void RelocInfo::Visit(Isolate* isolate, ObjectVisitor* visitor) {
   RelocInfo::Mode mode = rmode();
   if (mode == RelocInfo::EMBEDDED_OBJECT) {

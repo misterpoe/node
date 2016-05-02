@@ -17,9 +17,11 @@
 #include "src/compiler/node.h"
 #include "src/compiler/pipeline.h"
 #include "src/compiler/wasm-compiler.h"
+#include "src/compiler/zone-pool.h"
 
 #include "src/wasm/ast-decoder.h"
 #include "src/wasm/wasm-js.h"
+#include "src/wasm/wasm-macro-gen.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-opcodes.h"
 
@@ -51,21 +53,17 @@ static const uint32_t kMaxFunctions = 10;
 #define WASM_RUNNER_MAX_NUM_PARAMETERS 4
 #define WASM_WRAPPER_RETURN_VALUE 8754
 
+#define BUILD(r, ...)                      \
+  do {                                     \
+    byte code[] = {__VA_ARGS__};           \
+    r.Build(code, code + arraysize(code)); \
+  } while (false)
+
 namespace {
 using namespace v8::base;
 using namespace v8::internal;
 using namespace v8::internal::compiler;
 using namespace v8::internal::wasm;
-
-inline void init_env(FunctionEnv* env, FunctionSig* sig) {
-  env->module = nullptr;
-  env->sig = sig;
-  env->local_i32_count = 0;
-  env->local_i64_count = 0;
-  env->local_f32_count = 0;
-  env->local_f64_count = 0;
-  env->SumLocals();
-}
 
 const uint32_t kMaxGlobalsSize = 128;
 
@@ -83,18 +81,14 @@ class TestingModule : public ModuleEnv {
     instance->globals_size = kMaxGlobalsSize;
     instance->mem_start = nullptr;
     instance->mem_size = 0;
-    instance->function_code = nullptr;
     linker = nullptr;
-    asm_js = false;
+    origin = kWasmOrigin;
     memset(global_data, 0, sizeof(global_data));
   }
 
   ~TestingModule() {
     if (instance->mem_start) {
       free(instance->mem_start);
-    }
-    if (instance->function_code) {
-      delete instance->function_code;
     }
   }
 
@@ -121,11 +115,8 @@ class TestingModule : public ModuleEnv {
   }
 
   byte AddSignature(FunctionSig* sig) {
-    if (!module->signatures) {
-      module->signatures = new std::vector<FunctionSig*>();
-    }
-    module->signatures->push_back(sig);
-    size_t size = module->signatures->size();
+    module->signatures.push_back(sig);
+    size_t size = module->signatures.size();
     CHECK(size < 127);
     return static_cast<byte>(size - 1);
   }
@@ -170,24 +161,46 @@ class TestingModule : public ModuleEnv {
     rng.NextBytes(raw, end - raw);
   }
 
-  int AddFunction(FunctionSig* sig, Handle<Code> code) {
-    if (module->functions == nullptr) {
-      module->functions = new std::vector<WasmFunction>();
+  uint32_t AddFunction(FunctionSig* sig, Handle<Code> code) {
+    if (module->functions.size() == 0) {
       // TODO(titzer): Reserving space here to avoid the underlying WasmFunction
       // structs from moving.
-      module->functions->reserve(kMaxFunctions);
-      instance->function_code = new std::vector<Handle<Code>>();
+      module->functions.reserve(kMaxFunctions);
     }
-    uint32_t index = static_cast<uint32_t>(module->functions->size());
-    module->functions->push_back(
-        {sig, index, 0, 0, 0, 0, 0, 0, 0, false, false});
-    instance->function_code->push_back(code);
+    uint32_t index = static_cast<uint32_t>(module->functions.size());
+    module->functions.push_back(
+        {sig, index, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false});
+    instance->function_code.push_back(code);
     DCHECK_LT(index, kMaxFunctions);  // limited for testing.
     return index;
   }
 
+  uint32_t AddJsFunction(FunctionSig* sig, const char* source) {
+    Handle<JSFunction> jsfunc = Handle<JSFunction>::cast(v8::Utils::OpenHandle(
+        *v8::Local<v8::Function>::Cast(CompileRun(source))));
+    uint32_t index = AddFunction(sig, Handle<Code>::null());
+    Isolate* isolate = module->shared_isolate;
+    WasmName module_name = ArrayVector("test");
+    WasmName function_name;
+    Handle<Code> code = CompileWasmToJSWrapper(isolate, this, jsfunc, sig,
+                                               module_name, function_name);
+    instance->function_code[index] = code;
+    return index;
+  }
+
+  Handle<JSFunction> WrapCode(uint32_t index) {
+    Isolate* isolate = module->shared_isolate;
+    // Wrap the code so it can be called as a JS function.
+    Handle<String> name = isolate->factory()->NewStringFromStaticChars("main");
+    Handle<JSObject> module_object = Handle<JSObject>(0, isolate);
+    Handle<Code> code = instance->function_code[index];
+    WasmJs::InstallWasmFunctionMap(isolate, isolate->native_context());
+    return compiler::CompileJSToWasmWrapper(isolate, this, name, code,
+                                            module_object, index);
+  }
+
   void SetFunctionCode(uint32_t index, Handle<Code> code) {
-    instance->function_code->at(index) = code;
+    instance->function_code[index] = code;
   }
 
   void AddIndirectFunctionTable(int* functions, int table_size) {
@@ -195,21 +208,21 @@ class TestingModule : public ModuleEnv {
     Handle<FixedArray> fixed =
         isolate->factory()->NewFixedArray(2 * table_size);
     instance->function_table = fixed;
-    module->function_table = new std::vector<uint16_t>();
+    DCHECK_EQ(0u, module->function_table.size());
     for (int i = 0; i < table_size; i++) {
-      module->function_table->push_back(functions[i]);
+      module->function_table.push_back(functions[i]);
     }
   }
 
   void PopulateIndirectFunctionTable() {
     if (instance->function_table.is_null()) return;
-    int table_size = static_cast<int>(module->function_table->size());
+    int table_size = static_cast<int>(module->function_table.size());
     for (int i = 0; i < table_size; i++) {
-      int function_index = module->function_table->at(i);
-      WasmFunction* function = &module->functions->at(function_index);
+      int function_index = module->function_table[i];
+      WasmFunction* function = &module->functions[function_index];
       instance->function_table->set(i, Smi::FromInt(function->sig_index));
-      instance->function_table->set(
-          i + table_size, *instance->function_code->at(function_index));
+      instance->function_table->set(i + table_size,
+                                    *instance->function_code[function_index]);
     }
   }
 
@@ -220,24 +233,23 @@ class TestingModule : public ModuleEnv {
   V8_ALIGNED(8) byte global_data[kMaxGlobalsSize];  // preallocated global data.
 
   WasmGlobal* AddGlobal(MachineType mem_type) {
-    if (!module->globals) {
-      module->globals = new std::vector<WasmGlobal>();
-    }
     byte size = WasmOpcodes::MemSize(mem_type);
     global_offset = (global_offset + size - 1) & ~(size - 1);  // align
-    module->globals->push_back({0, mem_type, global_offset, false});
+    module->globals.push_back({0, 0, mem_type, global_offset, false});
     global_offset += size;
     // limit number of globals.
     CHECK_LT(global_offset, kMaxGlobalsSize);
-    return &module->globals->back();
+    return &module->globals.back();
   }
 };
 
-
-inline void TestBuildingGraph(Zone* zone, JSGraph* jsgraph, FunctionEnv* env,
+inline void TestBuildingGraph(Zone* zone, JSGraph* jsgraph, ModuleEnv* module,
+                              FunctionSig* sig,
+                              SourcePositionTable* source_position_table,
                               const byte* start, const byte* end) {
-  compiler::WasmGraphBuilder builder(zone, jsgraph, env->sig);
-  TreeResult result = BuildTFGraph(&builder, env, start, end);
+  compiler::WasmGraphBuilder builder(zone, jsgraph, sig, source_position_table);
+  TreeResult result =
+      BuildTFGraph(zone->allocator(), &builder, module, sig, start, end);
   if (result.failed()) {
     ptrdiff_t pc = result.error_pc - result.start;
     ptrdiff_t pt = result.error_pt - result.start;
@@ -371,7 +383,7 @@ class WasmFunctionWrapper : public HandleAndZoneScope,
         r.LowerGraph();
       }
 
-      CompilationInfo info("testing", isolate, graph()->zone());
+      CompilationInfo info(ArrayVector("testing"), isolate, graph()->zone());
       code_ =
           Pipeline::GenerateCodeForTesting(&info, descriptor, graph(), nullptr);
       CHECK(!code_.is_null());
@@ -401,14 +413,17 @@ class WasmFunctionWrapper : public HandleAndZoneScope,
 class WasmFunctionCompiler : public HandleAndZoneScope,
                              private GraphAndBuilders {
  public:
-  explicit WasmFunctionCompiler(FunctionSig* sig, TestingModule* module)
+  explicit WasmFunctionCompiler(
+      FunctionSig* sig, TestingModule* module,
+      Vector<const char> debug_name = ArrayVector("<WASM UNNAMED>"))
       : GraphAndBuilders(main_zone()),
         jsgraph(this->isolate(), this->graph(), this->common(), nullptr,
                 nullptr, this->machine()),
+        sig(sig),
         descriptor_(nullptr),
-        testing_module_(module) {
-    init_env(&env, sig);
-    env.module = module;
+        testing_module_(module),
+        debug_name_(debug_name),
+        source_position_table_(this->graph()) {
     if (module) {
       // Get a new function from the testing module.
       function_ = nullptr;
@@ -426,12 +441,15 @@ class WasmFunctionCompiler : public HandleAndZoneScope,
   }
 
   JSGraph jsgraph;
-  FunctionEnv env;
+  FunctionSig* sig;
   // The call descriptor is initialized when the function is compiled.
   CallDescriptor* descriptor_;
   TestingModule* testing_module_;
+  Vector<const char> debug_name_;
   WasmFunction* function_;
   int function_index_;
+  LocalDeclEncoder local_decls;
+  SourcePositionTable source_position_table_;
 
   Isolate* isolate() { return main_isolate(); }
   Graph* graph() const { return main_graph_; }
@@ -440,51 +458,67 @@ class WasmFunctionCompiler : public HandleAndZoneScope,
   MachineOperatorBuilder* machine() { return &main_machine_; }
   void InitializeDescriptor() {
     if (descriptor_ == nullptr) {
-      descriptor_ = env.module->GetWasmCallDescriptor(main_zone(), env.sig);
+      descriptor_ = testing_module_->GetWasmCallDescriptor(main_zone(), sig);
     }
   }
   CallDescriptor* descriptor() { return descriptor_; }
 
   void Build(const byte* start, const byte* end) {
-    // Transfer local counts before compiling.
-    function()->local_i32_count = env.local_i32_count;
-    function()->local_i64_count = env.local_i64_count;
-    function()->local_f32_count = env.local_f32_count;
-    function()->local_f64_count = env.local_f64_count;
-
     // Build the TurboFan graph.
-    TestBuildingGraph(main_zone(), &jsgraph, &env, start, end);
+    local_decls.Prepend(&start, &end);
+    TestBuildingGraph(main_zone(), &jsgraph, testing_module_, sig,
+                      &source_position_table_, start, end);
+    delete[] start;
   }
 
   byte AllocateLocal(LocalType type) {
-    int result = static_cast<int>(env.total_locals);
-    env.AddLocals(type, 1);
-    byte b = static_cast<byte>(result);
-    CHECK_EQ(result, b);
-    return b;
+    uint32_t index = local_decls.AddLocals(1, type, sig);
+    byte result = static_cast<byte>(index);
+    DCHECK_EQ(index, result);
+    return result;
   }
 
-  // TODO(titzer): remove me.
   Handle<Code> Compile() {
     InitializeDescriptor();
     CallDescriptor* desc = descriptor_;
     if (kPointerSize == 4) {
       desc = testing_module_->GetI32WasmCallDescriptor(this->zone(), desc);
     }
-    CompilationInfo info("wasm compile", this->isolate(), this->zone());
-    Handle<Code> result =
-        Pipeline::GenerateCodeForTesting(&info, desc, this->graph());
+    CompilationInfo info(debug_name_, this->isolate(), this->zone(),
+                         Code::ComputeFlags(Code::WASM_FUNCTION));
+    v8::base::SmartPointer<CompilationJob> job(Pipeline::NewWasmCompilationJob(
+        &info, graph(), desc, &source_position_table_));
+    if (job->OptimizeGraph() != CompilationJob::SUCCEEDED ||
+        job->GenerateCode() != CompilationJob::SUCCEEDED)
+      return Handle<Code>::null();
+
+    Handle<Code> code = info.code();
+
+    // Length is always 2, since usually <wasm_obj, func_index> is stored in the
+    // deopt data. Here, we store <func_name, undef> instead.
+    DCHECK(code->deoptimization_data() == nullptr ||
+           code->deoptimization_data()->length() == 0);
+    Handle<FixedArray> deopt_data =
+        isolate()->factory()->NewFixedArray(2, TENURED);
+    if (debug_name_.start() != nullptr) {
+      MaybeHandle<String> maybe_name =
+          isolate()->factory()->NewStringFromUtf8(debug_name_, TENURED);
+      if (!maybe_name.is_null())
+        deopt_data->set(0, *maybe_name.ToHandleChecked());
+    }
+    deopt_data->set_length(2);
+    code->set_deoptimization_data(*deopt_data);
+
 #ifdef ENABLE_DISASSEMBLER
-    if (!result.is_null() && FLAG_print_opt_code) {
+    if (FLAG_print_opt_code) {
       OFStream os(stdout);
-      result->Disassemble("wasm code", os);
+      code->Disassemble("wasm code", os);
     }
 #endif
 
-    return result;
+    return code;
   }
 
-  // TODO(titzer): remove me.
   uint32_t CompileAndAdd(uint16_t sig_index = 0) {
     CHECK(testing_module_);
     function()->sig_index = sig_index;
@@ -495,7 +529,17 @@ class WasmFunctionCompiler : public HandleAndZoneScope,
 
   WasmFunction* function() {
     if (function_) return function_;
-    return &testing_module_->module->functions->at(function_index_);
+    return &testing_module_->module->functions[function_index_];
+  }
+
+  // Set the context, such that e.g. runtime functions can be called.
+  void SetModuleContext() {
+    if (!testing_module_->instance->context.is_null()) {
+      CHECK(testing_module_->instance->context.is_identical_to(
+          main_isolate()->native_context()));
+      return;
+    }
+    testing_module_->instance->context = main_isolate()->native_context();
   }
 };
 
@@ -508,8 +552,8 @@ class WasmRunner {
              MachineType p1 = MachineType::None(),
              MachineType p2 = MachineType::None(),
              MachineType p3 = MachineType::None())
-      : compiled_(false),
-
+      : zone(&allocator_),
+        compiled_(false),
         signature_(MachineTypeForC<ReturnType>() == MachineType::None() ? 0 : 1,
                    GetParameterCount(p0, p1, p2, p3), storage_),
         compiler_(&signature_, nullptr) {
@@ -520,7 +564,8 @@ class WasmRunner {
              MachineType p1 = MachineType::None(),
              MachineType p2 = MachineType::None(),
              MachineType p3 = MachineType::None())
-      : compiled_(false),
+      : zone(&allocator_),
+        compiled_(false),
         signature_(MachineTypeForC<ReturnType>() == MachineType::None() ? 0 : 1,
                    GetParameterCount(p0, p1, p2, p3), storage_),
         compiler_(&signature_, module) {
@@ -547,8 +592,6 @@ class WasmRunner {
     compiler_.InitializeDescriptor();
     wrapper_.Init(compiler_.descriptor(), p0, p1, p2, p3);
   }
-
-  FunctionEnv* env() { return &compiler_.env; }
 
   // Builds a graph from the given Wasm code and generates the machine
   // code and call wrapper for that graph. This method must not be called
@@ -599,15 +642,10 @@ class WasmRunner {
     return return_value;
   }
 
-  byte AllocateLocal(LocalType type) {
-    int result = static_cast<int>(env()->total_locals);
-    env()->AddLocals(type, 1);
-    byte b = static_cast<byte>(result);
-    CHECK_EQ(result, b);
-    return b;
-  }
+  byte AllocateLocal(LocalType type) { return compiler_.AllocateLocal(type); }
 
  protected:
+  v8::base::AccountingAllocator allocator_;
   Zone zone;
   bool compiled_;
   LocalType storage_[WASM_RUNNER_MAX_NUM_PARAMETERS];

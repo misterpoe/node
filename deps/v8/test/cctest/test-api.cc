@@ -2989,7 +2989,6 @@ THREADED_TEST(SymbolTemplateProperties) {
 
 
 THREADED_TEST(PrivatePropertiesOnProxies) {
-  i::FLAG_harmony_proxies = true;
   LocalContext env;
   v8::Isolate* isolate = env->GetIsolate();
   v8::HandleScope scope(isolate);
@@ -9047,33 +9046,6 @@ TEST(ApiUncaughtException) {
 }
 
 
-TEST(ApiUncaughtExceptionInObjectObserve) {
-  v8::internal::FLAG_harmony_object_observe = true;
-  v8::internal::FLAG_stack_size = 150;
-  report_count = 0;
-  LocalContext env;
-  v8::Isolate* isolate = env->GetIsolate();
-  v8::HandleScope scope(isolate);
-  isolate->AddMessageListener(ApiUncaughtExceptionTestListener);
-  CompileRun(
-      "var obj = {};"
-      "var observe_count = 0;"
-      "function observer1() { ++observe_count; };"
-      "function observer2() { ++observe_count; };"
-      "function observer_throws() { throw new Error(); };"
-      "function stack_overflow() { return (function f(x) { f(x+1); })(0); };"
-      "Object.observe(obj, observer_throws.bind());"
-      "Object.observe(obj, observer1);"
-      "Object.observe(obj, stack_overflow);"
-      "Object.observe(obj, observer2);"
-      "Object.observe(obj, observer_throws.bind());"
-      "obj.foo = 'bar';");
-  CHECK_EQ(3, report_count);
-  ExpectInt32("observe_count", 2);
-  isolate->RemoveMessageListeners(ApiUncaughtExceptionTestListener);
-}
-
-
 static const char* script_resource_name = "ExceptionInNativeScript.js";
 static void ExceptionInNativeScriptTestListener(v8::Local<v8::Message> message,
                                                 v8::Local<Value>) {
@@ -12898,6 +12870,19 @@ THREADED_TEST(VariousGetPropertiesAndThrowingCallbacks) {
   CHECK(try_catch.HasCaught());
   try_catch.Reset();
   CHECK(result.IsEmpty());
+
+  Local<Object> target = CompileRun("({})").As<Object>();
+  Local<Object> handler = CompileRun("({})").As<Object>();
+  Local<v8::Proxy> proxy =
+      v8::Proxy::New(context.local(), target, handler).ToLocalChecked();
+
+  result = target->GetRealNamedProperty(context.local(), v8_str("f"));
+  CHECK(!try_catch.HasCaught());
+  CHECK(result.IsEmpty());
+
+  result = proxy->GetRealNamedProperty(context.local(), v8_str("f"));
+  CHECK(!try_catch.HasCaught());
+  CHECK(result.IsEmpty());
 }
 
 
@@ -13076,7 +13061,6 @@ static void ShouldThrowOnErrorSetter(Local<Name> name, Local<v8::Value> value,
 
 
 THREADED_TEST(AccessorShouldThrowOnError) {
-  i::FLAG_strong_mode = true;
   LocalContext context;
   v8::Isolate* isolate = context->GetIsolate();
   v8::HandleScope scope(isolate);
@@ -13106,14 +13090,6 @@ THREADED_TEST(AccessorShouldThrowOnError) {
   value = v8_compile("'use strict';o.f")->Run(context.local()).ToLocalChecked();
   CHECK(value->IsFalse());
   v8_compile("'use strict'; o.f = 153")->Run(context.local()).ToLocalChecked();
-  value = global->Get(context.local(), v8_str("should_throw_setter"))
-              .ToLocalChecked();
-  CHECK(value->IsTrue());
-
-  // STRONG mode
-  value = v8_compile("'use strong';o.f")->Run(context.local()).ToLocalChecked();
-  CHECK(value->IsFalse());
-  v8_compile("'use strong'; o.f = 153")->Run(context.local()).ToLocalChecked();
   value = global->Get(context.local(), v8_str("should_throw_setter"))
               .ToLocalChecked();
   CHECK(value->IsTrue());
@@ -13172,7 +13148,6 @@ static void ShouldThrowOnErrorPropertyEnumerator(
 
 
 THREADED_TEST(InterceptorShouldThrowOnError) {
-  i::FLAG_strong_mode = true;
   LocalContext context;
   v8::Isolate* isolate = context->GetIsolate();
   v8::HandleScope scope(isolate);
@@ -13229,21 +13204,6 @@ THREADED_TEST(InterceptorShouldThrowOnError) {
   value = global->Get(context.local(), v8_str("should_throw_enumerator"))
               .ToLocalChecked();
   CHECK(value->IsFalse());
-
-  // STRONG mode
-  value = v8_compile("'use strong';o.f")->Run(context.local()).ToLocalChecked();
-  CHECK(value->IsFalse());
-  v8_compile("'use strong'; o.f = 153")->Run(context.local()).ToLocalChecked();
-  value = global->Get(context.local(), v8_str("should_throw_setter"))
-              .ToLocalChecked();
-  CHECK(value->IsTrue());
-
-  v8_compile("'use strong'; Object.getOwnPropertyNames(o)")
-      ->Run(context.local())
-      .ToLocalChecked();
-  value = global->Get(context.local(), v8_str("should_throw_enumerator"))
-              .ToLocalChecked();
-  CHECK(value->IsFalse());
 }
 
 
@@ -13274,6 +13234,43 @@ THREADED_TEST(IsConstructCall) {
   CHECK(value->BooleanValue(context.local()).FromJust());
 }
 
+static void NewTargetHandler(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  ApiTestFuzzer::Fuzz();
+  args.GetReturnValue().Set(args.NewTarget());
+}
+
+THREADED_TEST(NewTargetHandler) {
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+
+  // Function template with call handler.
+  Local<v8::FunctionTemplate> templ = v8::FunctionTemplate::New(isolate);
+  templ->SetCallHandler(NewTargetHandler);
+
+  LocalContext context;
+
+  Local<Function> function =
+      templ->GetFunction(context.local()).ToLocalChecked();
+  CHECK(context->Global()
+            ->Set(context.local(), v8_str("f"), function)
+            .FromJust());
+  Local<Value> value = CompileRun("f()");
+  CHECK(value->IsUndefined());
+  value = CompileRun("new f()");
+  CHECK(value->IsFunction());
+  CHECK(value == function);
+  Local<Value> subclass = CompileRun("var g = class extends f { }; g");
+  CHECK(subclass->IsFunction());
+  value = CompileRun("new g()");
+  CHECK(value->IsFunction());
+  CHECK(value == subclass);
+  value = CompileRun("Reflect.construct(f, [], Array)");
+  CHECK(value->IsFunction());
+  CHECK(value ==
+        context->Global()
+            ->Get(context.local(), v8_str("Array"))
+            .ToLocalChecked());
+}
 
 THREADED_TEST(ObjectProtoToString) {
   v8::Isolate* isolate = CcTest::isolate();
@@ -13325,8 +13322,6 @@ THREADED_TEST(ObjectProtoToString) {
 
 
 TEST(ObjectProtoToStringES6) {
-  // TODO(dslomov, caitp): merge into ObjectProtoToString test once shipped.
-  i::FLAG_harmony_tostring = true;
   LocalContext context;
   v8::Isolate* isolate = CcTest::isolate();
   v8::HandleScope scope(isolate);
@@ -13521,7 +13516,7 @@ THREADED_TEST(ObjectGetConstructorName) {
       "function Child() {};"
       "Child.prototype = new Parent();"
       "Child.prototype.constructor = Child;"
-      "var outer = { inner: function() { } };"
+      "var outer = { inner: (0, function() { }) };"
       "var p = new Parent();"
       "var c = new Child();"
       "var x = new outer.inner();"
@@ -14431,7 +14426,6 @@ int SetFunctionEntryHookTest::CountInvocations(
   return invocations;
 }
 
-
 void SetFunctionEntryHookTest::RunLoopInNewEnv(v8::Isolate* isolate) {
   v8::HandleScope outer(isolate);
   v8::Local<Context> env = Context::New(isolate);
@@ -14489,10 +14483,19 @@ void SetFunctionEntryHookTest::RunTest() {
 
     RunLoopInNewEnv(isolate);
 
-    // Check the exepected invocation counts.
-    CHECK_EQ(2, CountInvocations(NULL, "bar"));
-    CHECK_EQ(200, CountInvocations("bar", "foo"));
-    CHECK_EQ(200, CountInvocations(NULL, "foo"));
+    // Check the expected invocation counts.
+    if (!i::FLAG_ignition) {
+      CHECK_EQ(2, CountInvocations(NULL, "bar"));
+      CHECK_EQ(200, CountInvocations("bar", "foo"));
+      CHECK_EQ(200, CountInvocations(NULL, "foo"));
+    } else {
+      // For ignition we don't see the actual functions being called, instead
+      // we see the IterpreterEntryTrampoline at least 102 times
+      // (100 unoptimized calls to foo, and 2 calls to bar).
+      CHECK_LE(102, CountInvocations(NULL, "InterpreterEntryTrampoline"));
+      // We should also see the calls to the optimized function foo.
+      CHECK_EQ(100, CountInvocations(NULL, "foo"));
+    }
 
     // Verify that we have an entry hook on some specific stubs.
     CHECK_NE(0, CountInvocations(NULL, "CEntryStub"));
@@ -14544,12 +14547,17 @@ static int move_events = 0;
 static bool FunctionNameIs(const char* expected,
                            const v8::JitCodeEvent* event) {
   // Log lines for functions are of the general form:
-  // "LazyCompile:<type><function_name>", where the type is one of
-  // "*", "~" or "".
-  static const char kPreamble[] = "LazyCompile:";
-  static size_t kPreambleLen = sizeof(kPreamble) - 1;
+  // "LazyCompile:<type><function_name>" or Function:<type><function_name>,
+  // where the type is one of "*", "~" or "".
+  static const char* kPreamble;
+  if (!i::FLAG_lazy || (i::FLAG_ignition && i::FLAG_ignition_eager)) {
+    kPreamble = "Function:";
+  } else {
+    kPreamble = "LazyCompile:";
+  }
+  static size_t kPreambleLen = strlen(kPreamble);
 
-  if (event->name.len < sizeof(kPreamble) - 1 ||
+  if (event->name.len < kPreambleLen ||
       strncmp(kPreamble, event->name.str, kPreambleLen) != 0) {
     return false;
   }
@@ -14717,7 +14725,8 @@ UNINITIALIZED_TEST(SetJitCodeEventHandler) {
     for (int i = 0; i < kIterations; ++i) {
       LocalContext env(isolate);
       i::AlwaysAllocateScope always_allocate(i_isolate);
-      SimulateFullSpace(heap->code_space());
+      SimulateFullSpace(i::FLAG_ignition ? heap->old_space()
+                                         : heap->code_space());
       CompileRun(script);
 
       // Keep a strong reference to the code object in the handle scope.
@@ -15158,6 +15167,9 @@ THREADED_TEST(AccessChecksReenabledCorrectly) {
 
 // Tests that ScriptData can be serialized and deserialized.
 TEST(PreCompileSerialization) {
+  // Producing cached parser data while parsing eagerly is not supported.
+  if (!i::FLAG_lazy || (i::FLAG_ignition && i::FLAG_ignition_eager)) return;
+
   v8::V8::Initialize();
   LocalContext env;
   v8::Isolate* isolate = env->GetIsolate();
@@ -18377,6 +18389,7 @@ THREADED_TEST(FunctionGetInferredName) {
 
 
 THREADED_TEST(FunctionGetDebugName) {
+  i::FLAG_harmony_function_name = true;
   LocalContext env;
   v8::HandleScope scope(env->GetIsolate());
   const char* code =
@@ -18420,7 +18433,8 @@ THREADED_TEST(FunctionGetDebugName) {
       "Object.defineProperty(i, 'name', { value: 'function.name' });"
       "var j = function() {};"
       "Object.defineProperty(j, 'name', { value: 'function.name' });"
-      "var foo = { bar : { baz : function() {}}}; var k = foo.bar.baz;";
+      "var foo = { bar : { baz : (0, function() {})}}; var k = foo.bar.baz;"
+      "var foo = { bar : { baz : function() {} }}; var l = foo.bar.baz;";
   v8::ScriptOrigin origin = v8::ScriptOrigin(v8_str("test"));
   v8::Script::Compile(env.local(), v8_str(code), &origin)
       .ToLocalChecked()
@@ -18439,7 +18453,8 @@ THREADED_TEST(FunctionGetDebugName) {
                              "h", "displayName",
                              "i", "function.name",
                              "j", "function.name",
-                             "k", "foo.bar.baz"};
+                             "k", "foo.bar.baz",
+                             "l", "baz"};
   for (size_t i = 0; i < sizeof(functions) / sizeof(functions[0]) / 2; ++i) {
     v8::Local<v8::Function> f = v8::Local<v8::Function>::Cast(
         env->Global()
@@ -19915,7 +19930,6 @@ TEST(PersistentHandleInNewSpaceVisitor) {
 
 
 TEST(RegExp) {
-  i::FLAG_harmony_regexps = true;
   i::FLAG_harmony_unicode_regexps = true;
   LocalContext context;
   v8::HandleScope scope(context->GetIsolate());
@@ -20571,7 +20585,8 @@ THREADED_TEST(Regress1516) {
   int elements = CountLiveMapsInMapCache(CcTest::i_isolate()->context());
   CHECK_LE(1, elements);
 
-  CcTest::heap()->CollectAllGarbage();
+  // We have to abort incremental marking here to abandon black pages.
+  CcTest::heap()->CollectAllGarbage(i::Heap::kAbortIncrementalMarkingMask);
 
   CHECK_GT(elements, CountLiveMapsInMapCache(CcTest::i_isolate()->context()));
 }
@@ -20920,13 +20935,19 @@ TEST(CallCompletedCallbackTwoExceptions) {
 
 
 static void MicrotaskOne(const v8::FunctionCallbackInfo<Value>& info) {
+  CHECK(v8::MicrotasksScope::IsRunningMicrotasks(info.GetIsolate()));
   v8::HandleScope scope(info.GetIsolate());
+  v8::MicrotasksScope microtasks(info.GetIsolate(),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
   CompileRun("ext1Calls++;");
 }
 
 
 static void MicrotaskTwo(const v8::FunctionCallbackInfo<Value>& info) {
+  CHECK(v8::MicrotasksScope::IsRunningMicrotasks(info.GetIsolate()));
   v8::HandleScope scope(info.GetIsolate());
+  v8::MicrotasksScope microtasks(info.GetIsolate(),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
   CompileRun("ext2Calls++;");
 }
 
@@ -20942,6 +20963,7 @@ static void MicrotaskThree(void* data) {
 TEST(EnqueueMicrotask) {
   LocalContext env;
   v8::HandleScope scope(env->GetIsolate());
+  CHECK(!v8::MicrotasksScope::IsRunningMicrotasks(env->GetIsolate()));
   CompileRun(
       "var ext1Calls = 0;"
       "var ext2Calls = 0;");
@@ -21033,23 +21055,35 @@ TEST(RunMicrotasksIgnoresThrownExceptions) {
 }
 
 
+uint8_t microtasks_completed_callback_count = 0;
+
+
+static void MicrotasksCompletedCallback(v8::Isolate* isolate) {
+  ++microtasks_completed_callback_count;
+}
+
+
 TEST(SetAutorunMicrotasks) {
   LocalContext env;
   v8::HandleScope scope(env->GetIsolate());
+  env->GetIsolate()->AddMicrotasksCompletedCallback(
+      &MicrotasksCompletedCallback);
   CompileRun(
       "var ext1Calls = 0;"
       "var ext2Calls = 0;");
   CompileRun("1+1;");
   CHECK_EQ(0, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
   CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(0u, microtasks_completed_callback_count);
 
   env->GetIsolate()->EnqueueMicrotask(
       Function::New(env.local(), MicrotaskOne).ToLocalChecked());
   CompileRun("1+1;");
   CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
   CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(1u, microtasks_completed_callback_count);
 
-  env->GetIsolate()->SetAutorunMicrotasks(false);
+  env->GetIsolate()->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
   env->GetIsolate()->EnqueueMicrotask(
       Function::New(env.local(), MicrotaskOne).ToLocalChecked());
   env->GetIsolate()->EnqueueMicrotask(
@@ -21057,27 +21091,32 @@ TEST(SetAutorunMicrotasks) {
   CompileRun("1+1;");
   CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
   CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(1u, microtasks_completed_callback_count);
 
   env->GetIsolate()->RunMicrotasks();
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
   CHECK_EQ(1, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(2u, microtasks_completed_callback_count);
 
   env->GetIsolate()->EnqueueMicrotask(
       Function::New(env.local(), MicrotaskTwo).ToLocalChecked());
   CompileRun("1+1;");
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
   CHECK_EQ(1, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(2u, microtasks_completed_callback_count);
 
   env->GetIsolate()->RunMicrotasks();
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
   CHECK_EQ(2, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(3u, microtasks_completed_callback_count);
 
-  env->GetIsolate()->SetAutorunMicrotasks(true);
+  env->GetIsolate()->SetMicrotasksPolicy(v8::MicrotasksPolicy::kAuto);
   env->GetIsolate()->EnqueueMicrotask(
       Function::New(env.local(), MicrotaskTwo).ToLocalChecked());
   CompileRun("1+1;");
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
   CHECK_EQ(3, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(4u, microtasks_completed_callback_count);
 
   env->GetIsolate()->EnqueueMicrotask(
       Function::New(env.local(), MicrotaskTwo).ToLocalChecked());
@@ -21086,18 +21125,29 @@ TEST(SetAutorunMicrotasks) {
     CompileRun("1+1;");
     CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
     CHECK_EQ(3, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(4u, microtasks_completed_callback_count);
   }
 
   CompileRun("1+1;");
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
   CHECK_EQ(4, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(5u, microtasks_completed_callback_count);
+
+  env->GetIsolate()->RemoveMicrotasksCompletedCallback(
+      &MicrotasksCompletedCallback);
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env.local(), MicrotaskOne).ToLocalChecked());
+  CompileRun("1+1;");
+  CHECK_EQ(3, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(4, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  CHECK_EQ(5u, microtasks_completed_callback_count);
 }
 
 
 TEST(RunMicrotasksWithoutEnteringContext) {
   v8::Isolate* isolate = CcTest::isolate();
   HandleScope handle_scope(isolate);
-  isolate->SetAutorunMicrotasks(false);
+  isolate->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
   Local<Context> context = Context::New(isolate);
   {
     Context::Scope context_scope(context);
@@ -21110,41 +21160,147 @@ TEST(RunMicrotasksWithoutEnteringContext) {
     Context::Scope context_scope(context);
     CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(context).FromJust());
   }
-  isolate->SetAutorunMicrotasks(true);
+  isolate->SetMicrotasksPolicy(v8::MicrotasksPolicy::kAuto);
 }
 
 
-static void DebugEventInObserver(const v8::Debug::EventDetails& event_details) {
-  v8::DebugEvent event = event_details.GetEvent();
-  if (event != v8::Break) return;
-  Local<Object> exec_state = event_details.GetExecutionState();
-  Local<Context> context = CcTest::isolate()->GetCurrentContext();
-  Local<Value> break_id =
-      exec_state->Get(context, v8_str("break_id")).ToLocalChecked();
-  CompileRun("function f(id) { new FrameDetails(id, 0); }");
-  Local<Function> fun = Local<Function>::Cast(
-      CcTest::global()->Get(context, v8_str("f")).ToLocalChecked());
-  fun->Call(context, CcTest::global(), 1, &break_id).ToLocalChecked();
-}
-
-
-TEST(Regress385349) {
-  i::FLAG_harmony_object_observe = true;
-  i::FLAG_allow_natives_syntax = true;
-  v8::Isolate* isolate = CcTest::isolate();
-  HandleScope handle_scope(isolate);
-  isolate->SetAutorunMicrotasks(false);
-  Local<Context> context = Context::New(isolate);
-  v8::Debug::SetDebugEventListener(isolate, DebugEventInObserver);
+TEST(ScopedMicrotasks) {
+  LocalContext env;
+  v8::HandleScope handles(env->GetIsolate());
+  env->GetIsolate()->SetMicrotasksPolicy(v8::MicrotasksPolicy::kScoped);
   {
-    Context::Scope context_scope(context);
-    CompileRun("var obj = {};"
-               "Object.observe(obj, function(changes) { debugger; });"
-               "obj.a = 0;");
+    v8::MicrotasksScope scope1(env->GetIsolate(),
+                               v8::MicrotasksScope::kDoNotRunMicrotasks);
+    env->GetIsolate()->EnqueueMicrotask(
+        Function::New(env.local(), MicrotaskOne).ToLocalChecked());
+    CompileRun(
+        "var ext1Calls = 0;"
+        "var ext2Calls = 0;");
+    CompileRun("1+1;");
+    CHECK_EQ(0, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+    {
+      v8::MicrotasksScope scope2(env->GetIsolate(),
+                                 v8::MicrotasksScope::kRunMicrotasks);
+      CompileRun("1+1;");
+      CHECK_EQ(0, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+      CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+      {
+        v8::MicrotasksScope scope3(env->GetIsolate(),
+                                   v8::MicrotasksScope::kRunMicrotasks);
+        CompileRun("1+1;");
+        CHECK_EQ(0,
+                 CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+        CHECK_EQ(0,
+                 CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+      }
+      CHECK_EQ(0, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+      CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+    }
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+    env->GetIsolate()->EnqueueMicrotask(
+        Function::New(env.local(), MicrotaskTwo).ToLocalChecked());
   }
-  isolate->RunMicrotasks();
-  isolate->SetAutorunMicrotasks(true);
-  v8::Debug::SetDebugEventListener(isolate, nullptr);
+
+  {
+    v8::MicrotasksScope scope(env->GetIsolate(),
+                              v8::MicrotasksScope::kDoNotRunMicrotasks);
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  }
+
+  {
+    v8::MicrotasksScope scope1(env->GetIsolate(),
+                               v8::MicrotasksScope::kRunMicrotasks);
+    CompileRun("1+1;");
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+    {
+      v8::MicrotasksScope scope2(env->GetIsolate(),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+    }
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  }
+
+  {
+    v8::MicrotasksScope scope(env->GetIsolate(),
+                              v8::MicrotasksScope::kDoNotRunMicrotasks);
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(1, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+    env->GetIsolate()->EnqueueMicrotask(
+        Function::New(env.local(), MicrotaskTwo).ToLocalChecked());
+  }
+
+  {
+    v8::Isolate::SuppressMicrotaskExecutionScope scope1(env->GetIsolate());
+    {
+      v8::MicrotasksScope scope2(env->GetIsolate(),
+                                 v8::MicrotasksScope::kRunMicrotasks);
+    }
+    v8::MicrotasksScope scope3(env->GetIsolate(),
+                               v8::MicrotasksScope::kDoNotRunMicrotasks);
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(1, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  }
+
+  {
+    v8::MicrotasksScope scope1(env->GetIsolate(),
+                               v8::MicrotasksScope::kRunMicrotasks);
+    v8::MicrotasksScope::PerformCheckpoint(env->GetIsolate());
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(1, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  }
+
+  {
+    v8::MicrotasksScope scope(env->GetIsolate(),
+                              v8::MicrotasksScope::kDoNotRunMicrotasks);
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(2, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  }
+
+  v8::MicrotasksScope::PerformCheckpoint(env->GetIsolate());
+
+  {
+    v8::MicrotasksScope scope(env->GetIsolate(),
+                              v8::MicrotasksScope::kDoNotRunMicrotasks);
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(2, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+    env->GetIsolate()->EnqueueMicrotask(
+        Function::New(env.local(), MicrotaskTwo).ToLocalChecked());
+  }
+
+  v8::MicrotasksScope::PerformCheckpoint(env->GetIsolate());
+
+  {
+    v8::MicrotasksScope scope(env->GetIsolate(),
+                              v8::MicrotasksScope::kDoNotRunMicrotasks);
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(3, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  }
+
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env.local(), MicrotaskOne).ToLocalChecked());
+  {
+    v8::Isolate::SuppressMicrotaskExecutionScope scope1(env->GetIsolate());
+    v8::MicrotasksScope::PerformCheckpoint(env->GetIsolate());
+    v8::MicrotasksScope scope2(env->GetIsolate(),
+                               v8::MicrotasksScope::kDoNotRunMicrotasks);
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(3, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  }
+
+  v8::MicrotasksScope::PerformCheckpoint(env->GetIsolate());
+
+  {
+    v8::MicrotasksScope scope(env->GetIsolate(),
+                              v8::MicrotasksScope::kDoNotRunMicrotasks);
+    CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value(env.local()).FromJust());
+    CHECK_EQ(3, CompileRun("ext2Calls")->Int32Value(env.local()).FromJust());
+  }
+
+  env->GetIsolate()->SetMicrotasksPolicy(v8::MicrotasksPolicy::kAuto);
 }
 
 
@@ -21791,29 +21947,39 @@ THREADED_TEST(Regress260106) {
   CHECK(function->IsFunction());
 }
 
-
 THREADED_TEST(JSONParseObject) {
   LocalContext context;
   HandleScope scope(context->GetIsolate());
   Local<Value> obj =
-      v8::JSON::Parse(context->GetIsolate(), v8_str("{\"x\":42}"))
-          .ToLocalChecked();
+      v8::JSON::Parse(context.local(), v8_str("{\"x\":42}")).ToLocalChecked();
   Local<Object> global = context->Global();
   global->Set(context.local(), v8_str("obj"), obj).FromJust();
   ExpectString("JSON.stringify(obj)", "{\"x\":42}");
 }
 
-
 THREADED_TEST(JSONParseNumber) {
   LocalContext context;
   HandleScope scope(context->GetIsolate());
   Local<Value> obj =
-      v8::JSON::Parse(context->GetIsolate(), v8_str("42")).ToLocalChecked();
+      v8::JSON::Parse(context.local(), v8_str("42")).ToLocalChecked();
   Local<Object> global = context->Global();
   global->Set(context.local(), v8_str("obj"), obj).FromJust();
   ExpectString("JSON.stringify(obj)", "42");
 }
 
+THREADED_TEST(JSONStringifyObject) {
+  LocalContext context;
+  HandleScope scope(context->GetIsolate());
+  Local<Value> value =
+      v8::JSON::Parse(context.local(), v8_str("{\"x\":42}")).ToLocalChecked();
+  Local<Object> obj = value->ToObject(context.local()).ToLocalChecked();
+  Local<Object> global = context->Global();
+  global->Set(context.local(), v8_str("obj"), obj).FromJust();
+  Local<String> json =
+      v8::JSON::Stringify(context.local(), obj).ToLocalChecked();
+  v8::String::Utf8Value utf8(json);
+  ExpectString("JSON.stringify(obj)", *utf8);
+}
 
 #if V8_OS_POSIX && !V8_OS_NACL
 class ThreadInterruptTest {
@@ -22037,7 +22203,7 @@ TEST(AccessCheckThrows) {
   CheckCorrectThrow("%DeleteProperty_Strict(other, 'x')");
   CheckCorrectThrow("%DeleteProperty_Sloppy(other, '1')");
   CheckCorrectThrow("%DeleteProperty_Strict(other, '1')");
-  CheckCorrectThrow("%HasOwnProperty(other, 'x')");
+  CheckCorrectThrow("Object.prototype.hasOwnProperty.call(other, 'x')");
   CheckCorrectThrow("%HasProperty('x', other)");
   CheckCorrectThrow("%PropertyIsEnumerable(other, 'x')");
   // PROPERTY_ATTRIBUTES_NONE = 0
@@ -22447,7 +22613,8 @@ THREADED_TEST(FunctionNew) {
                        ->serial_number()),
       i_isolate);
   auto cache = i_isolate->template_instantiations_cache();
-  CHECK(cache->Lookup(serial_number)->IsTheHole());
+  CHECK(cache->FindEntry(static_cast<uint32_t>(serial_number->value())) ==
+        i::UnseededNumberDictionary::kNotFound);
   // Verify that each Function::New creates a new function instance
   Local<Object> data2 = v8::Object::New(isolate);
   function_new_expected_env = data2;
@@ -23907,17 +24074,28 @@ void TestInvalidCacheData(v8::ScriptCompiler::CompileOptions option) {
       script->Run(context).ToLocalChecked()->Int32Value(context).FromJust());
 }
 
-
-TEST(InvalidCacheData) {
+TEST(InvalidParserCacheData) {
   v8::V8::Initialize();
   v8::HandleScope scope(CcTest::isolate());
   LocalContext context;
-  TestInvalidCacheData(v8::ScriptCompiler::kConsumeParserCache);
+  if (i::FLAG_lazy && !(i::FLAG_ignition && i::FLAG_ignition_eager)) {
+    // Cached parser data is not consumed while parsing eagerly.
+    TestInvalidCacheData(v8::ScriptCompiler::kConsumeParserCache);
+  }
+}
+
+TEST(InvalidCodeCacheData) {
+  v8::V8::Initialize();
+  v8::HandleScope scope(CcTest::isolate());
+  LocalContext context;
   TestInvalidCacheData(v8::ScriptCompiler::kConsumeCodeCache);
 }
 
 
 TEST(ParserCacheRejectedGracefully) {
+  // Producing cached parser data while parsing eagerly is not supported.
+  if (!i::FLAG_lazy || (i::FLAG_ignition && i::FLAG_ignition_eager)) return;
+
   i::FLAG_min_preparse_length = 0;
   v8::V8::Initialize();
   v8::HandleScope scope(CcTest::isolate());
@@ -24181,271 +24359,6 @@ TEST(SealHandleScopeNested) {
 
     USE(obj);
   }
-}
-
-
-static bool access_was_called = false;
-
-static bool AccessAlwaysAllowedWithFlag(Local<v8::Context> accessing_context,
-                                        Local<v8::Object> accessed_object,
-                                        Local<v8::Value> data) {
-  access_was_called = true;
-  return true;
-}
-
-static bool AccessAlwaysBlockedWithFlag(Local<v8::Context> accessing_context,
-                                        Local<v8::Object> accessed_object,
-                                        Local<v8::Value> data) {
-  access_was_called = true;
-  return false;
-}
-
-
-TEST(StrongModeAccessCheckAllowed) {
-  i::FLAG_strong_mode = true;
-  v8::Isolate* isolate = CcTest::isolate();
-  v8::HandleScope handle_scope(isolate);
-  v8::Local<Value> value;
-  access_was_called = false;
-
-  v8::Local<v8::ObjectTemplate> obj_template = v8::ObjectTemplate::New(isolate);
-
-  obj_template->Set(v8_str("x"), v8::Integer::New(isolate, 42));
-  obj_template->SetAccessCheckCallback(AccessAlwaysAllowedWithFlag);
-
-  // Create an environment
-  v8::Local<Context> context0 = Context::New(isolate, NULL, obj_template);
-  context0->Enter();
-  v8::Local<v8::Object> global0 = context0->Global();
-  global0->Set(context0, v8_str("object"),
-               obj_template->NewInstance(context0).ToLocalChecked())
-      .FromJust();
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object.x");
-    CHECK(!try_catch.HasCaught());
-    CHECK(!access_was_called);
-    CHECK_EQ(42, value->Int32Value(context0).FromJust());
-  }
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object.foo");
-    CHECK(try_catch.HasCaught());
-    CHECK(!access_was_called);
-  }
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object[10]");
-    CHECK(try_catch.HasCaught());
-    CHECK(!access_was_called);
-  }
-
-  // Create an environment
-  v8::Local<Context> context1 = Context::New(isolate);
-  context1->Enter();
-  v8::Local<v8::Object> global1 = context1->Global();
-  global1->Set(context1, v8_str("object"),
-               obj_template->NewInstance(context1).ToLocalChecked())
-      .FromJust();
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object.x");
-    CHECK(!try_catch.HasCaught());
-    CHECK(access_was_called);
-    CHECK_EQ(42, value->Int32Value(context1).FromJust());
-  }
-  access_was_called = false;
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object.foo");
-    CHECK(try_catch.HasCaught());
-    CHECK(access_was_called);
-  }
-  access_was_called = false;
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object[10]");
-    CHECK(try_catch.HasCaught());
-    CHECK(access_was_called);
-  }
-
-  context1->Exit();
-  context0->Exit();
-}
-
-
-TEST(StrongModeAccessCheckBlocked) {
-  i::FLAG_strong_mode = true;
-  v8::Isolate* isolate = CcTest::isolate();
-  v8::HandleScope handle_scope(isolate);
-  v8::Local<Value> value;
-  access_was_called = false;
-
-  v8::Local<v8::ObjectTemplate> obj_template = v8::ObjectTemplate::New(isolate);
-
-  obj_template->Set(v8_str("x"), v8::Integer::New(isolate, 42));
-  obj_template->SetAccessCheckCallback(AccessAlwaysBlockedWithFlag);
-
-  // Create an environment
-  v8::Local<Context> context0 = Context::New(isolate, NULL, obj_template);
-  context0->Enter();
-  v8::Local<v8::Object> global0 = context0->Global();
-  global0->Set(context0, v8_str("object"),
-               obj_template->NewInstance(context0).ToLocalChecked())
-      .FromJust();
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object.x");
-    CHECK(!try_catch.HasCaught());
-    CHECK(!access_was_called);
-    CHECK_EQ(42, value->Int32Value(context0).FromJust());
-  }
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object.foo");
-    CHECK(try_catch.HasCaught());
-    CHECK(!access_was_called);
-  }
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object[10]");
-    CHECK(try_catch.HasCaught());
-    CHECK(!access_was_called);
-  }
-
-  // Create an environment
-  v8::Local<Context> context1 = Context::New(isolate);
-  context1->Enter();
-  v8::Local<v8::Object> global1 = context1->Global();
-  global1->Set(context1, v8_str("object"),
-               obj_template->NewInstance(context1).ToLocalChecked())
-      .FromJust();
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object.x");
-    CHECK(try_catch.HasCaught());
-    CHECK(access_was_called);
-  }
-  access_was_called = false;
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object.foo");
-    CHECK(try_catch.HasCaught());
-    CHECK(access_was_called);
-  }
-  access_was_called = false;
-  {
-    v8::TryCatch try_catch(isolate);
-    value = CompileRun("'use strong'; object[10]");
-    CHECK(try_catch.HasCaught());
-    CHECK(access_was_called);
-  }
-
-  context1->Exit();
-  context0->Exit();
-}
-
-
-TEST(StrongModeArityCallFromApi) {
-  i::FLAG_strong_mode = true;
-  LocalContext env;
-  v8::Isolate* isolate = env->GetIsolate();
-  v8::HandleScope scope(isolate);
-  Local<Function> fun;
-  {
-    v8::TryCatch try_catch(isolate);
-    fun = Local<Function>::Cast(CompileRun(
-        "function f(x) { 'use strong'; }"
-        "f"));
-
-    CHECK(!try_catch.HasCaught());
-  }
-
-  {
-    v8::TryCatch try_catch(isolate);
-    CHECK(fun->Call(env.local(), v8::Undefined(isolate), 0, nullptr).IsEmpty());
-    CHECK(try_catch.HasCaught());
-  }
-
-  {
-    v8::TryCatch try_catch(isolate);
-    v8::Local<Value> args[] = {v8_num(42)};
-    fun->Call(env.local(), v8::Undefined(isolate), arraysize(args), args)
-        .ToLocalChecked();
-    CHECK(!try_catch.HasCaught());
-  }
-
-  {
-    v8::TryCatch try_catch(isolate);
-    v8::Local<Value> args[] = {v8_num(42), v8_num(555)};
-    fun->Call(env.local(), v8::Undefined(isolate), arraysize(args), args)
-        .ToLocalChecked();
-    CHECK(!try_catch.HasCaught());
-  }
-}
-
-
-TEST(StrongModeArityCallFromApi2) {
-  i::FLAG_strong_mode = true;
-  LocalContext env;
-  v8::Isolate* isolate = env->GetIsolate();
-  v8::HandleScope scope(isolate);
-  Local<Function> fun;
-  {
-    v8::TryCatch try_catch(isolate);
-    fun = Local<Function>::Cast(CompileRun(
-        "'use strong';"
-        "function f(x) {}"
-        "f"));
-
-    CHECK(!try_catch.HasCaught());
-  }
-
-  {
-    v8::TryCatch try_catch(isolate);
-    CHECK(fun->Call(env.local(), v8::Undefined(isolate), 0, nullptr).IsEmpty());
-    CHECK(try_catch.HasCaught());
-  }
-
-  {
-    v8::TryCatch try_catch(isolate);
-    v8::Local<Value> args[] = {v8_num(42)};
-    fun->Call(env.local(), v8::Undefined(isolate), arraysize(args), args)
-        .ToLocalChecked();
-    CHECK(!try_catch.HasCaught());
-  }
-
-  {
-    v8::TryCatch try_catch(isolate);
-    v8::Local<Value> args[] = {v8_num(42), v8_num(555)};
-    fun->Call(env.local(), v8::Undefined(isolate), arraysize(args), args)
-        .ToLocalChecked();
-    CHECK(!try_catch.HasCaught());
-  }
-}
-
-
-TEST(StrongObjectDelete) {
-  i::FLAG_strong_mode = true;
-  LocalContext env;
-  v8::Isolate* isolate = env->GetIsolate();
-  v8::HandleScope scope(isolate);
-  Local<Object> obj;
-  {
-    v8::TryCatch try_catch(isolate);
-    obj = Local<Object>::Cast(CompileRun(
-        "'use strong';"
-        "({});"));
-    CHECK(!try_catch.HasCaught());
-  }
-  obj->DefineOwnProperty(env.local(), v8_str("foo"), v8_num(1), v8::None)
-      .FromJust();
-  obj->DefineOwnProperty(env.local(), v8_str("2"), v8_num(1), v8::None)
-      .FromJust();
-  CHECK(obj->HasOwnProperty(env.local(), v8_str("foo")).FromJust());
-  CHECK(obj->HasOwnProperty(env.local(), v8_str("2")).FromJust());
-  CHECK(!obj->Delete(env.local(), v8_str("foo")).FromJust());
-  CHECK(!obj->Delete(env.local(), 2).FromJust());
 }
 
 
@@ -24760,6 +24673,53 @@ TEST(CompatibleReceiverCheckOnCachedICHandler) {
       0);
 }
 
+THREADED_TEST(ReceiverConversionForAccessors) {
+  LocalContext env;
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+  Local<v8::FunctionTemplate> acc =
+      v8::FunctionTemplate::New(isolate, Returns42);
+  CHECK(env->Global()
+            ->Set(env.local(), v8_str("acc"),
+                  acc->GetFunction(env.local()).ToLocalChecked())
+            .FromJust());
+
+  Local<ObjectTemplate> templ = ObjectTemplate::New(isolate);
+  templ->SetAccessorProperty(v8_str("acc"), acc, acc);
+  Local<v8::Object> instance = templ->NewInstance(env.local()).ToLocalChecked();
+
+  CHECK(env->Global()->Set(env.local(), v8_str("p"), instance).FromJust());
+  CHECK(CompileRun("(p.acc == 42)")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("(p.acc = 7) == 7")->BooleanValue(env.local()).FromJust());
+
+  CHECK(!CompileRun("Number.prototype.__proto__ = p;"
+                    "var a = 1;")
+             .IsEmpty());
+  CHECK(CompileRun("(a.acc == 42)")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("(a.acc = 7) == 7")->BooleanValue(env.local()).FromJust());
+
+  CHECK(!CompileRun("Boolean.prototype.__proto__ = p;"
+                    "var a = true;")
+             .IsEmpty());
+  CHECK(CompileRun("(a.acc == 42)")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("(a.acc = 7) == 7")->BooleanValue(env.local()).FromJust());
+
+  CHECK(!CompileRun("String.prototype.__proto__ = p;"
+                    "var a = 'foo';")
+             .IsEmpty());
+  CHECK(CompileRun("(a.acc == 42)")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("(a.acc = 7) == 7")->BooleanValue(env.local()).FromJust());
+
+  CHECK(CompileRun("acc.call(1) == 42")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("acc.call(true)==42")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("acc.call('aa')==42")->BooleanValue(env.local()).FromJust());
+  CHECK(
+      CompileRun("acc.call(null) == 42")->BooleanValue(env.local()).FromJust());
+  CHECK(CompileRun("acc.call(undefined) == 42")
+            ->BooleanValue(env.local())
+            .FromJust());
+}
+
 class FutexInterruptionThread : public v8::base::Thread {
  public:
   explicit FutexInterruptionThread(v8::Isolate* isolate)
@@ -24873,7 +24833,6 @@ TEST(AccessCheckedIsConcatSpreadable) {
 
 
 TEST(AccessCheckedToStringTag) {
-  i::FLAG_harmony_tostring = true;
   v8::Isolate* isolate = CcTest::isolate();
   HandleScope scope(isolate);
   LocalContext env;
@@ -24952,7 +24911,6 @@ TEST(ObjectTemplateIntrinsics) {
 
 
 TEST(Proxy) {
-  i::FLAG_harmony_proxies = true;
   LocalContext context;
   v8::Isolate* isolate = CcTest::isolate();
   v8::HandleScope scope(isolate);
@@ -24973,4 +24931,99 @@ TEST(Proxy) {
   CHECK(proxy->IsRevoked());
   CHECK(proxy->GetTarget()->SameValue(target));
   CHECK(proxy->GetHandler()->IsNull());
+}
+
+WeakCallCounterAndPersistent<Value>* CreateGarbageWithWeakCallCounter(
+    v8::Isolate* isolate, WeakCallCounter* counter) {
+  v8::Locker locker(isolate);
+  LocalContext env;
+  HandleScope scope(isolate);
+  WeakCallCounterAndPersistent<Value>* val =
+      new WeakCallCounterAndPersistent<Value>(counter);
+  val->handle.Reset(isolate, Object::New(isolate));
+  val->handle.SetWeak(val, &WeakPointerCallback,
+                      v8::WeakCallbackType::kParameter);
+  return val;
+}
+
+class MemoryPressureThread : public v8::base::Thread {
+ public:
+  explicit MemoryPressureThread(v8::Isolate* isolate,
+                                v8::MemoryPressureLevel level)
+      : Thread(Options("MemoryPressureThread")),
+        isolate_(isolate),
+        level_(level) {}
+
+  virtual void Run() { isolate_->MemoryPressureNotification(level_); }
+
+ private:
+  v8::Isolate* isolate_;
+  v8::MemoryPressureLevel level_;
+};
+
+TEST(MemoryPressure) {
+  v8::Isolate* isolate = CcTest::isolate();
+  WeakCallCounter counter(1234);
+
+  // Check that critical memory pressure notification sets GC interrupt.
+  auto garbage = CreateGarbageWithWeakCallCounter(isolate, &counter);
+  CHECK(!v8::Locker::IsLocked(isolate));
+  {
+    v8::Locker locker(isolate);
+    v8::HandleScope scope(isolate);
+    LocalContext env;
+    MemoryPressureThread memory_pressure_thread(
+        isolate, v8::MemoryPressureLevel::kCritical);
+    memory_pressure_thread.Start();
+    memory_pressure_thread.Join();
+    // This should trigger GC.
+    CHECK_EQ(0, counter.NumberOfWeakCalls());
+    CompileRun("(function noop() { return 0; })()");
+    CHECK_EQ(1, counter.NumberOfWeakCalls());
+  }
+  delete garbage;
+  // Check that critical memory pressure notification triggers GC.
+  garbage = CreateGarbageWithWeakCallCounter(isolate, &counter);
+  {
+    v8::Locker locker(isolate);
+    // If isolate is locked, memory pressure notification should trigger GC.
+    CHECK_EQ(1, counter.NumberOfWeakCalls());
+    isolate->MemoryPressureNotification(v8::MemoryPressureLevel::kCritical);
+    CHECK_EQ(2, counter.NumberOfWeakCalls());
+  }
+  delete garbage;
+  // Check that moderate memory pressure notification sets GC into memory
+  // optimizing mode.
+  isolate->MemoryPressureNotification(v8::MemoryPressureLevel::kModerate);
+  CHECK(CcTest::i_isolate()->heap()->ShouldOptimizeForMemoryUsage());
+  // Check that disabling memory pressure returns GC into normal mode.
+  isolate->MemoryPressureNotification(v8::MemoryPressureLevel::kNone);
+  CHECK(!CcTest::i_isolate()->heap()->ShouldOptimizeForMemoryUsage());
+}
+
+TEST(SetIntegrityLevel) {
+  LocalContext context;
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+
+  v8::Local<v8::Object> obj = v8::Object::New(isolate);
+  CHECK(context->Global()->Set(context.local(), v8_str("o"), obj).FromJust());
+
+  v8::Local<v8::Value> is_frozen = CompileRun("Object.isFrozen(o)");
+  CHECK(!is_frozen->BooleanValue(context.local()).FromJust());
+
+  CHECK(obj->SetIntegrityLevel(context.local(), v8::IntegrityLevel::kFrozen)
+            .FromJust());
+
+  is_frozen = CompileRun("Object.isFrozen(o)");
+  CHECK(is_frozen->BooleanValue(context.local()).FromJust());
+}
+
+TEST(PrivateForApiIsNumber) {
+  LocalContext context;
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+
+  // Shouldn't crash.
+  v8::Private::ForApi(isolate, v8_str("42"));
 }

@@ -78,6 +78,10 @@ class ScavengingVisitor : public StaticVisitorBase {
     table_.RegisterSpecializations<ObjectEvacuationStrategy<POINTER_OBJECT>,
                                    kVisitJSObject, kVisitJSObjectGeneric>();
 
+    table_
+        .RegisterSpecializations<ObjectEvacuationStrategy<POINTER_OBJECT>,
+                                 kVisitJSApiObject, kVisitJSApiObjectGeneric>();
+
     table_.RegisterSpecializations<ObjectEvacuationStrategy<POINTER_OBJECT>,
                                    kVisitStruct, kVisitStructGeneric>();
   }
@@ -186,7 +190,9 @@ class ScavengingVisitor : public StaticVisitorBase {
       *slot = target;
 
       if (object_contents == POINTER_OBJECT) {
-        heap->promotion_queue()->insert(target, object_size);
+        heap->promotion_queue()->insert(
+            target, object_size,
+            Marking::IsBlack(Marking::MarkBitFrom(object)));
       }
       heap->IncrementPromotedObjectsSize(object_size);
       return true;
@@ -236,7 +242,7 @@ class ScavengingVisitor : public StaticVisitorBase {
     if (Marking::IsBlack(mark_bit)) {
       // This object is black and it might not be rescanned by marker.
       // We should explicitly record code entry slot for compaction because
-      // promotion queue processing (IterateAndMarkPointersToFromSpace) will
+      // promotion queue processing (IteratePromotedObjectPointers) will
       // miss it as it is not HeapObject-tagged.
       Address code_entry_slot =
           target->address() + JSFunction::kCodeEntryOffset;

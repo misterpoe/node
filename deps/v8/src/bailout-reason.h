@@ -14,7 +14,6 @@ namespace internal {
                                                                                \
   V(k32BitValueInRegisterIsNotZeroExtended,                                    \
     "32 bit value in register is not zero-extended")                           \
-  V(kAlignmentMarkerExpected, "Alignment marker expected")                     \
   V(kAllocationIsNotDoubleAligned, "Allocation is not double aligned")         \
   V(kAPICallReturnedInvalidObject, "API call returned invalid object")         \
   V(kArgumentsObjectValueInATestContext,                                       \
@@ -37,8 +36,6 @@ namespace internal {
   V(kBailoutWasNotPrepared, "Bailout was not prepared")                        \
   V(kBothRegistersWereSmisInSelectNonSmi,                                      \
     "Both registers were smis in SelectNonSmi")                                \
-  V(kCallToAJavaScriptRuntimeFunction,                                         \
-    "Call to a JavaScript runtime function")                                   \
   V(kClassLiteral, "Class literal")                                            \
   V(kCodeGenerationFailed, "Code generation failed")                           \
   V(kCodeObjectNotProperlyPatched, "Code object not properly patched")         \
@@ -57,7 +54,8 @@ namespace internal {
   V(kDestinationOfCopyNotAligned, "Destination of copy not aligned")           \
   V(kDontDeleteCellsCannotContainTheHole,                                      \
     "DontDelete cells can't contain the hole")                                 \
-  V(kDoExpression, "Do expression encountered")                                \
+  V(kDoExpressionUnmodelable,                                                  \
+    "Encountered a do-expression with unmodelable control statements")         \
   V(kDoPushArgumentNotImplementedForDoubleType,                                \
     "DoPushArgument not implemented for double type")                          \
   V(kEliminatedBoundsCheckFailed, "Eliminated bounds check failed")            \
@@ -84,14 +82,13 @@ namespace internal {
   V(kFrameIsExpectedToBeAligned, "Frame is expected to be aligned")            \
   V(kFunctionBeingDebugged, "Function is being debugged")                      \
   V(kFunctionCallsEval, "Function calls eval")                                 \
-  V(kFunctionWithIllegalRedeclaration, "Function with illegal redeclaration")  \
   V(kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry,                      \
     "The function_data field should be a BytecodeArray on interpreter entry")  \
   V(kGeneratedCodeIsTooLarge, "Generated code is too large")                   \
-  V(kGeneratorFailedToResume, "Generator failed to resume")                    \
   V(kGenerator, "Generator")                                                   \
   V(kGlobalFunctionsMustHaveInitialMap,                                        \
     "Global functions must have initial map")                                  \
+  V(kGraphBuildingFailed, "Optimized graph construction failed")               \
   V(kHeapNumberMapRegisterClobbered, "HeapNumberMap register clobbered")       \
   V(kHydrogenFilter, "Optimization disabled by filter")                        \
   V(kImportDeclaration, "Import declaration")                                  \
@@ -103,6 +100,7 @@ namespace internal {
   V(kInputStringTooLong, "Input string too long")                              \
   V(kInteger32ToSmiFieldWritingToNonSmiLocation,                               \
     "Integer32ToSmiField writing to non-smi location")                         \
+  V(kInvalidBytecode, "Invalid bytecode")                                      \
   V(kInvalidCaptureReferenced, "Invalid capture referenced")                   \
   V(kInvalidElementsKindForInternalArrayOrInternalPackedArray,                 \
     "Invalid ElementsKind for InternalArray or InternalPackedArray")           \
@@ -112,6 +110,7 @@ namespace internal {
   V(kInvalidLhsInCompoundAssignment, "Invalid lhs in compound assignment")     \
   V(kInvalidLhsInCountOperation, "Invalid lhs in count operation")             \
   V(kInvalidMinLength, "Invalid min_length")                                   \
+  V(kInvalidRegisterFileInGenerator, "invalid register file in generator")     \
   V(kJSGlobalObjectNativeContextShouldBeANativeContext,                        \
     "JSGlobalObject::native_context should be a native context")               \
   V(kJSGlobalProxyContextShouldNotBeNull,                                      \
@@ -140,9 +139,12 @@ namespace internal {
   V(kObjectFoundInSmiOnlyArray, "Object found in smi-only array")              \
   V(kObjectLiteralWithComplexProperty, "Object literal with complex property") \
   V(kOffsetOutOfRange, "Offset out of range")                                  \
+  V(kOperandIsANumber, "Operand is a number")                                  \
   V(kOperandIsASmiAndNotABoundFunction,                                        \
     "Operand is a smi and not a bound function")                               \
   V(kOperandIsASmiAndNotAFunction, "Operand is a smi and not a function")      \
+  V(kOperandIsASmiAndNotAGeneratorObject,                                      \
+    "Operand is a smi and not a generator object")                             \
   V(kOperandIsASmiAndNotAName, "Operand is a smi and not a name")              \
   V(kOperandIsASmiAndNotAReceiver, "Operand is a smi and not a receiver")      \
   V(kOperandIsASmiAndNotAString, "Operand is a smi and not a string")          \
@@ -150,6 +152,7 @@ namespace internal {
   V(kOperandIsNotADate, "Operand is not a date")                               \
   V(kOperandIsNotABoundFunction, "Operand is not a bound function")            \
   V(kOperandIsNotAFunction, "Operand is not a function")                       \
+  V(kOperandIsNotAGeneratorObject, "Operand is not a generator object")        \
   V(kOperandIsNotAName, "Operand is not a name")                               \
   V(kOperandIsNotANumber, "Operand is not a number")                           \
   V(kOperandIsNotAReceiver, "Operand is not a receiver")                       \
@@ -230,6 +233,8 @@ namespace internal {
   V(kUnexpectedNegativeValue, "Unexpected negative value")                     \
   V(kUnexpectedNumberOfPreAllocatedPropertyFields,                             \
     "Unexpected number of pre-allocated property fields")                      \
+  V(kUnexpectedFunctionIDForInvokeIntrinsic,                                   \
+    "Unexpected runtime function id for the InvokeIntrinsic bytecode")         \
   V(kUnexpectedFPCRMode, "Unexpected FPCR mode.")                              \
   V(kUnexpectedSmi, "Unexpected smi value")                                    \
   V(kUnexpectedStackDepth, "Unexpected operand stack depth in full-codegen")   \
@@ -249,7 +254,7 @@ namespace internal {
   V(kUnsupportedNonPrimitiveCompare, "Unsupported non-primitive compare")      \
   V(kUnsupportedPhiUseOfArguments, "Unsupported phi use of arguments")         \
   V(kUnsupportedPhiUseOfConstVariable,                                         \
-    "Unsupported phi use of const variable")                                   \
+    "Unsupported phi use of const or let variable")                            \
   V(kUnexpectedReturnFromBytecodeHandler,                                      \
     "Unexpectedly returned from a bytecode handler")                           \
   V(kUnexpectedReturnFromThrow, "Unexpectedly returned from a throw")          \
@@ -262,6 +267,8 @@ namespace internal {
   V(kWrongFunctionContext, "Wrong context passed to function")                 \
   V(kWrongAddressOrValuePassedToRecordWrite,                                   \
     "Wrong address or value passed to RecordWrite")                            \
+  V(kWrongArgumentCountForInvokeIntrinsic,                                     \
+    "Wrong number of arguments for intrinsic")                                 \
   V(kShouldNotDirectlyEnterOsrFunction,                                        \
     "Should not directly enter OSR-compiled function")                         \
   V(kYield, "Yield")

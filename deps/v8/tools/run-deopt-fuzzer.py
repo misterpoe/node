@@ -71,6 +71,8 @@ SUPPORTED_ARCHS = ["android_arm",
                    "ia32",
                    "ppc",
                    "ppc64",
+                   "s390",
+                   "s390x",
                    "mipsel",
                    "nacl_ia32",
                    "nacl_x64",
@@ -321,7 +323,6 @@ def Main():
     suite = testsuite.TestSuite.LoadTestSuite(
         os.path.join(BASE_DIR, "test", root))
     if suite:
-      suite.SetupWorkingDirectory()
       suites.append(suite)
 
   if options.download_data:
@@ -387,7 +388,8 @@ def Execute(arch, mode, args, options, suites, workspace):
                         0,  # No use of a rerun-failing-tests maximum.
                         False,  # No predictable mode.
                         False,  # No no_harness mode.
-                        False)   # Don't use perf data.
+                        False,  # Don't use perf data.
+                        False)  # Coverage not supported.
 
   # Find available test suites and read test cases from them.
   variables = {
@@ -397,6 +399,7 @@ def Execute(arch, mode, args, options, suites, workspace):
     "gc_stress": False,
     "gcov_coverage": False,
     "ignition": False,
+    "ignition_turbofan": False,
     "isolates": options.isolates,
     "mode": mode,
     "no_i18n": False,

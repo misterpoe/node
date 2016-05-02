@@ -99,6 +99,8 @@ void HeapObject::HeapObjectVerify() {
       Oddball::cast(this)->OddballVerify();
       break;
     case JS_OBJECT_TYPE:
+    case JS_API_OBJECT_TYPE:
+    case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
     case JS_PROMISE_TYPE:
       JSObject::cast(this)->JSObjectVerify();
@@ -228,6 +230,10 @@ void ByteArray::ByteArrayVerify() {
 
 void BytecodeArray::BytecodeArrayVerify() {
   // TODO(oth): Walk bytecodes and immediate values to validate sanity.
+  // - All bytecodes are known and well formed.
+  // - Jumps must go to new instructions starts.
+  // - No Illegal bytecodes.
+  // - No consecutive sequences of prefix Wide / ExtraWide.
   CHECK(IsBytecodeArray());
   CHECK(constant_pool()->IsFixedArray());
   VerifyHeapPointer(constant_pool());
@@ -361,21 +367,6 @@ void Map::VerifyOmittedMapChecks() {
       is_dictionary_map()) {
     CHECK(dependent_code()->IsEmpty(DependentCode::kPrototypeCheckGroup));
   }
-}
-
-
-void CodeCache::CodeCacheVerify() {
-  VerifyHeapPointer(default_cache());
-  VerifyHeapPointer(normal_type_cache());
-  CHECK(default_cache()->IsFixedArray());
-  CHECK(normal_type_cache()->IsUndefined()
-         || normal_type_cache()->IsCodeCacheHashTable());
-}
-
-
-void PolymorphicCodeCache::PolymorphicCodeCacheVerify() {
-  VerifyHeapPointer(cache());
-  CHECK(cache()->IsUndefined() || cache()->IsPolymorphicCodeCacheHashTable());
 }
 
 
@@ -618,7 +609,7 @@ void Oddball::OddballVerify() {
     CHECK(number->IsSmi());
     int value = Smi::cast(number)->value();
     // Hidden oddballs have negative smis.
-    const int kLeastHiddenOddballNumber = -5;
+    const int kLeastHiddenOddballNumber = -7;
     CHECK_LE(value, 1);
     CHECK(value >= kLeastHiddenOddballNumber);
   }
@@ -641,6 +632,10 @@ void Oddball::OddballVerify() {
     CHECK(this == heap->termination_exception());
   } else if (map() == heap->exception_map()) {
     CHECK(this == heap->exception());
+  } else if (map() == heap->optimized_out_map()) {
+    CHECK(this == heap->optimized_out());
+  } else if (map() == heap->stale_register_map()) {
+    CHECK(this == heap->stale_register());
   } else {
     UNREACHABLE();
   }
@@ -914,6 +909,7 @@ void AccessorInfo::AccessorInfoVerify() {
   VerifyPointer(expected_receiver_type());
   VerifyPointer(getter());
   VerifyPointer(setter());
+  VerifyPointer(js_getter());
   VerifyPointer(data());
 }
 

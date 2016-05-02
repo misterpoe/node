@@ -45,7 +45,6 @@
   V(dot_string, ".")                                               \
   V(entries_string, "entries")                                     \
   V(enumerable_string, "enumerable")                               \
-  V(enumerate_string, "enumerate")                                 \
   V(Error_string, "Error")                                         \
   V(eval_string, "eval")                                           \
   V(false_string, "false")                                         \
@@ -163,7 +162,6 @@
   V(nonextensible_symbol)                   \
   V(normal_ic_symbol)                       \
   V(not_mapped_symbol)                      \
-  V(observed_symbol)                        \
   V(premonomorphic_symbol)                  \
   V(promise_combined_deferred_symbol)       \
   V(promise_debug_marker_symbol)            \
@@ -178,7 +176,6 @@
   V(strict_function_transition_symbol)      \
   V(string_iterator_iterated_string_symbol) \
   V(string_iterator_next_index_symbol)      \
-  V(strong_function_transition_symbol)      \
   V(uninitialized_symbol)
 
 #define PUBLIC_SYMBOL_LIST(V)                \

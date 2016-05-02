@@ -114,7 +114,7 @@ std::ostream& operator<<(std::ostream& os,
       return os << "[constant:" << ConstantOperand::cast(op).virtual_register()
                 << "]";
     case InstructionOperand::IMMEDIATE: {
-      auto imm = ImmediateOperand::cast(op);
+      ImmediateOperand imm = ImmediateOperand::cast(op);
       switch (imm.type()) {
         case ImmediateOperand::INLINE:
           return os << "#" << imm.inline_value();
@@ -124,7 +124,7 @@ std::ostream& operator<<(std::ostream& os,
     }
     case InstructionOperand::EXPLICIT:
     case InstructionOperand::ALLOCATED: {
-      auto allocated = LocationOperand::cast(op);
+      LocationOperand allocated = LocationOperand::cast(op);
       if (op.IsStackSlot()) {
         os << "[stack:" << LocationOperand::cast(op).index();
       } else if (op.IsDoubleStackSlot()) {
@@ -214,7 +214,7 @@ std::ostream& operator<<(std::ostream& os,
 
 
 bool ParallelMove::IsRedundant() const {
-  for (auto move : *this) {
+  for (MoveOperands* move : *this) {
     if (!move->IsRedundant()) return false;
   }
   return true;
@@ -224,7 +224,7 @@ bool ParallelMove::IsRedundant() const {
 MoveOperands* ParallelMove::PrepareInsertAfter(MoveOperands* move) const {
   MoveOperands* replacement = nullptr;
   MoveOperands* to_eliminate = nullptr;
-  for (auto curr : *this) {
+  for (MoveOperands* curr : *this) {
     if (curr->IsEliminated()) continue;
     if (curr->destination().EqualsCanonicalized(move->source())) {
       DCHECK(!replacement);
@@ -251,16 +251,15 @@ ExplicitOperand::ExplicitOperand(LocationKind kind, MachineRepresentation rep,
                  DoubleRegister::from_code(index).IsAllocatable());
 }
 
-
 Instruction::Instruction(InstructionCode opcode)
     : opcode_(opcode),
       bit_field_(OutputCountField::encode(0) | InputCountField::encode(0) |
                  TempCountField::encode(0) | IsCallField::encode(false)),
-      reference_map_(nullptr) {
+      reference_map_(nullptr),
+      block_(nullptr) {
   parallel_moves_[0] = nullptr;
   parallel_moves_[1] = nullptr;
 }
-
 
 Instruction::Instruction(InstructionCode opcode, size_t output_count,
                          InstructionOperand* outputs, size_t input_count,
@@ -271,7 +270,8 @@ Instruction::Instruction(InstructionCode opcode, size_t output_count,
                  InputCountField::encode(input_count) |
                  TempCountField::encode(temp_count) |
                  IsCallField::encode(false)),
-      reference_map_(nullptr) {
+      reference_map_(nullptr),
+      block_(nullptr) {
   parallel_moves_[0] = nullptr;
   parallel_moves_[1] = nullptr;
   size_t offset = 0;
@@ -321,7 +321,7 @@ std::ostream& operator<<(std::ostream& os,
                          const PrintableParallelMove& printable) {
   const ParallelMove& pm = *printable.parallel_move_;
   bool first = true;
-  for (auto move : pm) {
+  for (MoveOperands* move : pm) {
     if (move->IsEliminated()) continue;
     if (!first) os << " ";
     first = false;
@@ -346,7 +346,7 @@ std::ostream& operator<<(std::ostream& os, const ReferenceMap& pm) {
   PrintableInstructionOperand poi = {
       RegisterConfiguration::ArchDefault(RegisterConfiguration::TURBOFAN),
       InstructionOperand()};
-  for (auto& op : pm.reference_operands_) {
+  for (const InstructionOperand& op : pm.reference_operands_) {
     if (!first) {
       os << ";";
     } else {
@@ -393,6 +393,8 @@ std::ostream& operator<<(std::ostream& os, const FlagsMode& fm) {
       return os;
     case kFlags_branch:
       return os << "branch";
+    case kFlags_deoptimize:
+      return os << "deoptimize";
     case kFlags_set:
       return os << "set";
   }
@@ -502,6 +504,24 @@ std::ostream& operator<<(std::ostream& os,
 
 Constant::Constant(int32_t v) : type_(kInt32), value_(v) {}
 
+Constant::Constant(RelocatablePtrConstantInfo info)
+#ifdef V8_HOST_ARCH_32_BIT
+    : type_(kInt32), value_(info.value()), rmode_(info.rmode()) {
+}
+#else
+    : type_(kInt64), value_(info.value()), rmode_(info.rmode()) {
+}
+#endif
+
+Handle<HeapObject> Constant::ToHeapObject() const {
+  DCHECK_EQ(kHeapObject, type());
+  Handle<HeapObject> value(
+      bit_cast<HeapObject**>(static_cast<intptr_t>(value_)));
+  if (value->IsConsString()) {
+    value = String::Flatten(Handle<String>::cast(value), TENURED);
+  }
+  return value;
+}
 
 std::ostream& operator<<(std::ostream& os, const Constant& constant) {
   switch (constant.type()) {
@@ -601,7 +621,6 @@ static InstructionBlock* InstructionBlockFor(Zone* zone,
   return instr_block;
 }
 
-
 InstructionBlocks* InstructionSequence::InstructionBlocksFor(
     Zone* zone, const Schedule* schedule) {
   InstructionBlocks* blocks = zone->NewArray<InstructionBlocks>(1);
@@ -618,7 +637,7 @@ InstructionBlocks* InstructionSequence::InstructionBlocksFor(
   return blocks;
 }
 
-void InstructionSequence::Validate() {
+void InstructionSequence::ValidateEdgeSplitForm() const {
   // Validate blocks are in edge-split form: no block with multiple successors
   // has an edge to a block (== a successor) with more than one predecessors.
   for (const InstructionBlock* block : instruction_blocks()) {
@@ -633,20 +652,59 @@ void InstructionSequence::Validate() {
   }
 }
 
+void InstructionSequence::ValidateDeferredBlockExitPaths() const {
+  // A deferred block with more than one successor must have all its successors
+  // deferred.
+  for (const InstructionBlock* block : instruction_blocks()) {
+    if (!block->IsDeferred() || block->SuccessorCount() <= 1) continue;
+    for (RpoNumber successor_id : block->successors()) {
+      CHECK(InstructionBlockAt(successor_id)->IsDeferred());
+    }
+  }
+}
+
+void InstructionSequence::ValidateDeferredBlockEntryPaths() const {
+  // If a deferred block has multiple predecessors, they have to
+  // all be deferred. Otherwise, we can run into a situation where a range
+  // that spills only in deferred blocks inserts its spill in the block, but
+  // other ranges need moves inserted by ResolveControlFlow in the predecessors,
+  // which may clobber the register of this range.
+  for (const InstructionBlock* block : instruction_blocks()) {
+    if (!block->IsDeferred() || block->PredecessorCount() <= 1) continue;
+    for (RpoNumber predecessor_id : block->predecessors()) {
+      CHECK(InstructionBlockAt(predecessor_id)->IsDeferred());
+    }
+  }
+}
+
+void InstructionSequence::ValidateSSA() const {
+  // TODO(mtrofin): We could use a local zone here instead.
+  BitVector definitions(VirtualRegisterCount(), zone());
+  for (const Instruction* instruction : *this) {
+    for (size_t i = 0; i < instruction->OutputCount(); ++i) {
+      const InstructionOperand* output = instruction->OutputAt(i);
+      int vreg = (output->IsConstant())
+                     ? ConstantOperand::cast(output)->virtual_register()
+                     : UnallocatedOperand::cast(output)->virtual_register();
+      CHECK(!definitions.Contains(vreg));
+      definitions.Add(vreg);
+    }
+  }
+}
+
 void InstructionSequence::ComputeAssemblyOrder(InstructionBlocks* blocks) {
   int ao = 0;
-  for (auto const block : *blocks) {
+  for (InstructionBlock* const block : *blocks) {
     if (!block->IsDeferred()) {
       block->set_ao_number(RpoNumber::FromInt(ao++));
     }
   }
-  for (auto const block : *blocks) {
+  for (InstructionBlock* const block : *blocks) {
     if (block->IsDeferred()) {
       block->set_ao_number(RpoNumber::FromInt(ao++));
     }
   }
 }
-
 
 InstructionSequence::InstructionSequence(Isolate* isolate,
                                          Zone* instruction_zone,
@@ -655,7 +713,6 @@ InstructionSequence::InstructionSequence(Isolate* isolate,
       zone_(instruction_zone),
       instruction_blocks_(instruction_blocks),
       source_positions_(zone()),
-      block_starts_(zone()),
       constants_(ConstantMap::key_compare(),
                  ConstantMap::allocator_type(zone())),
       immediates_(zone()),
@@ -663,14 +720,8 @@ InstructionSequence::InstructionSequence(Isolate* isolate,
       next_virtual_register_(0),
       reference_maps_(zone()),
       representations_(zone()),
-      deoptimization_entries_(zone()) {
-  block_starts_.reserve(instruction_blocks_->size());
-
-#if DEBUG
-  Validate();
-#endif
-}
-
+      deoptimization_entries_(zone()),
+      current_block_(nullptr) {}
 
 int InstructionSequence::NextVirtualRegister() {
   int virtual_register = next_virtual_register_++;
@@ -686,28 +737,31 @@ Instruction* InstructionSequence::GetBlockStart(RpoNumber rpo) const {
 
 
 void InstructionSequence::StartBlock(RpoNumber rpo) {
-  DCHECK(block_starts_.size() == rpo.ToSize());
-  InstructionBlock* block = InstructionBlockAt(rpo);
+  DCHECK_NULL(current_block_);
+  current_block_ = InstructionBlockAt(rpo);
   int code_start = static_cast<int>(instructions_.size());
-  block->set_code_start(code_start);
-  block_starts_.push_back(code_start);
+  current_block_->set_code_start(code_start);
 }
 
 
 void InstructionSequence::EndBlock(RpoNumber rpo) {
   int end = static_cast<int>(instructions_.size());
-  InstructionBlock* block = InstructionBlockAt(rpo);
-  if (block->code_start() == end) {  // Empty block.  Insert a nop.
+  DCHECK_EQ(current_block_->rpo_number(), rpo);
+  if (current_block_->code_start() == end) {  // Empty block.  Insert a nop.
     AddInstruction(Instruction::New(zone(), kArchNop));
     end = static_cast<int>(instructions_.size());
   }
-  DCHECK(block->code_start() >= 0 && block->code_start() < end);
-  block->set_code_end(end);
+  DCHECK(current_block_->code_start() >= 0 &&
+         current_block_->code_start() < end);
+  current_block_->set_code_end(end);
+  current_block_ = nullptr;
 }
 
 
 int InstructionSequence::AddInstruction(Instruction* instr) {
+  DCHECK_NOT_NULL(current_block_);
   int index = static_cast<int>(instructions_.size());
+  instr->set_block(current_block_);
   instructions_.push_back(instr);
   if (instr->NeedsReferenceMap()) {
     DCHECK(instr->reference_map() == nullptr);
@@ -722,18 +776,7 @@ int InstructionSequence::AddInstruction(Instruction* instr) {
 
 InstructionBlock* InstructionSequence::GetInstructionBlock(
     int instruction_index) const {
-  DCHECK(instruction_blocks_->size() == block_starts_.size());
-  auto begin = block_starts_.begin();
-  auto end = std::lower_bound(begin, block_starts_.end(), instruction_index);
-  // Post condition of std::lower_bound:
-  DCHECK(end == block_starts_.end() || *end >= instruction_index);
-  if (end == block_starts_.end() || *end > instruction_index) --end;
-  DCHECK(*end <= instruction_index);
-  size_t index = std::distance(begin, end);
-  auto block = instruction_blocks_->at(index);
-  DCHECK(block->code_start() <= instruction_index &&
-         instruction_index < block->code_end());
-  return block;
+  return instructions()[instruction_index]->block();
 }
 
 
@@ -861,15 +904,15 @@ void InstructionSequence::PrintBlock(const RegisterConfiguration* config,
   os << "  instructions: [" << block->code_start() << ", " << block->code_end()
      << ")\n  predecessors:";
 
-  for (auto pred : block->predecessors()) {
+  for (RpoNumber pred : block->predecessors()) {
     os << " B" << pred.ToInt();
   }
   os << "\n";
 
-  for (auto phi : block->phis()) {
+  for (const PhiInstruction* phi : block->phis()) {
     PrintableInstructionOperand printable_op = {config, phi->output()};
     os << "     phi: " << printable_op << " =";
-    for (auto input : phi->operands()) {
+    for (int input : phi->operands()) {
       os << " v" << input;
     }
     os << "\n";
@@ -886,7 +929,7 @@ void InstructionSequence::PrintBlock(const RegisterConfiguration* config,
     os << "   " << buf.start() << ": " << printable_instr << "\n";
   }
 
-  for (auto succ : block->successors()) {
+  for (RpoNumber succ : block->successors()) {
     os << " B" << succ.ToInt();
   }
   os << "\n";

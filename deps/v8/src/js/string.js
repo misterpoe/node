@@ -15,12 +15,13 @@ var GlobalRegExp = global.RegExp;
 var GlobalString = global.String;
 var InternalArray = utils.InternalArray;
 var InternalPackedArray = utils.InternalPackedArray;
+var IsRegExp;
 var MakeRangeError;
 var MakeTypeError;
 var MaxSimple;
 var MinSimple;
+var RegExpInitialize;
 var matchSymbol = utils.ImportNow("match_symbol");
-var RegExpExecNoTests;
 var replaceSymbol = utils.ImportNow("replace_symbol");
 var searchSymbol = utils.ImportNow("search_symbol");
 var splitSymbol = utils.ImportNow("split_symbol");
@@ -28,11 +29,12 @@ var splitSymbol = utils.ImportNow("split_symbol");
 utils.Import(function(from) {
   ArrayIndexOf = from.ArrayIndexOf;
   ArrayJoin = from.ArrayJoin;
+  IsRegExp = from.IsRegExp;
   MakeRangeError = from.MakeRangeError;
   MakeTypeError = from.MakeTypeError;
   MaxSimple = from.MaxSimple;
   MinSimple = from.MinSimple;
-  RegExpExecNoTests = from.RegExpExecNoTests;
+  RegExpInitialize = from.RegExpInitialize;
 });
 
 //-------------------------------------------------------------------
@@ -52,30 +54,6 @@ function StringValueOf() {
     throw MakeTypeError(kNotGeneric, 'String.prototype.valueOf');
   }
   return %_ValueOf(this);
-}
-
-
-// ECMA-262, section 15.5.4.4
-function StringCharAtJS(pos) {
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.charAt");
-
-  var result = %_StringCharAt(this, pos);
-  if (%_IsSmi(result)) {
-    result = %_StringCharAt(TO_STRING(this), TO_INTEGER(pos));
-  }
-  return result;
-}
-
-
-// ECMA-262 section 15.5.4.5
-function StringCharCodeAtJS(pos) {
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.charCodeAt");
-
-  var result = %_StringCharCodeAt(this, pos);
-  if (!%_IsSmi(result)) {
-    result = %_StringCharCodeAt(TO_STRING(this), TO_INTEGER(pos));
-  }
-  return result;
 }
 
 
@@ -159,9 +137,10 @@ function StringMatchJS(pattern) {
 
   var subject = TO_STRING(this);
 
-  // Non-regexp argument.
-  var regexp = new GlobalRegExp(pattern);
-  return RegExpExecNoTests(regexp, subject, 0);
+  // Equivalent to RegExpCreate (ES#sec-regexpcreate)
+  var regexp = %_NewObject(GlobalRegExp, GlobalRegExp);
+  RegExpInitialize(regexp, pattern);
+  return regexp[matchSymbol](subject);
 }
 
 
@@ -355,7 +334,10 @@ function StringSearch(pattern) {
   }
 
   var subject = TO_STRING(this);
-  var regexp = new GlobalRegExp(pattern);
+
+  // Equivalent to RegExpCreate (ES#sec-regexpcreate)
+  var regexp = %_NewObject(GlobalRegExp, GlobalRegExp);
+  RegExpInitialize(regexp, pattern);
   return %_Call(regexp[searchSymbol], regexp, subject);
 }
 
@@ -701,7 +683,7 @@ function StringStartsWith(searchString, position) {  // length == 1
 
   var s = TO_STRING(this);
 
-  if (IS_REGEXP(searchString)) {
+  if (IsRegExp(searchString)) {
     throw MakeTypeError(kFirstArgumentNotRegExp, "String.prototype.startsWith");
   }
 
@@ -727,7 +709,7 @@ function StringEndsWith(searchString, position) {  // length == 1
 
   var s = TO_STRING(this);
 
-  if (IS_REGEXP(searchString)) {
+  if (IsRegExp(searchString)) {
     throw MakeTypeError(kFirstArgumentNotRegExp, "String.prototype.endsWith");
   }
 
@@ -754,7 +736,7 @@ function StringIncludes(searchString, position) {  // length == 1
 
   var string = TO_STRING(this);
 
-  if (IS_REGEXP(searchString)) {
+  if (IsRegExp(searchString)) {
     throw MakeTypeError(kFirstArgumentNotRegExp, "String.prototype.includes");
   }
 
@@ -851,13 +833,6 @@ function StringRaw(callSite) {
 
 // -------------------------------------------------------------------
 
-// Set the String function and constructor.
-%FunctionSetPrototype(GlobalString, new GlobalString());
-
-// Set up the constructor property on the String prototype object.
-%AddNamedProperty(
-    GlobalString.prototype, "constructor", GlobalString, DONT_ENUM);
-
 // Set up the non-enumerable functions on the String object.
 utils.InstallFunctions(GlobalString, DONT_ENUM, [
   "fromCharCode", StringFromCharCode,
@@ -869,8 +844,6 @@ utils.InstallFunctions(GlobalString, DONT_ENUM, [
 utils.InstallFunctions(GlobalString.prototype, DONT_ENUM, [
   "valueOf", StringValueOf,
   "toString", StringToString,
-  "charAt", StringCharAtJS,
-  "charCodeAt", StringCharCodeAtJS,
   "codePointAt", StringCodePointAt,
   "concat", StringConcat,
   "endsWith", StringEndsWith,
@@ -916,7 +889,6 @@ utils.InstallFunctions(GlobalString.prototype, DONT_ENUM, [
 
 utils.Export(function(to) {
   to.ExpandReplacement = ExpandReplacement;
-  to.StringCharAt = StringCharAtJS;
   to.StringIndexOf = StringIndexOf;
   to.StringLastIndexOf = StringLastIndexOf;
   to.StringMatch = StringMatchJS;

@@ -1225,6 +1225,17 @@ class Assembler : public AssemblerBase {
             const Condition cond = al);
   void vcmp(const SwVfpRegister src1, const float src2,
             const Condition cond = al);
+
+  // VSEL supports cond in {eq, ne, ge, lt, gt, le, vs, vc}.
+  void vsel(const Condition cond,
+            const DwVfpRegister dst,
+            const DwVfpRegister src1,
+            const DwVfpRegister src2);
+  void vsel(const Condition cond,
+            const SwVfpRegister dst,
+            const SwVfpRegister src1,
+            const SwVfpRegister src2);
+
   void vsqrt(const DwVfpRegister dst,
              const DwVfpRegister src,
              const Condition cond = al);
@@ -1390,7 +1401,9 @@ class Assembler : public AssemblerBase {
   // Emits the address of the code stub's first instruction.
   void emit_code_stub_address(Code* stub);
 
-  PositionsRecorder* positions_recorder() { return &positions_recorder_; }
+  AssemblerPositionsRecorder* positions_recorder() {
+    return &positions_recorder_;
+  }
 
   // Read/patch instructions
   Instr instr_at(int pos) { return *reinterpret_cast<Instr*>(buffer_ + pos); }
@@ -1637,8 +1650,8 @@ class Assembler : public AssemblerBase {
   friend class RelocInfo;
   friend class CodePatcher;
   friend class BlockConstPoolScope;
-  PositionsRecorder positions_recorder_;
-  friend class PositionsRecorder;
+  AssemblerPositionsRecorder positions_recorder_;
+  friend class AssemblerPositionsRecorder;
   friend class EnsureSpace;
 };
 

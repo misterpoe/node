@@ -11,6 +11,7 @@
 #include "include/v8-debug.h"
 #include "src/allocation.h"
 #include "src/assert-scope.h"
+#include "src/base/accounting-allocator.h"
 #include "src/base/atomicops.h"
 #include "src/builtins.h"
 #include "src/cancelable-task.h"
@@ -26,8 +27,8 @@
 #include "src/messages.h"
 #include "src/optimizing-compile-dispatcher.h"
 #include "src/regexp/regexp-stack.h"
-#include "src/runtime/runtime.h"
 #include "src/runtime-profiler.h"
+#include "src/runtime/runtime.h"
 #include "src/zone.h"
 
 namespace v8 {
@@ -178,6 +179,20 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
   C(ExternalCaughtException, external_caught_exception) \
   C(JSEntrySP, js_entry_sp)
 
+#define FOR_WITH_HANDLE_SCOPE(isolate, loop_var_type, init, loop_var,      \
+                              limit_check, increment, body)                \
+  do {                                                                     \
+    loop_var_type init;                                                    \
+    loop_var_type for_with_handle_limit = loop_var;                        \
+    Isolate* for_with_handle_isolate = isolate;                            \
+    while (limit_check) {                                                  \
+      for_with_handle_limit += 1024;                                       \
+      HandleScope loop_scope(for_with_handle_isolate);                     \
+      for (; limit_check && loop_var < for_with_handle_limit; increment) { \
+        body                                                               \
+      }                                                                    \
+    }                                                                      \
+  } while (false)
 
 // Platform-independent, reliable thread identifier.
 class ThreadId {
@@ -378,7 +393,6 @@ typedef List<HeapObject*> DebugObjectCache;
   V(HashMap*, external_reference_map, NULL)                                    \
   V(HashMap*, root_index_map, NULL)                                            \
   V(int, pending_microtask_count, 0)                                           \
-  V(bool, autorun_microtasks, true)                                            \
   V(HStatistics*, hstatistics, NULL)                                           \
   V(CompilationStatistics*, turbo_statistics, NULL)                            \
   V(HTracer*, htracer, NULL)                                                   \
@@ -479,14 +493,6 @@ class Isolate {
         base::Thread::GetExistingThreadLocal(isolate_key_));
     DCHECK(isolate != NULL);
     return isolate;
-  }
-
-  // Like Current, but skips the check that |isolate_key_| was initialized.
-  // Callers have to ensure that themselves.
-  // DO NOT USE. The only remaining callsite will be deleted soon.
-  INLINE(static Isolate* UnsafeCurrent()) {
-    return reinterpret_cast<Isolate*>(
-        base::Thread::GetThreadLocal(isolate_key_));
   }
 
   // Usually called by Init(), but can be called early e.g. to allow
@@ -619,9 +625,7 @@ class Isolate {
   inline Handle<JSGlobalObject> global_object();
 
   // Returns the global proxy object of the current context.
-  JSObject* global_proxy() {
-    return context()->global_proxy();
-  }
+  inline Handle<JSObject> global_proxy();
 
   static int ArchiveSpacePerThread() { return sizeof(ThreadLocalTop); }
   void FreeThreadResources() { thread_local_top_.Free(); }
@@ -668,12 +672,12 @@ class Isolate {
   Handle<JSArray> CaptureCurrentStackTrace(
       int frame_limit,
       StackTrace::StackTraceOptions options);
-  Handle<Object> CaptureSimpleStackTrace(Handle<JSObject> error_object,
+  Handle<Object> CaptureSimpleStackTrace(Handle<JSReceiver> error_object,
                                          Handle<Object> caller);
-  MaybeHandle<JSObject> CaptureAndSetDetailedStackTrace(
-      Handle<JSObject> error_object);
-  MaybeHandle<JSObject> CaptureAndSetSimpleStackTrace(
-      Handle<JSObject> error_object, Handle<Object> caller);
+  MaybeHandle<JSReceiver> CaptureAndSetDetailedStackTrace(
+      Handle<JSReceiver> error_object);
+  MaybeHandle<JSReceiver> CaptureAndSetSimpleStackTrace(
+      Handle<JSReceiver> error_object, Handle<Object> caller);
   Handle<JSArray> GetDetailedStackTrace(Handle<JSObject> error_object);
   Handle<JSArray> GetDetailedFromSimpleStackTrace(
       Handle<JSObject> error_object);
@@ -803,7 +807,6 @@ class Isolate {
     DCHECK(counters_ != NULL);
     return counters_;
   }
-  CodeRange* code_range() { return code_range_; }
   RuntimeProfiler* runtime_profiler() { return runtime_profiler_; }
   CompilationCache* compilation_cache() { return compilation_cache_; }
   Logger* logger() {
@@ -825,10 +828,6 @@ class Isolate {
   ThreadLocalTop* thread_local_top() { return &thread_local_top_; }
   MaterializedObjectStore* materialized_object_store() {
     return materialized_object_store_;
-  }
-
-  MemoryAllocator* memory_allocator() {
-    return memory_allocator_;
   }
 
   KeyedLookupCache* keyed_lookup_cache() {
@@ -953,8 +952,7 @@ class Isolate {
     date_cache_ = date_cache;
   }
 
-  Map* get_initial_js_array_map(ElementsKind kind,
-                                Strength strength = Strength::WEAK);
+  Map* get_initial_js_array_map(ElementsKind kind);
 
   static const int kArrayProtectorValid = 1;
   static const int kArrayProtectorInvalid = 0;
@@ -996,13 +994,6 @@ class Isolate {
     DCHECK(optimizing_compile_dispatcher_ == NULL ||
            FLAG_concurrent_recompilation);
     return optimizing_compile_dispatcher_ != NULL;
-  }
-
-  bool concurrent_osr_enabled() const {
-    // Thread is only available with flag enabled.
-    DCHECK(optimizing_compile_dispatcher_ == NULL ||
-           FLAG_concurrent_recompilation);
-    return optimizing_compile_dispatcher_ != NULL && FLAG_concurrent_osr;
   }
 
   OptimizingCompileDispatcher* optimizing_compile_dispatcher() {
@@ -1061,12 +1052,17 @@ class Isolate {
   void RemoveBeforeCallEnteredCallback(BeforeCallEnteredCallback callback);
   void FireBeforeCallEnteredCallback();
 
+  void AddMicrotasksCompletedCallback(MicrotasksCompletedCallback callback);
+  void RemoveMicrotasksCompletedCallback(MicrotasksCompletedCallback callback);
+  void FireMicrotasksCompletedCallback();
+
   void SetPromiseRejectCallback(PromiseRejectCallback callback);
   void ReportPromiseReject(Handle<JSObject> promise, Handle<Object> value,
                            v8::PromiseRejectEvent event);
 
   void EnqueueMicrotask(Handle<Object> microtask);
   void RunMicrotasks();
+  bool IsRunningMicrotasks() const { return is_running_microtasks_; }
 
   void SetUseCounterCallback(v8::Isolate::UseCounterCallback callback);
   void CountUsage(v8::Isolate::UseCounterFeature feature);
@@ -1080,6 +1076,14 @@ class Isolate {
   int GetNextUniqueSharedFunctionInfoId() { return next_unique_sfi_id_++; }
 #endif
 
+  // Support for dynamically disabling tail call elimination.
+  Address is_tail_call_elimination_enabled_address() {
+    return reinterpret_cast<Address>(&is_tail_call_elimination_enabled_);
+  }
+  bool is_tail_call_elimination_enabled() const {
+    return is_tail_call_elimination_enabled_;
+  }
+  void SetTailCallEliminationEnabled(bool enabled);
 
   void AddDetachedContext(Handle<Context> context);
   void CheckDetachedContextsAfterGC();
@@ -1100,6 +1104,8 @@ class Isolate {
   }
 
   interpreter::Interpreter* interpreter() const { return interpreter_; }
+
+  base::AccountingAllocator* allocator() { return &allocator_; }
 
  protected:
   explicit Isolate(bool enable_serializer);
@@ -1209,6 +1215,8 @@ class Isolate {
   // the frame.
   void RemoveMaterializedObjectsOnUnwind(StackFrame* frame);
 
+  void RunMicrotasksInternal();
+
   base::Atomic32 id_;
   EntryStackItem* entry_stack_;
   int stack_trace_nesting_level_;
@@ -1218,7 +1226,6 @@ class Isolate {
   RuntimeProfiler* runtime_profiler_;
   CompilationCache* compilation_cache_;
   Counters* counters_;
-  CodeRange* code_range_;
   base::RecursiveMutex break_access_;
   Logger* logger_;
   StackGuard stack_guard_;
@@ -1232,13 +1239,13 @@ class Isolate {
   bool capture_stack_trace_for_uncaught_exceptions_;
   int stack_trace_for_uncaught_exceptions_frame_limit_;
   StackTrace::StackTraceOptions stack_trace_for_uncaught_exceptions_options_;
-  MemoryAllocator* memory_allocator_;
   KeyedLookupCache* keyed_lookup_cache_;
   ContextSlotCache* context_slot_cache_;
   DescriptorLookupCache* descriptor_lookup_cache_;
   HandleScopeData handle_scope_data_;
   HandleScopeImplementer* handle_scope_implementer_;
   UnicodeCache* unicode_cache_;
+  base::AccountingAllocator allocator_;
   Zone runtime_zone_;
   Zone interface_descriptor_zone_;
   InnerPointerToCodeCache* inner_pointer_to_code_cache_;
@@ -1265,6 +1272,9 @@ class Isolate {
 
   // True if this isolate was initialized from a snapshot.
   bool initialized_from_snapshot_;
+
+  // True if ES2015 tail call elimination feature is enabled.
+  bool is_tail_call_elimination_enabled_;
 
   // Time stamp at initialization.
   double time_millis_at_init_;
@@ -1330,6 +1340,10 @@ class Isolate {
   // List of callbacks when a Call completes.
   List<CallCompletedCallback> call_completed_callbacks_;
 
+  // List of callbacks after microtasks were run.
+  List<MicrotasksCompletedCallback> microtasks_completed_callbacks_;
+  bool is_running_microtasks_;
+
   v8::Isolate::UseCounterCallback use_counter_callback_;
   BasicBlockProfiler* basic_block_profiler_;
 
@@ -1352,12 +1366,12 @@ class Isolate {
   friend class Simulator;
   friend class StackGuard;
   friend class ThreadId;
-  friend class TestMemoryAllocatorScope;
-  friend class TestCodeRangeScope;
   friend class v8::Isolate;
   friend class v8::Locker;
   friend class v8::Unlocker;
   friend v8::StartupData v8::V8::CreateSnapshotDataBlob(const char*);
+  friend v8::StartupData v8::V8::WarmUpSnapshotDataBlob(v8::StartupData,
+                                                        const char*);
 
   DISALLOW_COPY_AND_ASSIGN(Isolate);
 };

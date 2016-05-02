@@ -18,6 +18,9 @@ namespace compiler {
 class Node;
 class JSGraph;
 class Graph;
+class Operator;
+class SourcePositionTable;
+class WasmCompilationUnit;
 }
 
 namespace wasm {
@@ -33,14 +36,16 @@ typedef compiler::JSGraph TFGraph;
 
 namespace compiler {
 // Compiles a single function, producing a code object.
-Handle<Code> CompileWasmFunction(wasm::ErrorThrower& thrower, Isolate* isolate,
+Handle<Code> CompileWasmFunction(wasm::ErrorThrower* thrower, Isolate* isolate,
                                  wasm::ModuleEnv* module_env,
-                                 const wasm::WasmFunction& function);
+                                 const wasm::WasmFunction* function);
 
 // Wraps a JS function, producing a code object that can be called from WASM.
 Handle<Code> CompileWasmToJSWrapper(Isolate* isolate, wasm::ModuleEnv* module,
                                     Handle<JSFunction> function,
-                                    wasm::FunctionSig* sig, const char* name);
+                                    wasm::FunctionSig* sig,
+                                    wasm::WasmName module_name,
+                                    wasm::WasmName function_name);
 
 // Wraps a given wasm code object, producing a JSFunction that can be called
 // from JavaScript.
@@ -48,12 +53,24 @@ Handle<JSFunction> CompileJSToWasmWrapper(
     Isolate* isolate, wasm::ModuleEnv* module, Handle<String> name,
     Handle<Code> wasm_code, Handle<JSObject> module_object, uint32_t index);
 
+WasmCompilationUnit* CreateWasmCompilationUnit(
+    wasm::ErrorThrower* thrower, Isolate* isolate, wasm::ModuleEnv* module_env,
+    const wasm::WasmFunction* function);
+
+void ExecuteCompilation(WasmCompilationUnit* unit);
+
+int GetIndexOfWasmCompilationUnit(WasmCompilationUnit* unit);
+
+Handle<Code> FinishCompilation(WasmCompilationUnit* unit);
+
 // Abstracts details of building TurboFan graph nodes for WASM to separate
 // the WASM decoder from the internal details of TurboFan.
 class WasmTrapHelper;
 class WasmGraphBuilder {
  public:
-  WasmGraphBuilder(Zone* z, JSGraph* g, wasm::FunctionSig* function_signature);
+  WasmGraphBuilder(
+      Zone* z, JSGraph* g, wasm::FunctionSig* function_signature,
+      compiler::SourcePositionTable* source_position_table = nullptr);
 
   Node** Buffer(size_t count) {
     if (count > cur_bufsize_) {
@@ -76,6 +93,7 @@ class WasmGraphBuilder {
   Node* Merge(unsigned count, Node** controls);
   Node* Phi(wasm::LocalType type, unsigned count, Node** vals, Node* control);
   Node* EffectPhi(unsigned count, Node** effects, Node* control);
+  Node* NumberConstant(int32_t value);
   Node* Int32Constant(int32_t value);
   Node* Int64Constant(int64_t value);
   Node* Float32Constant(float value);
@@ -105,6 +123,7 @@ class WasmGraphBuilder {
   void BuildJSToWasmWrapper(Handle<Code> wasm_code, wasm::FunctionSig* sig);
   void BuildWasmToJSWrapper(Handle<JSFunction> function,
                             wasm::FunctionSig* sig);
+
   Node* ToJS(Node* node, Node* context, wasm::LocalType type);
   Node* FromJS(Node* node, Node* context, wasm::LocalType type);
   Node* Invert(Node* node);
@@ -135,6 +154,8 @@ class WasmGraphBuilder {
 
   void Int64LoweringForTesting();
 
+  void SetSourcePosition(Node* node, int position);
+
  private:
   static const int kDefaultBufferSize = 16;
   friend class WasmTrapHelper;
@@ -153,6 +174,9 @@ class WasmGraphBuilder {
 
   WasmTrapHelper* trap_;
   wasm::FunctionSig* function_signature_;
+  SetOncePointer<const Operator> allocate_heap_number_operator_;
+
+  compiler::SourcePositionTable* source_position_table_ = nullptr;
 
   // Internal helper methods.
   JSGraph* jsgraph() { return jsgraph_; }
@@ -162,8 +186,12 @@ class WasmGraphBuilder {
   Node* MemBuffer(uint32_t offset);
   void BoundsCheckMem(MachineType memtype, Node* index, uint32_t offset);
 
+  Node* MaskShiftCount32(Node* node);
+  Node* MaskShiftCount64(Node* node);
+
   Node* BuildCCall(MachineSignature* sig, Node** args);
   Node* BuildWasmCall(wasm::FunctionSig* sig, Node** args);
+
   Node* BuildF32Neg(Node* input);
   Node* BuildF64Neg(Node* input);
   Node* BuildF32CopySign(Node* left, Node* right);
@@ -180,8 +208,11 @@ class WasmGraphBuilder {
   Node* BuildI32Popcnt(Node* input);
   Node* BuildI64Ctz(Node* input);
   Node* BuildI64Popcnt(Node* input);
-  Node* BuildRoundingInstruction(Node* input, ExternalReference ref,
-                                 MachineType type);
+  Node* BuildBitCountingCall(Node* input, ExternalReference ref,
+                             MachineRepresentation input_type);
+
+  Node* BuildCFuncInstruction(ExternalReference ref, MachineType type,
+                              Node* input0, Node* input1 = nullptr);
   Node* BuildF32Trunc(Node* input);
   Node* BuildF32Floor(Node* input);
   Node* BuildF32Ceil(Node* input);
@@ -190,10 +221,70 @@ class WasmGraphBuilder {
   Node* BuildF64Floor(Node* input);
   Node* BuildF64Ceil(Node* input);
   Node* BuildF64NearestInt(Node* input);
+  Node* BuildI32Rol(Node* left, Node* right);
+  Node* BuildI64Rol(Node* left, Node* right);
 
-  Node** Realloc(Node** buffer, size_t count) {
-    Node** buf = Buffer(count);
-    if (buf != buffer) memcpy(buf, buffer, count * sizeof(Node*));
+  Node* BuildF64Acos(Node* input);
+  Node* BuildF64Asin(Node* input);
+  Node* BuildF64Atan(Node* input);
+  Node* BuildF64Cos(Node* input);
+  Node* BuildF64Sin(Node* input);
+  Node* BuildF64Tan(Node* input);
+  Node* BuildF64Exp(Node* input);
+  Node* BuildF64Log(Node* input);
+  Node* BuildF64Pow(Node* left, Node* right);
+  Node* BuildF64Atan2(Node* left, Node* right);
+  Node* BuildF64Mod(Node* left, Node* right);
+
+  Node* BuildIntToFloatConversionInstruction(
+      Node* input, ExternalReference ref,
+      MachineRepresentation parameter_representation,
+      const MachineType result_type);
+  Node* BuildF32SConvertI64(Node* input);
+  Node* BuildF32UConvertI64(Node* input);
+  Node* BuildF64SConvertI64(Node* input);
+  Node* BuildF64UConvertI64(Node* input);
+
+  Node* BuildFloatToIntConversionInstruction(
+      Node* input, ExternalReference ref,
+      MachineRepresentation parameter_representation,
+      const MachineType result_type);
+  Node* BuildI64SConvertF32(Node* input);
+  Node* BuildI64UConvertF32(Node* input);
+  Node* BuildI64SConvertF64(Node* input);
+  Node* BuildI64UConvertF64(Node* input);
+
+  Node* BuildI32DivS(Node* left, Node* right);
+  Node* BuildI32RemS(Node* left, Node* right);
+  Node* BuildI32DivU(Node* left, Node* right);
+  Node* BuildI32RemU(Node* left, Node* right);
+
+  Node* BuildI64DivS(Node* left, Node* right);
+  Node* BuildI64RemS(Node* left, Node* right);
+  Node* BuildI64DivU(Node* left, Node* right);
+  Node* BuildI64RemU(Node* left, Node* right);
+  Node* BuildDiv64Call(Node* left, Node* right, ExternalReference ref,
+                       MachineType result_type, int trap_zero);
+
+  Node* BuildJavaScriptToNumber(Node* node, Node* context, Node* effect,
+                                Node* control);
+  Node* BuildChangeInt32ToTagged(Node* value);
+  Node* BuildChangeFloat64ToTagged(Node* value);
+  Node* BuildChangeTaggedToFloat64(Node* value);
+
+  Node* BuildChangeInt32ToSmi(Node* value);
+  Node* BuildChangeSmiToInt32(Node* value);
+  Node* BuildChangeSmiToFloat64(Node* value);
+  Node* BuildTestNotSmi(Node* value);
+  Node* BuildSmiShiftBitsConstant();
+
+  Node* BuildAllocateHeapNumberWithValue(Node* value, Node* control);
+  Node* BuildLoadHeapNumberValue(Node* value, Node* control);
+  Node* BuildHeapNumberValueIndexConstant();
+
+  Node** Realloc(Node** buffer, size_t old_count, size_t new_count) {
+    Node** buf = Buffer(new_count);
+    if (buf != buffer) memcpy(buf, buffer, old_count * sizeof(Node*));
     return buf;
   }
 };

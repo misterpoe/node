@@ -39,8 +39,8 @@ using namespace v8::internal;
 
 static Handle<Object> GetGlobalProperty(const char* name) {
   Isolate* isolate = CcTest::i_isolate();
-  return Object::GetProperty(
-      isolate, isolate->global_object(), name).ToHandleChecked();
+  return JSReceiver::GetProperty(isolate, isolate->global_object(), name)
+      .ToHandleChecked();
 }
 
 
@@ -59,12 +59,12 @@ static Handle<JSFunction> Compile(const char* source) {
   Isolate* isolate = CcTest::i_isolate();
   Handle<String> source_code = isolate->factory()->NewStringFromUtf8(
       CStrVector(source)).ToHandleChecked();
-  Handle<SharedFunctionInfo> shared_function = Compiler::CompileScript(
+  Handle<SharedFunctionInfo> shared = Compiler::GetSharedFunctionInfoForScript(
       source_code, Handle<String>(), 0, 0, v8::ScriptOriginOptions(),
       Handle<Object>(), Handle<Context>(isolate->native_context()), NULL, NULL,
       v8::ScriptCompiler::kNoCompileOptions, NOT_NATIVES_CODE, false);
   return isolate->factory()->NewFunctionFromSharedFunctionInfo(
-      shared_function, isolate->native_context());
+      shared, isolate->native_context());
 }
 
 
@@ -227,10 +227,9 @@ TEST(C2JSFrames) {
   Handle<JSObject> global(isolate->context()->global_object());
   Execution::Call(isolate, fun0, global, 0, NULL).Check();
 
-  Handle<String> foo_string =
-      isolate->factory()->InternalizeOneByteString(STATIC_CHAR_VECTOR("foo"));
-  Handle<Object> fun1 = Object::GetProperty(
-      isolate->global_object(), foo_string).ToHandleChecked();
+  Handle<Object> fun1 =
+      JSReceiver::GetProperty(isolate, isolate->global_object(), "foo")
+          .ToHandleChecked();
   CHECK(fun1->IsJSFunction());
 
   Handle<Object> argv[] = {isolate->factory()->InternalizeOneByteString(
@@ -328,7 +327,10 @@ TEST(FeedbackVectorPreservedAcrossRecompiles) {
 
 
 TEST(FeedbackVectorUnaffectedByScopeChanges) {
-  if (i::FLAG_always_opt || !i::FLAG_lazy) return;
+  if (i::FLAG_always_opt || !i::FLAG_lazy ||
+      (FLAG_ignition && FLAG_ignition_eager)) {
+    return;
+  }
   CcTest::InitializeVM();
   v8::HandleScope scope(CcTest::isolate());
   v8::Local<v8::Context> context = CcTest::isolate()->GetCurrentContext();
@@ -350,7 +352,8 @@ TEST(FeedbackVectorUnaffectedByScopeChanges) {
                                          ->Get(context, v8_str("morphing_call"))
                                          .ToLocalChecked())));
 
-  // Not compiled, and so no feedback vector allocated yet.
+  // If we are compiling lazily then it should not be compiled, and so no
+  // feedback vector allocated yet.
   CHECK(!f->shared()->is_compiled());
   CHECK(f->shared()->feedback_vector()->is_empty());
 
@@ -361,9 +364,7 @@ TEST(FeedbackVectorUnaffectedByScopeChanges) {
   CHECK(!f->shared()->feedback_vector()->is_empty());
 }
 
-
-// Test that optimized code for different closures is actually shared
-// immediately by the FastNewClosureStub when run in the same context.
+// Test that optimized code for different closures is actually shared.
 TEST(OptimizedCodeSharing1) {
   FLAG_stress_compaction = false;
   FLAG_allow_natives_syntax = true;
@@ -382,8 +383,8 @@ TEST(OptimizedCodeSharing1) {
         "%DebugPrint(closure0());"
         "%OptimizeFunctionOnNextCall(closure0);"
         "%DebugPrint(closure0());"
-        "var closure1 = MakeClosure();"
-        "var closure2 = MakeClosure();");
+        "var closure1 = MakeClosure(); closure1();"
+        "var closure2 = MakeClosure(); closure2();");
     Handle<JSFunction> fun1 = Handle<JSFunction>::cast(
         v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(
             env->Global()
@@ -400,9 +401,7 @@ TEST(OptimizedCodeSharing1) {
   }
 }
 
-
-// Test that optimized code for different closures is actually shared
-// immediately by the FastNewClosureStub when run different contexts.
+// Test that optimized code for different closures is actually shared.
 TEST(OptimizedCodeSharing2) {
   if (FLAG_stress_compaction) return;
   FLAG_allow_natives_syntax = true;
@@ -453,8 +452,8 @@ TEST(OptimizedCodeSharing2) {
         "%DebugPrint(closure0());"
         "%OptimizeFunctionOnNextCall(closure0);"
         "%DebugPrint(closure0());"
-        "var closure1 = MakeClosure();"
-        "var closure2 = MakeClosure();");
+        "var closure1 = MakeClosure(); closure1();"
+        "var closure2 = MakeClosure(); closure2();");
     Handle<JSFunction> fun1 = Handle<JSFunction>::cast(
         v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(
             env->Global()
@@ -472,9 +471,7 @@ TEST(OptimizedCodeSharing2) {
   }
 }
 
-
-// Test that optimized code for different closures is actually shared
-// immediately by the FastNewClosureStub without context-dependent entries.
+// Test that optimized code for different closures is actually shared.
 TEST(OptimizedCodeSharing3) {
   if (FLAG_stress_compaction) return;
   FLAG_allow_natives_syntax = true;
@@ -528,8 +525,8 @@ TEST(OptimizedCodeSharing3) {
         "%DebugPrint(closure0());"
         "%OptimizeFunctionOnNextCall(closure0);"
         "%DebugPrint(closure0());"
-        "var closure1 = MakeClosure();"
-        "var closure2 = MakeClosure();");
+        "var closure1 = MakeClosure(); closure1();"
+        "var closure2 = MakeClosure(); closure2();");
     Handle<JSFunction> fun1 = Handle<JSFunction>::cast(
         v8::Utils::OpenHandle(*v8::Local<v8::Function>::Cast(
             env->Global()

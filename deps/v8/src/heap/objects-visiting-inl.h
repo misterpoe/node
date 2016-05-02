@@ -90,6 +90,11 @@ void StaticNewSpaceVisitor<StaticVisitor>::Initialize() {
 
   table_.template RegisterSpecializations<JSObjectVisitor, kVisitJSObject,
                                           kVisitJSObjectGeneric>();
+
+  // Not using specialized Api object visitor for newspace.
+  table_.template RegisterSpecializations<JSObjectVisitor, kVisitJSApiObject,
+                                          kVisitJSApiObjectGeneric>();
+
   table_.template RegisterSpecializations<StructVisitor, kVisitStruct,
                                           kVisitStructGeneric>();
 }
@@ -200,6 +205,9 @@ void StaticMarkingVisitor<StaticVisitor>::Initialize() {
   table_.template RegisterSpecializations<JSObjectVisitor, kVisitJSObject,
                                           kVisitJSObjectGeneric>();
 
+  table_.template RegisterSpecializations<JSApiObjectVisitor, kVisitJSApiObject,
+                                          kVisitJSApiObjectGeneric>();
+
   table_.template RegisterSpecializations<StructObjectVisitor, kVisitStruct,
                                           kVisitStructGeneric>();
 }
@@ -220,11 +228,12 @@ void StaticMarkingVisitor<StaticVisitor>::VisitEmbeddedPointer(
     Heap* heap, RelocInfo* rinfo) {
   DCHECK(rinfo->rmode() == RelocInfo::EMBEDDED_OBJECT);
   HeapObject* object = HeapObject::cast(rinfo->target_object());
-  heap->mark_compact_collector()->RecordRelocSlot(rinfo, object);
+  Code* host = rinfo->host();
+  heap->mark_compact_collector()->RecordRelocSlot(host, rinfo, object);
   // TODO(ulan): It could be better to record slots only for strongly embedded
   // objects here and record slots for weakly embedded object during clearing
   // of non-live references in mark-compact.
-  if (!rinfo->host()->IsWeakObject(object)) {
+  if (!host->IsWeakObject(object)) {
     StaticVisitor::MarkObject(heap, object);
   }
 }
@@ -235,8 +244,9 @@ void StaticMarkingVisitor<StaticVisitor>::VisitCell(Heap* heap,
                                                     RelocInfo* rinfo) {
   DCHECK(rinfo->rmode() == RelocInfo::CELL);
   Cell* cell = rinfo->target_cell();
-  heap->mark_compact_collector()->RecordRelocSlot(rinfo, cell);
-  if (!rinfo->host()->IsWeakObject(cell)) {
+  Code* host = rinfo->host();
+  heap->mark_compact_collector()->RecordRelocSlot(host, rinfo, cell);
+  if (!host->IsWeakObject(cell)) {
     StaticVisitor::MarkObject(heap, cell);
   }
 }
@@ -248,7 +258,8 @@ void StaticMarkingVisitor<StaticVisitor>::VisitDebugTarget(Heap* heap,
   DCHECK(RelocInfo::IsDebugBreakSlot(rinfo->rmode()) &&
          rinfo->IsPatchedDebugBreakSlotSequence());
   Code* target = Code::GetCodeFromTargetAddress(rinfo->debug_call_address());
-  heap->mark_compact_collector()->RecordRelocSlot(rinfo, target);
+  Code* host = rinfo->host();
+  heap->mark_compact_collector()->RecordRelocSlot(host, rinfo, target);
   StaticVisitor::MarkObject(heap, target);
 }
 
@@ -262,13 +273,14 @@ void StaticMarkingVisitor<StaticVisitor>::VisitCodeTarget(Heap* heap,
   // when they might be keeping a Context alive, or when the heap is about
   // to be serialized.
   if (FLAG_cleanup_code_caches_at_gc && target->is_inline_cache_stub() &&
-      !target->is_call_stub() && (heap->isolate()->serializer_enabled() ||
-                                  target->ic_age() != heap->global_ic_age())) {
+      (heap->isolate()->serializer_enabled() ||
+       target->ic_age() != heap->global_ic_age())) {
     ICUtility::Clear(heap->isolate(), rinfo->pc(),
                      rinfo->host()->constant_pool());
     target = Code::GetCodeFromTargetAddress(rinfo->target_address());
   }
-  heap->mark_compact_collector()->RecordRelocSlot(rinfo, target);
+  Code* host = rinfo->host();
+  heap->mark_compact_collector()->RecordRelocSlot(host, rinfo, target);
   StaticVisitor::MarkObject(heap, target);
 }
 
@@ -279,7 +291,8 @@ void StaticMarkingVisitor<StaticVisitor>::VisitCodeAgeSequence(
   DCHECK(RelocInfo::IsCodeAgeSequence(rinfo->rmode()));
   Code* target = rinfo->code_age_stub();
   DCHECK(target != NULL);
-  heap->mark_compact_collector()->RecordRelocSlot(rinfo, target);
+  Code* host = rinfo->host();
+  heap->mark_compact_collector()->RecordRelocSlot(host, rinfo, target);
   StaticVisitor::MarkObject(heap, target);
 }
 
@@ -620,8 +633,7 @@ bool StaticMarkingVisitor<StaticVisitor>::IsFlushable(
   }
 
   // We never flush code for API functions.
-  Object* function_data = shared_info->function_data();
-  if (function_data->IsFunctionTemplateInfo()) {
+  if (shared_info->IsApiFunction()) {
     return false;
   }
 

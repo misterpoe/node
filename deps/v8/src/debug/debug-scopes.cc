@@ -19,7 +19,6 @@ ScopeIterator::ScopeIterator(Isolate* isolate, FrameInspector* frame_inspector,
     : isolate_(isolate),
       frame_inspector_(frame_inspector),
       nested_scope_chain_(4),
-      non_locals_(nullptr),
       seen_script_scope_(false),
       failed_(false) {
   if (!frame_inspector->GetContext()->IsContext() ||
@@ -73,7 +72,9 @@ ScopeIterator::ScopeIterator(Isolate* isolate, FrameInspector* frame_inspector,
       }
     }
     if (scope_info->scope_type() == FUNCTION_SCOPE) {
-      nested_scope_chain_.Add(scope_info);
+      nested_scope_chain_.Add(ExtendedScopeInfo(scope_info,
+                                                shared_info->start_position(),
+                                                shared_info->end_position()));
     }
     if (!collect_non_locals) return;
   }
@@ -81,7 +82,7 @@ ScopeIterator::ScopeIterator(Isolate* isolate, FrameInspector* frame_inspector,
   // Reparse the code and analyze the scopes.
   Scope* scope = NULL;
   // Check whether we are in global, eval or function code.
-  Zone zone;
+  Zone zone(isolate->allocator());
   if (scope_info->scope_type() != FUNCTION_SCOPE) {
     // Global or eval code.
     Handle<Script> script(Script::cast(shared_info->script()));
@@ -107,6 +108,7 @@ ScopeIterator::ScopeIterator(Isolate* isolate, FrameInspector* frame_inspector,
     if (!ignore_nested_scopes) RetrieveScopeChain(scope);
     if (collect_non_locals) CollectNonLocals(scope);
   }
+  UnwrapEvaluationContext();
 }
 
 
@@ -114,10 +116,26 @@ ScopeIterator::ScopeIterator(Isolate* isolate, Handle<JSFunction> function)
     : isolate_(isolate),
       frame_inspector_(NULL),
       context_(function->context()),
-      non_locals_(nullptr),
       seen_script_scope_(false),
       failed_(false) {
   if (!function->shared()->IsSubjectToDebugging()) context_ = Handle<Context>();
+  UnwrapEvaluationContext();
+}
+
+void ScopeIterator::UnwrapEvaluationContext() {
+  while (true) {
+    if (context_.is_null()) return;
+    if (!context_->IsDebugEvaluateContext()) return;
+    // An existing debug-evaluate context can only be outside the local scope.
+    DCHECK(nested_scope_chain_.is_empty());
+    Handle<Object> wrapped(context_->get(Context::WRAPPED_CONTEXT_INDEX),
+                           isolate_);
+    if (wrapped->IsContext()) {
+      context_ = Handle<Context>::cast(wrapped);
+    } else {
+      context_ = Handle<Context>(context_->previous(), isolate_);
+    }
+  }
 }
 
 
@@ -130,11 +148,32 @@ MUST_USE_RESULT MaybeHandle<JSObject> ScopeIterator::MaterializeScopeDetails() {
   Handle<JSObject> scope_object;
   ASSIGN_RETURN_ON_EXCEPTION(isolate_, scope_object, ScopeObject(), JSObject);
   details->set(kScopeDetailsObjectIndex, *scope_object);
-  if (HasContext() && CurrentContext()->closure() != NULL) {
-    Handle<String> closure_name = JSFunction::GetDebugName(
-        Handle<JSFunction>(CurrentContext()->closure()));
-    if (!closure_name.is_null() && (closure_name->length() != 0))
+  Handle<JSFunction> js_function = HasContext()
+                                       ? handle(CurrentContext()->closure())
+                                       : Handle<JSFunction>::null();
+  if (Type() == ScopeTypeGlobal || Type() == ScopeTypeScript) {
+    return isolate_->factory()->NewJSArrayWithElements(details);
+  }
+
+  int start_position = 0;
+  int end_position = 0;
+  if (!nested_scope_chain_.is_empty()) {
+    js_function = GetFunction();
+    start_position = nested_scope_chain_.last().start_position;
+    end_position = nested_scope_chain_.last().end_position;
+  } else if (!js_function.is_null()) {
+    start_position = js_function->shared()->start_position();
+    end_position = js_function->shared()->end_position();
+  }
+
+  if (!js_function.is_null()) {
+    Handle<String> closure_name = JSFunction::GetDebugName(js_function);
+    if (!closure_name.is_null() && closure_name->length() != 0) {
       details->set(kScopeDetailsNameIndex, *closure_name);
+    }
+    details->set(kScopeDetailsStartPositionIndex, Smi::FromInt(start_position));
+    details->set(kScopeDetailsEndPositionIndex, Smi::FromInt(end_position));
+    details->set(kScopeDetailsFunctionIndex, *js_function);
   }
   return isolate_->factory()->NewJSArrayWithElements(details);
 }
@@ -147,30 +186,28 @@ void ScopeIterator::Next() {
     // The global scope is always the last in the chain.
     DCHECK(context_->IsNativeContext());
     context_ = Handle<Context>();
-    return;
-  }
-  if (scope_type == ScopeTypeScript) {
+  } else if (scope_type == ScopeTypeScript) {
     seen_script_scope_ = true;
     if (context_->IsScriptContext()) {
       context_ = Handle<Context>(context_->previous(), isolate_);
     }
     if (!nested_scope_chain_.is_empty()) {
-      DCHECK_EQ(nested_scope_chain_.last()->scope_type(), SCRIPT_SCOPE);
+      DCHECK_EQ(nested_scope_chain_.last().scope_info->scope_type(),
+                SCRIPT_SCOPE);
       nested_scope_chain_.RemoveLast();
       DCHECK(nested_scope_chain_.is_empty());
     }
     CHECK(context_->IsNativeContext());
-    return;
-  }
-  if (nested_scope_chain_.is_empty()) {
+  } else if (nested_scope_chain_.is_empty()) {
     context_ = Handle<Context>(context_->previous(), isolate_);
   } else {
-    if (nested_scope_chain_.last()->HasContext()) {
+    if (nested_scope_chain_.last().scope_info->HasContext()) {
       DCHECK(context_->previous() != NULL);
       context_ = Handle<Context>(context_->previous(), isolate_);
     }
     nested_scope_chain_.RemoveLast();
   }
+  UnwrapEvaluationContext();
 }
 
 
@@ -178,7 +215,7 @@ void ScopeIterator::Next() {
 ScopeIterator::ScopeType ScopeIterator::Type() {
   DCHECK(!failed_);
   if (!nested_scope_chain_.is_empty()) {
-    Handle<ScopeInfo> scope_info = nested_scope_chain_.last();
+    Handle<ScopeInfo> scope_info = nested_scope_chain_.last().scope_info;
     switch (scope_info->scope_type()) {
       case FUNCTION_SCOPE:
         DCHECK(context_->IsFunctionContext() || !scope_info->HasContext());
@@ -190,7 +227,7 @@ ScopeIterator::ScopeType ScopeIterator::Type() {
         DCHECK(context_->IsScriptContext() || context_->IsNativeContext());
         return ScopeTypeScript;
       case WITH_SCOPE:
-        DCHECK(context_->IsWithContext());
+        DCHECK(context_->IsWithContext() || context_->IsDebugEvaluateContext());
         return ScopeTypeWith;
       case CATCH_SCOPE:
         DCHECK(context_->IsCatchContext());
@@ -223,7 +260,7 @@ ScopeIterator::ScopeType ScopeIterator::Type() {
   if (context_->IsScriptContext()) {
     return ScopeTypeScript;
   }
-  DCHECK(context_->IsWithContext());
+  DCHECK(context_->IsWithContext() || context_->IsDebugEvaluateContext());
   return ScopeTypeWith;
 }
 
@@ -240,9 +277,7 @@ MaybeHandle<JSObject> ScopeIterator::ScopeObject() {
       DCHECK(nested_scope_chain_.length() == 1);
       return MaterializeLocalScope();
     case ScopeIterator::ScopeTypeWith:
-      // Return the with object.
-      // TODO(neis): This breaks for proxies.
-      return handle(JSObject::cast(CurrentContext()->extension_receiver()));
+      return WithContextExtension();
     case ScopeIterator::ScopeTypeCatch:
       return MaterializeCatchScope();
     case ScopeIterator::ScopeTypeClosure:
@@ -262,7 +297,7 @@ bool ScopeIterator::HasContext() {
   ScopeType type = Type();
   if (type == ScopeTypeBlock || type == ScopeTypeLocal) {
     if (!nested_scope_chain_.is_empty()) {
-      return nested_scope_chain_.last()->HasContext();
+      return nested_scope_chain_.last().scope_info->HasContext();
     }
   }
   return true;
@@ -298,7 +333,7 @@ bool ScopeIterator::SetVariableValue(Handle<String> variable_name,
 Handle<ScopeInfo> ScopeIterator::CurrentScopeInfo() {
   DCHECK(!failed_);
   if (!nested_scope_chain_.is_empty()) {
-    return nested_scope_chain_.last();
+    return nested_scope_chain_.last().scope_info;
   } else if (context_->IsBlockContext()) {
     return Handle<ScopeInfo>(context_->scope_info());
   } else if (context_->IsFunctionContext()) {
@@ -313,33 +348,14 @@ Handle<Context> ScopeIterator::CurrentContext() {
   if (Type() == ScopeTypeGlobal || Type() == ScopeTypeScript ||
       nested_scope_chain_.is_empty()) {
     return context_;
-  } else if (nested_scope_chain_.last()->HasContext()) {
+  } else if (nested_scope_chain_.last().scope_info->HasContext()) {
     return context_;
   } else {
     return Handle<Context>();
   }
 }
 
-
-void ScopeIterator::GetNonLocals(List<Handle<String> >* list_out) {
-  Handle<String> this_string = isolate_->factory()->this_string();
-  for (HashMap::Entry* entry = non_locals_->Start(); entry != nullptr;
-       entry = non_locals_->Next(entry)) {
-    Handle<String> name(reinterpret_cast<String**>(entry->key));
-    // We need to treat "this" differently.
-    if (name.is_identical_to(this_string)) continue;
-    list_out->Add(Handle<String>(reinterpret_cast<String**>(entry->key)));
-  }
-}
-
-
-bool ScopeIterator::ThisIsNonLocal() {
-  Handle<String> this_string = isolate_->factory()->this_string();
-  void* key = reinterpret_cast<void*>(this_string.location());
-  HashMap::Entry* entry = non_locals_->Lookup(key, this_string->Hash());
-  return entry != nullptr;
-}
-
+Handle<StringSet> ScopeIterator::GetNonLocals() { return non_locals_; }
 
 #ifdef DEBUG
 // Debug print of the content of the current scope.
@@ -409,7 +425,7 @@ void ScopeIterator::DebugPrint() {
 void ScopeIterator::RetrieveScopeChain(Scope* scope) {
   if (scope != NULL) {
     int source_position = frame_inspector_->GetSourcePosition();
-    scope->GetNestedScopeChain(isolate_, &nested_scope_chain_, source_position);
+    GetNestedScopeChain(isolate_, scope, source_position);
   } else {
     // A failed reparse indicates that the preparser has diverged from the
     // parser or that the preparse data given to the initial parse has been
@@ -425,9 +441,8 @@ void ScopeIterator::RetrieveScopeChain(Scope* scope) {
 
 void ScopeIterator::CollectNonLocals(Scope* scope) {
   if (scope != NULL) {
-    DCHECK_NULL(non_locals_);
-    non_locals_ = new HashMap(InternalizedStringMatch);
-    scope->CollectNonLocals(non_locals_);
+    DCHECK(non_locals_.is_null());
+    non_locals_ = scope->CollectNonLocals(StringSet::New(isolate_));
   }
 }
 
@@ -438,7 +453,7 @@ MaybeHandle<JSObject> ScopeIterator::MaterializeScriptScope() {
       global->native_context()->script_context_table());
 
   Handle<JSObject> script_scope =
-      isolate_->factory()->NewJSObject(isolate_->object_function());
+      isolate_->factory()->NewJSObjectWithNullProto();
 
   for (int context_index = 0; context_index < script_contexts->used();
        context_index++) {
@@ -455,7 +470,7 @@ MaybeHandle<JSObject> ScopeIterator::MaterializeLocalScope() {
   Handle<JSFunction> function = GetFunction();
 
   Handle<JSObject> local_scope =
-      isolate_->factory()->NewJSObject(isolate_->object_function());
+      isolate_->factory()->NewJSObjectWithNullProto();
   frame_inspector_->MaterializeStackLocals(local_scope, function);
 
   Handle<Context> frame_context =
@@ -498,7 +513,7 @@ Handle<JSObject> ScopeIterator::MaterializeClosure() {
   // Allocate and initialize a JSObject with all the content of this function
   // closure.
   Handle<JSObject> closure_scope =
-      isolate_->factory()->NewJSObject(isolate_->object_function());
+      isolate_->factory()->NewJSObjectWithNullProto();
 
   // Fill all context locals to the context extension.
   CopyContextLocalsToScopeObject(scope_info, context, closure_scope);
@@ -525,23 +540,33 @@ Handle<JSObject> ScopeIterator::MaterializeCatchScope() {
   Handle<Object> thrown_object(context->get(Context::THROWN_OBJECT_INDEX),
                                isolate_);
   Handle<JSObject> catch_scope =
-      isolate_->factory()->NewJSObject(isolate_->object_function());
+      isolate_->factory()->NewJSObjectWithNullProto();
   JSObject::SetOwnPropertyIgnoreAttributes(catch_scope, name, thrown_object,
                                            NONE)
       .Check();
   return catch_scope;
 }
 
+// Retrieve the with-context extension object. If the extension object is
+// a proxy, return an empty object.
+Handle<JSObject> ScopeIterator::WithContextExtension() {
+  Handle<Context> context = CurrentContext();
+  DCHECK(context->IsWithContext());
+  if (context->extension_receiver()->IsJSProxy()) {
+    return isolate_->factory()->NewJSObjectWithNullProto();
+  }
+  return handle(JSObject::cast(context->extension_receiver()));
+}
 
 // Create a plain JSObject which materializes the block scope for the specified
 // block context.
 Handle<JSObject> ScopeIterator::MaterializeBlockScope() {
   Handle<JSObject> block_scope =
-      isolate_->factory()->NewJSObject(isolate_->object_function());
+      isolate_->factory()->NewJSObjectWithNullProto();
 
   Handle<Context> context = Handle<Context>::null();
   if (!nested_scope_chain_.is_empty()) {
-    Handle<ScopeInfo> scope_info = nested_scope_chain_.last();
+    Handle<ScopeInfo> scope_info = nested_scope_chain_.last().scope_info;
     frame_inspector_->MaterializeStackLocals(block_scope, scope_info);
     if (scope_info->HasContext()) context = CurrentContext();
   } else {
@@ -574,7 +599,7 @@ MaybeHandle<JSObject> ScopeIterator::MaterializeModuleScope() {
   // Allocate and initialize a JSObject with all the members of the debugged
   // module.
   Handle<JSObject> module_scope =
-      isolate_->factory()->NewJSObject(isolate_->object_function());
+      isolate_->factory()->NewJSObjectWithNullProto();
 
   // Fill all context locals.
   CopyContextLocalsToScopeObject(scope_info, context, module_scope);
@@ -776,19 +801,16 @@ void ScopeIterator::CopyContextLocalsToScopeObject(
   int local_count = scope_info->ContextLocalCount();
   if (local_count == 0) return;
   // Fill all context locals to the context extension.
-  int first_context_var = scope_info->StackLocalCount();
-  int start = scope_info->ContextLocalNameEntriesIndex();
   for (int i = 0; i < local_count; ++i) {
-    if (scope_info->LocalIsSynthetic(first_context_var + i)) continue;
+    Handle<String> name(scope_info->ContextLocalName(i));
+    if (ScopeInfo::VariableIsSynthetic(*name)) continue;
     int context_index = Context::MIN_CONTEXT_SLOTS + i;
     Handle<Object> value = Handle<Object>(context->get(context_index), isolate);
     // Reflect variables under TDZ as undefined in scope object.
     if (value->IsTheHole()) continue;
     // This should always succeed.
     // TODO(verwaest): Use AddDataProperty instead.
-    JSObject::SetOwnPropertyIgnoreAttributes(
-        scope_object, handle(String::cast(scope_info->get(i + start))), value,
-        NONE)
+    JSObject::SetOwnPropertyIgnoreAttributes(scope_object, name, value, NONE)
         .Check();
   }
 }
@@ -813,6 +835,25 @@ bool ScopeIterator::CopyContextExtensionToScopeObject(
             scope_object, key, value, NONE), false);
   }
   return true;
+}
+
+void ScopeIterator::GetNestedScopeChain(Isolate* isolate, Scope* scope,
+                                        int position) {
+  if (!scope->is_eval_scope() && !scope->is_hidden()) {
+    nested_scope_chain_.Add(ExtendedScopeInfo(scope->GetScopeInfo(isolate),
+                                              scope->start_position(),
+                                              scope->end_position()));
+  }
+  for (int i = 0; i < scope->inner_scopes()->length(); i++) {
+    Scope* inner_scope = scope->inner_scopes()->at(i);
+    int beg_pos = inner_scope->start_position();
+    int end_pos = inner_scope->end_position();
+    DCHECK((beg_pos >= 0 && end_pos >= 0) || inner_scope->is_hidden());
+    if (beg_pos <= position && position < end_pos) {
+      GetNestedScopeChain(isolate, inner_scope, position);
+      return;
+    }
+  }
 }
 
 }  // namespace internal

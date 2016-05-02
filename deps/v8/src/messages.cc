@@ -12,6 +12,16 @@
 namespace v8 {
 namespace internal {
 
+MessageLocation::MessageLocation(Handle<Script> script, int start_pos,
+                                 int end_pos)
+    : script_(script), start_pos_(start_pos), end_pos_(end_pos) {}
+MessageLocation::MessageLocation(Handle<Script> script, int start_pos,
+                                 int end_pos, Handle<JSFunction> function)
+    : script_(script),
+      start_pos_(start_pos),
+      end_pos_(end_pos),
+      function_(function) {}
+MessageLocation::MessageLocation() : start_pos_(-1), end_pos_(-1) {}
 
 // If no message listeners have been registered this one is called
 // by default.
@@ -236,9 +246,20 @@ Handle<Object> CallSite::GetMethodName() {
   Handle<Object> function_name(fun_->shared()->name(), isolate_);
   if (function_name->IsName()) {
     Handle<Name> name = Handle<Name>::cast(function_name);
+    // ES2015 gives getters and setters name prefixes which must
+    // be stripped to find the property name.
+    if (name->IsString() && FLAG_harmony_function_name) {
+      Handle<String> name_string = Handle<String>::cast(name);
+      if (name_string->IsUtf8EqualTo(CStrVector("get "), true) ||
+          name_string->IsUtf8EqualTo(CStrVector("set "), true)) {
+        name = isolate_->factory()->NewProperSubString(name_string, 4,
+                                                       name_string->length());
+      }
+    }
     if (CheckMethodName(isolate_, obj, name, fun_,
-                        LookupIterator::PROTOTYPE_CHAIN_SKIP_INTERCEPTOR))
+                        LookupIterator::PROTOTYPE_CHAIN_SKIP_INTERCEPTOR)) {
       return name;
+    }
   }
 
   HandleScope outer_scope(isolate_);

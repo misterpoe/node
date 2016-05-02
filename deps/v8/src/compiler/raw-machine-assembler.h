@@ -76,6 +76,7 @@ class RawMachineAssembler {
     return kPointerSize == 8 ? Int64Constant(value)
                              : Int32Constant(static_cast<int>(value));
   }
+  Node* RelocatableIntPtrConstant(intptr_t value, RelocInfo::Mode rmode);
   Node* Int32Constant(int32_t value) {
     return AddNode(common()->Int32Constant(value));
   }
@@ -104,6 +105,12 @@ class RawMachineAssembler {
   Node* ExternalConstant(ExternalReference address) {
     return AddNode(common()->ExternalConstant(address));
   }
+  Node* RelocatableInt32Constant(int32_t value, RelocInfo::Mode rmode) {
+    return AddNode(common()->RelocatableInt32Constant(value, rmode));
+  }
+  Node* RelocatableInt64Constant(int64_t value, RelocInfo::Mode rmode) {
+    return AddNode(common()->RelocatableInt64Constant(value, rmode));
+  }
 
   Node* Projection(int index, Node* a) {
     return AddNode(common()->Projection(index), a);
@@ -124,6 +131,11 @@ class RawMachineAssembler {
               WriteBarrierKind write_barrier) {
     return AddNode(machine()->Store(StoreRepresentation(rep, write_barrier)),
                    base, index, value);
+  }
+
+  // Atomic memory operations.
+  Node* AtomicLoad(MachineType rep, Node* base, Node* index) {
+    return AddNode(machine()->AtomicLoad(rep), base, index);
   }
 
   // Arithmetic Operations.
@@ -324,6 +336,24 @@ class RawMachineAssembler {
   Node* Uint64Mod(Node* a, Node* b) {
     return AddNode(machine()->Uint64Mod(), a, b);
   }
+  Node* Int32PairAdd(Node* a_low, Node* a_high, Node* b_low, Node* b_high) {
+    return AddNode(machine()->Int32PairAdd(), a_low, a_high, b_low, b_high);
+  }
+  Node* Int32PairSub(Node* a_low, Node* a_high, Node* b_low, Node* b_high) {
+    return AddNode(machine()->Int32PairSub(), a_low, a_high, b_low, b_high);
+  }
+  Node* Int32PairMul(Node* a_low, Node* a_high, Node* b_low, Node* b_high) {
+    return AddNode(machine()->Int32PairMul(), a_low, a_high, b_low, b_high);
+  }
+  Node* Word32PairShl(Node* low_word, Node* high_word, Node* shift) {
+    return AddNode(machine()->Word32PairShl(), low_word, high_word, shift);
+  }
+  Node* Word32PairShr(Node* low_word, Node* high_word, Node* shift) {
+    return AddNode(machine()->Word32PairShr(), low_word, high_word, shift);
+  }
+  Node* Word32PairSar(Node* low_word, Node* high_word, Node* shift) {
+    return AddNode(machine()->Word32PairSar(), low_word, high_word, shift);
+  }
 
 #define INTPTR_BINOP(prefix, name)                     \
   Node* IntPtr##name(Node* a, Node* b) {               \
@@ -332,7 +362,11 @@ class RawMachineAssembler {
   }
 
   INTPTR_BINOP(Int, Add);
+  INTPTR_BINOP(Int, AddWithOverflow);
   INTPTR_BINOP(Int, Sub);
+  INTPTR_BINOP(Int, SubWithOverflow);
+  INTPTR_BINOP(Int, Mul);
+  INTPTR_BINOP(Int, Div);
   INTPTR_BINOP(Int, LessThan);
   INTPTR_BINOP(Int, LessThanOrEqual);
   INTPTR_BINOP(Word, Equal);
@@ -374,6 +408,7 @@ class RawMachineAssembler {
     return AddNode(machine()->Float32Min().op(), a, b);
   }
   Node* Float32Abs(Node* a) { return AddNode(machine()->Float32Abs(), a); }
+  Node* Float32Neg(Node* a) { return Float32Sub(Float32Constant(-0.0f), a); }
   Node* Float32Sqrt(Node* a) { return AddNode(machine()->Float32Sqrt(), a); }
   Node* Float32Equal(Node* a, Node* b) {
     return AddNode(machine()->Float32Equal(), a, b);
@@ -414,6 +449,7 @@ class RawMachineAssembler {
     return AddNode(machine()->Float64Min().op(), a, b);
   }
   Node* Float64Abs(Node* a) { return AddNode(machine()->Float64Abs(), a); }
+  Node* Float64Neg(Node* a) { return Float64Sub(Float64Constant(-0.0), a); }
   Node* Float64Sqrt(Node* a) { return AddNode(machine()->Float64Sqrt(), a); }
   Node* Float64Equal(Node* a, Node* b) {
     return AddNode(machine()->Float64Equal(), a, b);
@@ -433,6 +469,12 @@ class RawMachineAssembler {
   }
 
   // Conversions.
+  Node* BitcastWordToTagged(Node* a) {
+    return AddNode(machine()->BitcastWordToTagged(), a);
+  }
+  Node* TruncateFloat64ToWord32(Node* a) {
+    return AddNode(machine()->TruncateFloat64ToWord32(), a);
+  }
   Node* ChangeFloat32ToFloat64(Node* a) {
     return AddNode(machine()->ChangeFloat32ToFloat64(), a);
   }
@@ -448,6 +490,9 @@ class RawMachineAssembler {
   Node* ChangeFloat64ToUint32(Node* a) {
     return AddNode(machine()->ChangeFloat64ToUint32(), a);
   }
+  Node* TruncateFloat64ToUint32(Node* a) {
+    return AddNode(machine()->TruncateFloat64ToUint32(), a);
+  }
   Node* TruncateFloat32ToInt32(Node* a) {
     return AddNode(machine()->TruncateFloat32ToInt32(), a);
   }
@@ -457,21 +502,11 @@ class RawMachineAssembler {
   Node* TryTruncateFloat32ToInt64(Node* a) {
     return AddNode(machine()->TryTruncateFloat32ToInt64(), a);
   }
-  Node* TruncateFloat64ToInt64(Node* a) {
-    // TODO(ahaas): Remove this function as soon as it is not used anymore in
-    // WebAssembly.
-    return AddNode(machine()->TryTruncateFloat64ToInt64(), a);
-  }
   Node* TryTruncateFloat64ToInt64(Node* a) {
     return AddNode(machine()->TryTruncateFloat64ToInt64(), a);
   }
   Node* TryTruncateFloat32ToUint64(Node* a) {
     return AddNode(machine()->TryTruncateFloat32ToUint64(), a);
-  }
-  Node* TruncateFloat64ToUint64(Node* a) {
-    // TODO(ahaas): Remove this function as soon as it is not used anymore in
-    // WebAssembly.
-    return AddNode(machine()->TryTruncateFloat64ToUint64(), a);
   }
   Node* TryTruncateFloat64ToUint64(Node* a) {
     return AddNode(machine()->TryTruncateFloat64ToUint64(), a);
@@ -485,11 +520,11 @@ class RawMachineAssembler {
   Node* TruncateFloat64ToFloat32(Node* a) {
     return AddNode(machine()->TruncateFloat64ToFloat32(), a);
   }
-  Node* TruncateFloat64ToInt32(TruncationMode mode, Node* a) {
-    return AddNode(machine()->TruncateFloat64ToInt32(mode), a);
-  }
   Node* TruncateInt64ToInt32(Node* a) {
     return AddNode(machine()->TruncateInt64ToInt32(), a);
+  }
+  Node* RoundFloat64ToInt32(Node* a) {
+    return AddNode(machine()->RoundFloat64ToInt32(), a);
   }
   Node* RoundInt32ToFloat32(Node* a) {
     return AddNode(machine()->RoundInt32ToFloat32(), a);
@@ -622,6 +657,8 @@ class RawMachineAssembler {
 
   // Tail call the given call descriptor and the given arguments.
   Node* TailCallN(CallDescriptor* call_descriptor, Node* function, Node** args);
+  // Tail call to a runtime function with zero arguments.
+  Node* TailCallRuntime0(Runtime::FunctionId function, Node* context);
   // Tail call to a runtime function with one argument.
   Node* TailCallRuntime1(Runtime::FunctionId function, Node* arg0,
                          Node* context);
@@ -708,13 +745,17 @@ class RawMachineAssembler {
 
 class RawMachineLabel final {
  public:
-  RawMachineLabel();
+  enum Type { kDeferred, kNonDeferred };
+
+  explicit RawMachineLabel(Type type = kNonDeferred)
+      : deferred_(type == kDeferred) {}
   ~RawMachineLabel();
 
  private:
-  BasicBlock* block_;
-  bool used_;
-  bool bound_;
+  BasicBlock* block_ = nullptr;
+  bool used_ = false;
+  bool bound_ = false;
+  bool deferred_;
   friend class RawMachineAssembler;
   DISALLOW_COPY_AND_ASSIGN(RawMachineLabel);
 };

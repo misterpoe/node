@@ -21,8 +21,8 @@ const Register kReturnRegister1 = {Register::kCode_rdx};
 const Register kReturnRegister2 = {Register::kCode_r8};
 const Register kJSFunctionRegister = {Register::kCode_rdi};
 const Register kContextRegister = {Register::kCode_rsi};
+const Register kAllocateSizeRegister = {Register::kCode_rdx};
 const Register kInterpreterAccumulatorRegister = {Register::kCode_rax};
-const Register kInterpreterRegisterFileRegister = {Register::kCode_r11};
 const Register kInterpreterBytecodeOffsetRegister = {Register::kCode_r12};
 const Register kInterpreterBytecodeArrayRegister = {Register::kCode_r14};
 const Register kInterpreterDispatchTableRegister = {Register::kCode_r15};
@@ -55,6 +55,8 @@ enum class SmiOperationConstraint {
   kBailoutOnNoOverflow = 1 << 1,
   kBailoutOnOverflow = 1 << 2
 };
+
+enum class ReturnAddressState { kOnStack, kNotOnStack };
 
 typedef base::Flags<SmiOperationConstraint> SmiOperationConstraints;
 
@@ -326,7 +328,7 @@ class MacroAssembler: public Assembler {
   void DebugBreak();
 
   // Generates function and stub prologue code.
-  void StubPrologue();
+  void StubPrologue(StackFrame::Type type);
   void Prologue(bool code_pre_aging);
 
   // Enter specific kind of exit frame; either in normal or
@@ -369,6 +371,16 @@ class MacroAssembler: public Assembler {
 
   // ---------------------------------------------------------------------------
   // JavaScript invokes
+
+  // Removes current frame and its arguments from the stack preserving
+  // the arguments and a return address pushed to the stack for the next call.
+  // |ra_state| defines whether return address is already pushed to stack or
+  // not. Both |callee_args_count| and |caller_args_count_reg| do not include
+  // receiver. |callee_args_count| is not modified, |caller_args_count_reg|
+  // is trashed.
+  void PrepareForTailCall(const ParameterCount& callee_args_count,
+                          Register caller_args_count_reg, Register scratch0,
+                          Register scratch1, ReturnAddressState ra_state);
 
   // Invoke the JavaScript function code by either calling or jumping.
   void InvokeFunctionCode(Register function, Register new_target,
@@ -1014,12 +1026,6 @@ class MacroAssembler: public Assembler {
     return (target.requires_rex() ? 2 : 1) + target.operand_size();
   }
 
-  // Emit call to the code we are currently generating.
-  void CallSelf() {
-    Handle<Code> self(reinterpret_cast<Code**>(CodeObject().location()));
-    Call(self, RelocInfo::CODE_TARGET);
-  }
-
   // Non-SSE2 instructions.
   void Pextrd(Register dst, XMMRegister src, int8_t imm8);
   void Pinsrd(XMMRegister dst, Register src, int8_t imm8);
@@ -1191,6 +1197,7 @@ class MacroAssembler: public Assembler {
 
   // Abort execution if argument is not a number, enabled via --debug-code.
   void AssertNumber(Register object);
+  void AssertNotNumber(Register object);
 
   // Abort execution if argument is a smi, enabled via --debug-code.
   void AssertNotSmi(Register object);
@@ -1215,6 +1222,10 @@ class MacroAssembler: public Assembler {
   // Abort execution if argument is not a JSBoundFunction,
   // enabled via --debug-code.
   void AssertBoundFunction(Register object);
+
+  // Abort execution if argument is not a JSGeneratorObject,
+  // enabled via --debug-code.
+  void AssertGeneratorObject(Register object);
 
   // Abort execution if argument is not a JSReceiver, enabled via --debug-code.
   void AssertReceiver(Register object);

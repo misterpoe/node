@@ -24,13 +24,10 @@ class SourceInfo;
 
 class MessageLocation {
  public:
+  MessageLocation(Handle<Script> script, int start_pos, int end_pos);
   MessageLocation(Handle<Script> script, int start_pos, int end_pos,
-                  Handle<JSFunction> function = Handle<JSFunction>())
-      : script_(script),
-        start_pos_(start_pos),
-        end_pos_(end_pos),
-        function_(function) {}
-  MessageLocation() : start_pos_(-1), end_pos_(-1) { }
+                  Handle<JSFunction> function);
+  MessageLocation();
 
   Handle<Script> script() const { return script_; }
   int start_pos() const { return start_pos_; }
@@ -94,11 +91,13 @@ class CallSite {
   T(ArrayFunctionsOnSealed, "Cannot add/remove sealed array elements")         \
   T(ArrayNotSubclassable, "Subclassing Arrays is not currently supported.")    \
   T(CalledNonCallable, "% is not a function")                                  \
-  T(CalledNonCallableInstanceOf, "right-hand side is not a function")          \
+  T(CalledNonCallableInstanceOf,                                               \
+    "Right-hand side of 'instanceof' is not callable")                         \
   T(CalledOnNonObject, "% called on non-object")                               \
   T(CalledOnNullOrUndefined, "% called on null or undefined")                  \
   T(CallSiteExpectsFunction,                                                   \
     "CallSite expects function as second argument, got %")                     \
+  T(CallSiteMethod, "CallSite method % expects CallSite as receiver")          \
   T(CannotConvertToPrimitive, "Cannot convert object to primitive value")      \
   T(CannotPreventExt, "Cannot prevent extensions")                             \
   T(CannotFreezeArrayBufferView,                                               \
@@ -118,6 +117,8 @@ class CallSite {
   T(DebuggerType, "Debugger: Parameters have wrong types.")                    \
   T(DeclarationMissingInitializer, "Missing initializer in % declaration")     \
   T(DefineDisallowed, "Cannot define property:%, object is not extensible.")   \
+  T(DetachedOperation,                                                         \
+    "Cannot perform % on a detached ArrayBuffer")                              \
   T(DuplicateTemplateProperty, "Object template has duplicate property '%'")   \
   T(ExtendsValueGenerator,                                                     \
     "Class extends value % may not be a generator function")                   \
@@ -135,6 +136,8 @@ class CallSite {
     "Function has non-object prototype '%' in instanceof check")               \
   T(InvalidArgument, "invalid_argument")                                       \
   T(InvalidInOperatorUse, "Cannot use 'in' operator to search for '%' in %")   \
+  T(InvalidRegExpExecResult,                                                   \
+    "RegExp exec method returned something other than an Object or null")      \
   T(InvalidSimdOperation, "% is not a valid type for this SIMD operation.")    \
   T(IteratorResultNotAnObject, "Iterator result % is not an object")           \
   T(IteratorValueNotAnObject, "Iterator value % is not an entry object")       \
@@ -147,6 +150,8 @@ class CallSite {
   T(NoAccess, "no access")                                                     \
   T(NonCoercible, "Cannot match against 'undefined' or 'null'.")               \
   T(NonExtensibleProto, "% is not extensible")                                 \
+  T(NonObjectInInstanceOfCheck,                                                \
+    "Right-hand side of 'instanceof' is not an object")                        \
   T(NonObjectPropertyLoad, "Cannot read property '%' of %")                    \
   T(NonObjectPropertyStore, "Cannot set property '%' of %")                    \
   T(NoSetterInCallback, "Cannot set property % of % which has only a getter")  \
@@ -169,24 +174,12 @@ class CallSite {
   T(ObjectSetterExpectingFunction,                                             \
     "Object.prototype.__defineSetter__: Expecting function")                   \
   T(ObjectSetterCallable, "Setter must be a function: %")                      \
-  T(ObserveCallbackFrozen,                                                     \
-    "Object.observe cannot deliver to a frozen function object")               \
-  T(ObserveGlobalProxy, "% cannot be called on the global proxy object")       \
-  T(ObserveAccessChecked, "% cannot be called on access-checked objects")      \
-  T(ObserveInvalidAccept,                                                      \
-    "Third argument to Object.observe must be an array of strings.")           \
-  T(ObserveNonFunction, "Object.% cannot deliver to non-function")             \
-  T(ObserveNonObject, "Object.% cannot % non-object")                          \
-  T(ObserveNotifyNonNotifier, "notify called on non-notifier object")          \
-  T(ObservePerformNonFunction, "Cannot perform non-function")                  \
-  T(ObservePerformNonString, "Invalid non-string changeType")                  \
-  T(ObserveTypeNonString,                                                      \
-    "Invalid changeRecord with non-string 'type' property")                    \
   T(OrdinaryFunctionCalledAsConstructor,                                       \
     "Function object that's not a constructor was created with new")           \
   T(PromiseCyclic, "Chaining cycle detected for promise %")                    \
   T(PromiseExecutorAlreadyInvoked,                                             \
     "Promise executor has already been invoked with non-undefined arguments")  \
+  T(PromiseNonCallable, "Promise resolve or reject function is not callable")  \
   T(PropertyDescObject, "Property description must be an object: %")           \
   T(PropertyNotFunction,                                                       \
     "'%' returned for property '%' of object '%' is not a function")           \
@@ -208,9 +201,6 @@ class CallSite {
   T(ProxyDeletePropertyNonConfigurable,                                        \
     "'deleteProperty' on proxy: trap returned truish for property '%' which "  \
     "is non-configurable in the proxy target")                                 \
-  T(ProxyEnumerateNonObject, "'enumerate' on proxy: trap returned non-object") \
-  T(ProxyEnumerateNonString,                                                   \
-    "'enumerate' on proxy: trap result includes non-string")                   \
   T(ProxyGetNonConfigurableData,                                               \
     "'get' on proxy: property '%' is a read-only and "                         \
     "non-configurable data property on the proxy target but the proxy "        \
@@ -305,18 +295,6 @@ class CallSite {
   T(StrictReadOnlyProperty,                                                    \
     "Cannot assign to read only property '%' of % '%'")                        \
   T(StrictCannotCreateProperty, "Cannot create property '%' on % '%'")         \
-  T(StrongArity,                                                               \
-    "In strong mode, calling a function with too few arguments is deprecated") \
-  T(StrongDeleteProperty,                                                      \
-    "Deleting property '%' of strong object '%' is deprecated")                \
-  T(StrongExtendNull, "In strong mode, classes extending null are deprecated") \
-  T(StrongImplicitConversion,                                                  \
-    "In strong mode, implicit conversions are deprecated")                     \
-  T(StrongRedefineDisallowed,                                                  \
-    "On strong object %, redefining writable, non-configurable property '%' "  \
-    "to be non-writable is deprecated")                                        \
-  T(StrongSetProto,                                                            \
-    "On strong object %, redefining the internal prototype is deprecated")     \
   T(SymbolIteratorInvalid,                                                     \
     "Result of the Symbol.iterator method is not an object")                   \
   T(SymbolKeyFor, "% is not a symbol")                                         \
@@ -333,9 +311,6 @@ class CallSite {
   /* ReferenceError */                                                         \
   T(NonMethod, "'super' is referenced from non-method")                        \
   T(NotDefined, "% is not defined")                                            \
-  T(StrongSuperCallMissing,                                                    \
-    "In strong mode, invoking the super constructor in a subclass is "         \
-    "required")                                                                \
   T(UnsupportedSuper, "Unsupported reference to 'super'")                      \
   /* RangeError */                                                             \
   T(DateRange, "Provided date is not in valid range.")                         \
@@ -347,6 +322,7 @@ class CallSite {
   T(InvalidArrayBufferLength, "Invalid array buffer length")                   \
   T(ArrayBufferAllocationFailed, "Array buffer allocation failed")             \
   T(InvalidArrayLength, "Invalid array length")                                \
+  T(InvalidAtomicAccessIndex, "Invalid atomic access index")                   \
   T(InvalidCodePoint, "Invalid code point %")                                  \
   T(InvalidCountValue, "Invalid count value")                                  \
   T(InvalidCurrencyCode, "Invalid currency code: %")                           \
@@ -390,7 +366,8 @@ class CallSite {
     "% loop variable declaration may not have an initializer.")                \
   T(ForInOfLoopMultiBindings,                                                  \
     "Invalid left-hand side in % loop: Must have a single binding.")           \
-  T(IllegalAccess, "Illegal access")                                           \
+  T(GeneratorInLegacyContext,                                                  \
+    "Generator declarations are not allowed in legacy contexts.")              \
   T(IllegalBreak, "Illegal break statement")                                   \
   T(IllegalContinue, "Illegal continue statement")                             \
   T(IllegalLanguageModeDirective,                                              \
@@ -407,11 +384,15 @@ class CallSite {
   T(InvalidLhsInPrefixOp,                                                      \
     "Invalid left-hand side expression in prefix operation")                   \
   T(InvalidRegExpFlags, "Invalid flags supplied to RegExp constructor '%'")    \
+  T(InvalidOrUnexpectedToken, "Invalid or unexpected token")                   \
   T(JsonParseUnexpectedEOS, "Unexpected end of JSON input")                    \
   T(JsonParseUnexpectedToken, "Unexpected token % in JSON at position %")      \
   T(JsonParseUnexpectedTokenNumber, "Unexpected number in JSON at position %") \
   T(JsonParseUnexpectedTokenString, "Unexpected string in JSON at position %") \
   T(LabelRedeclaration, "Label '%' has already been declared")                 \
+  T(LabelledFunctionDeclaration,                                               \
+    "Labelled function declaration not allowed as the body of a control flow " \
+    "structure")                                                               \
   T(MalformedArrowFunParamList, "Malformed arrow function parameter list")     \
   T(MalformedRegExp, "Invalid regular expression: /%/: %")                     \
   T(MalformedRegExpFlags, "Invalid regular expression flags")                  \
@@ -432,63 +413,24 @@ class CallSite {
     "Setter function argument must not be a rest parameter")                   \
   T(ParamDupe, "Duplicate parameter name not allowed in this context")         \
   T(ParenthesisInArgString, "Function arg string contains parenthesis")        \
+  T(RuntimeWrongNumArgs, "Runtime function given wrong number of arguments")   \
   T(SingleFunctionLiteral, "Single function literal required")                 \
-  T(SloppyLexical,                                                             \
-    "Block-scoped declarations (let, const, function, class) not yet "         \
-    "supported outside strict mode")                                           \
+  T(SloppyFunction,                                                            \
+    "In non-strict mode code, functions can only be declared at top level, "   \
+    "inside a block, or as the body of an if statement.")                      \
   T(SpeciesNotConstructor,                                                     \
     "object.constructor[Symbol.species] is not a constructor")                 \
   T(StrictDelete, "Delete of an unqualified identifier in strict mode.")       \
   T(StrictEvalArguments, "Unexpected eval or arguments in strict mode")        \
   T(StrictFunction,                                                            \
     "In strict mode code, functions can only be declared at top level or "     \
-    "immediately within another function.")                                    \
+    "inside a block.")                                                         \
   T(StrictOctalLiteral, "Octal literals are not allowed in strict mode.")      \
   T(StrictWith, "Strict mode code may not include a with statement")           \
-  T(StrongArguments,                                                           \
-    "In strong mode, 'arguments' is deprecated, use '...args' instead")        \
-  T(StrongConstructorDirective,                                                \
-    "\"use strong\" directive is disallowed in class constructor body")        \
-  T(StrongConstructorReturnMisplaced,                                          \
-    "In strong mode, returning from a constructor before its super "           \
-    "constructor invocation or all assignments to 'this' is deprecated")       \
-  T(StrongConstructorReturnValue,                                              \
-    "In strong mode, returning a value from a constructor is deprecated")      \
-  T(StrongConstructorSuper,                                                    \
-    "In strong mode, 'super' can only be used to invoke the super "            \
-    "constructor, and cannot be nested inside another statement or "           \
-    "expression")                                                              \
-  T(StrongConstructorThis,                                                     \
-    "In strong mode, 'this' can only be used to initialize properties, and "   \
-    "cannot be nested inside another statement or expression")                 \
-  T(StrongDelete,                                                              \
-    "In strong mode, 'delete' is deprecated, use maps or sets instead")        \
-  T(StrongDirectEval, "In strong mode, direct calls to eval are deprecated")   \
-  T(StrongEllision,                                                            \
-    "In strong mode, arrays with holes are deprecated, use maps instead")      \
-  T(StrongEmpty,                                                               \
-    "In strong mode, empty sub-statements are deprecated, make them explicit " \
-    "with '{}' instead")                                                       \
-  T(StrongEqual,                                                               \
-    "In strong mode, '==' and '!=' are deprecated, use '===' and '!==' "       \
-    "instead")                                                                 \
-  T(StrongForIn,                                                               \
-    "In strong mode, 'for'-'in' loops are deprecated, use 'for'-'of' instead") \
-  T(StrongPropertyAccess,                                                      \
-    "In strong mode, accessing missing property '%' of % is deprecated")       \
-  T(StrongSuperCallDuplicate,                                                  \
-    "In strong mode, invoking the super constructor multiple times is "        \
-    "deprecated")                                                              \
-  T(StrongSuperCallMisplaced,                                                  \
-    "In strong mode, the super constructor must be invoked before any "        \
-    "assignment to 'this'")                                                    \
-  T(StrongSwitchFallthrough,                                                   \
-    "In strong mode, switch fall-through is deprecated, terminate each case "  \
-    "with 'break', 'continue', 'return' or 'throw'")                           \
-  T(StrongUndefined,                                                           \
-    "In strong mode, binding or assigning to 'undefined' is deprecated")       \
-  T(StrongVar,                                                                 \
-    "In strong mode, 'var' is deprecated, use 'let' or 'const' instead")       \
+  T(TailCallInCatchBlock,                                                      \
+    "Tail call expression in catch block when finally block is also present.") \
+  T(TailCallInForInOf, "Tail call expression in for-in/of body.")              \
+  T(TailCallInTryBlock, "Tail call expression in try block.")                  \
   T(TemplateOctalLiteral,                                                      \
     "Octal literals are not allowed in template strings.")                     \
   T(ThisFormalParameter, "'this' is not a valid formal parameter name")        \
@@ -518,11 +460,22 @@ class CallSite {
   T(UnterminatedTemplate, "Unterminated template literal")                     \
   T(UnterminatedTemplateExpr, "Missing } in template expression")              \
   T(FoundNonCallableHasInstance, "Found non-callable @@hasInstance")           \
-  T(NonObjectInInstanceOfCheck, "Expecting an object in instanceof check")     \
+  T(InvalidHexEscapeSequence, "Invalid hexadecimal escape sequence")           \
+  T(InvalidUnicodeEscapeSequence, "Invalid Unicode escape sequence")           \
+  T(UndefinedUnicodeCodePoint, "Undefined Unicode code-point")                 \
   /* EvalError */                                                              \
   T(CodeGenFromStrings, "%")                                                   \
   /* URIError */                                                               \
-  T(URIMalformed, "URI malformed")
+  T(URIMalformed, "URI malformed")                                             \
+  /* Wasm errors (currently Error) */                                          \
+  T(WasmTrapUnreachable, "unreachable")                                        \
+  T(WasmTrapMemOutOfBounds, "memory access out of bounds")                     \
+  T(WasmTrapDivByZero, "divide by zero")                                       \
+  T(WasmTrapDivUnrepresentable, "divide result unrepresentable")               \
+  T(WasmTrapRemByZero, "remainder by zero")                                    \
+  T(WasmTrapFloatUnrepresentable, "integer result unrepresentable")            \
+  T(WasmTrapFuncInvalid, "invalid function")                                   \
+  T(WasmTrapFuncSigMismatch, "function signature mismatch")
 
 class MessageTemplate {
  public:

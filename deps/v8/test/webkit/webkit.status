@@ -70,6 +70,10 @@
   # Too slow.
   'dfg-int-overflow-in-loop': [SKIP],
 }], # 'arch == ppc or arch == ppc64'
+['arch == s390 or arch == s390x', {
+  # Too slow.
+  'dfg-int-overflow-in-loop': [SKIP],
+}],  # 'arch == s390 or arch == s390x'
 
 ##############################################################################
 ['asan == True', {
@@ -95,6 +99,13 @@
 ['gc_stress == True and mode == debug', {
   # Skip tests that timeout.
 }],  # 'gc_stress == True and mode == debug'
+
+##############################################################################
+['(ignition or ignition_turbofan) and msan', {
+  # TODO(mythria,4680): Too slow and timeout on ignition.
+  'dfg-double-vote-fuzz': [SKIP],
+  'dfg-int-overflow-in-loop': [SKIP],
+}],  # (ignition or ignition_turbofan) and msan
 
 ##############################################################################
 ['gcov_coverage', {

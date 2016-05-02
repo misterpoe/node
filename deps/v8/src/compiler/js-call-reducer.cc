@@ -326,19 +326,10 @@ Reduction JSCallReducer::ReduceJSCallFunction(Node* node) {
     }
 
     // Check that the {target} is still the {array_function}.
-    Node* check = effect =
-        graph()->NewNode(javascript()->StrictEqual(), target, array_function,
-                         context, effect, control);
-    Node* branch =
-        graph()->NewNode(common()->Branch(BranchHint::kTrue), check, control);
-    Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-    Node* deoptimize =
-        graph()->NewNode(common()->Deoptimize(DeoptimizeKind::kEager),
-                         frame_state, effect, if_false);
-    // TODO(bmeurer): This should be on the AdvancedReducer somehow.
-    NodeProperties::MergeControlToEnd(graph(), common(), deoptimize);
-    Revisit(graph()->end());
-    control = graph()->NewNode(common()->IfTrue(), branch);
+    Node* check = graph()->NewNode(javascript()->StrictEqual(), target,
+                                   array_function, context);
+    control = graph()->NewNode(common()->DeoptimizeUnless(), check, frame_state,
+                               effect, control);
 
     // Turn the {node} into a {JSCreateArray} call.
     NodeProperties::ReplaceValueInput(node, array_function, 0);
@@ -352,23 +343,13 @@ Reduction JSCallReducer::ReduceJSCallFunction(Node* node) {
           jsgraph()->Constant(handle(cell->value(), isolate()));
 
       // Check that the {target} is still the {target_function}.
-      Node* check = effect =
-          graph()->NewNode(javascript()->StrictEqual(), target, target_function,
-                           context, effect, control);
-      Node* branch =
-          graph()->NewNode(common()->Branch(BranchHint::kTrue), check, control);
-      Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-      Node* deoptimize =
-          graph()->NewNode(common()->Deoptimize(DeoptimizeKind::kEager),
-                           frame_state, effect, if_false);
-      // TODO(bmeurer): This should be on the AdvancedReducer somehow.
-      NodeProperties::MergeControlToEnd(graph(), common(), deoptimize);
-      Revisit(graph()->end());
-      control = graph()->NewNode(common()->IfTrue(), branch);
+      Node* check = graph()->NewNode(javascript()->StrictEqual(), target,
+                                     target_function, context);
+      control = graph()->NewNode(common()->DeoptimizeUnless(), check,
+                                 frame_state, effect, control);
 
       // Specialize the JSCallFunction node to the {target_function}.
       NodeProperties::ReplaceValueInput(node, target_function, 0);
-      NodeProperties::ReplaceEffectInput(node, effect);
       NodeProperties::ReplaceControlInput(node, control);
 
       // Try to further reduce the JSCallFunction {node}.
@@ -470,19 +451,10 @@ Reduction JSCallReducer::ReduceJSCallConstruct(Node* node) {
     }
 
     // Check that the {target} is still the {array_function}.
-    Node* check = effect =
-        graph()->NewNode(javascript()->StrictEqual(), target, array_function,
-                         context, effect, control);
-    Node* branch =
-        graph()->NewNode(common()->Branch(BranchHint::kTrue), check, control);
-    Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-    Node* deoptimize =
-        graph()->NewNode(common()->Deoptimize(DeoptimizeKind::kEager),
-                         frame_state, effect, if_false);
-    // TODO(bmeurer): This should be on the AdvancedReducer somehow.
-    NodeProperties::MergeControlToEnd(graph(), common(), deoptimize);
-    Revisit(graph()->end());
-    control = graph()->NewNode(common()->IfTrue(), branch);
+    Node* check = graph()->NewNode(javascript()->StrictEqual(), target,
+                                   array_function, context);
+    control = graph()->NewNode(common()->DeoptimizeUnless(), check, frame_state,
+                               effect, control);
 
     // Turn the {node} into a {JSCreateArray} call.
     NodeProperties::ReplaceEffectInput(node, effect);
@@ -502,19 +474,10 @@ Reduction JSCallReducer::ReduceJSCallConstruct(Node* node) {
           jsgraph()->Constant(handle(cell->value(), isolate()));
 
       // Check that the {target} is still the {target_function}.
-      Node* check = effect =
-          graph()->NewNode(javascript()->StrictEqual(), target, target_function,
-                           context, effect, control);
-      Node* branch =
-          graph()->NewNode(common()->Branch(BranchHint::kTrue), check, control);
-      Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
-      Node* deoptimize =
-          graph()->NewNode(common()->Deoptimize(DeoptimizeKind::kEager),
-                           frame_state, effect, if_false);
-      // TODO(bmeurer): This should be on the AdvancedReducer somehow.
-      NodeProperties::MergeControlToEnd(graph(), common(), deoptimize);
-      Revisit(graph()->end());
-      control = graph()->NewNode(common()->IfTrue(), branch);
+      Node* check = graph()->NewNode(javascript()->StrictEqual(), target,
+                                     target_function, context);
+      control = graph()->NewNode(common()->DeoptimizeUnless(), check,
+                                 frame_state, effect, control);
 
       // Specialize the JSCallConstruct node to the {target_function}.
       NodeProperties::ReplaceValueInput(node, target_function, 0);

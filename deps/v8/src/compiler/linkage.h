@@ -76,9 +76,9 @@ class LinkageLocation {
                               kPointerSize);
   }
 
-  static LinkageLocation ForSavedCallerMarker() {
+  static LinkageLocation ForSavedCallerFunction() {
     return ForCalleeFrameSlot((StandardFrameConstants::kCallerPCOffset -
-                               StandardFrameConstants::kMarkerOffset) /
+                               StandardFrameConstants::kFunctionOffset) /
                               kPointerSize);
   }
 
@@ -160,10 +160,11 @@ class CallDescriptor final : public ZoneObject {
     kCanUseRoots = 1u << 6,
     // (arm64 only) native stack should be used for arguments.
     kUseNativeStack = 1u << 7,
-    // (arm64 only) call instruction has to restore JSSP.
+    // (arm64 only) call instruction has to restore JSSP or CSP.
     kRestoreJSSP = 1u << 8,
+    kRestoreCSP = 1u << 9,
     // Causes the code generator to initialize the root register.
-    kInitializeRootRegister = 1u << 9,
+    kInitializeRootRegister = 1u << 10,
     kPatchableCallSiteWithNop = kPatchableCallSite | kNeedsNopAfterCall
   };
   typedef base::Flags<Flag> Flags;
@@ -303,10 +304,11 @@ std::ostream& operator<<(std::ostream& os, const CallDescriptor::Kind& k);
 // representing the architecture-specific location. The following call node
 // layouts are supported (where {n} is the number of value inputs):
 //
-//                  #0          #1     #2     #3     [...]             #n
-// Call[CodeStub]   code,       arg 1, arg 2, arg 3, [...],            context
-// Call[JSFunction] function,   rcvr,  arg 1, arg 2, [...], new, #arg, context
-// Call[Runtime]    CEntryStub, arg 1, arg 2, arg 3, [...], fun, #arg, context
+//                        #0          #1     #2     [...]             #n
+// Call[CodeStub]         code,       arg 1, arg 2, [...],            context
+// Call[JSFunction]       function,   rcvr,  arg 1, [...], new, #arg, context
+// Call[Runtime]          CEntryStub, arg 1, arg 2, [...], fun, #arg, context
+// Call[BytecodeDispatch] address,    arg 1, arg 2, [...]
 class Linkage : public ZoneObject {
  public:
   explicit Linkage(CallDescriptor* incoming) : incoming_(incoming) {}
@@ -330,6 +332,11 @@ class Linkage : public ZoneObject {
       Operator::Properties properties = Operator::kNoProperties,
       MachineType return_type = MachineType::AnyTagged(),
       size_t return_count = 1);
+
+  static CallDescriptor* GetAllocateCallDescriptor(Zone* zone);
+  static CallDescriptor* GetBytecodeDispatchCallDescriptor(
+      Isolate* isolate, Zone* zone, const CallInterfaceDescriptor& descriptor,
+      int stack_parameter_count);
 
   // Creates a call descriptor for simplified C calls that is appropriate
   // for the host platform. This simplified calling convention only supports
@@ -366,6 +373,11 @@ class Linkage : public ZoneObject {
 
   // Get the location where an incoming OSR value is stored.
   LinkageLocation GetOsrValueLocation(int index) const;
+
+  // A special {Parameter} index for Stub Calls that represents context.
+  static int GetStubCallContextParamIndex(int parameter_count) {
+    return parameter_count + 0;  // Parameter (arity + 0) is special.
+  }
 
   // A special {Parameter} index for JSCalls that represents the new target.
   static int GetJSCallNewTargetParamIndex(int parameter_count) {

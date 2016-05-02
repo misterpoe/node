@@ -122,6 +122,10 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
     case JS_BOUND_FUNCTION_TYPE:
       return GetVisitorIdForSize(kVisitJSObject, kVisitJSObjectGeneric,
                                  instance_size, has_unboxed_fields);
+    case JS_API_OBJECT_TYPE:
+    case JS_SPECIAL_API_OBJECT_TYPE:
+      return GetVisitorIdForSize(kVisitJSApiObject, kVisitJSApiObjectGeneric,
+                                 instance_size, has_unboxed_fields);
 
     case JS_FUNCTION_TYPE:
       return kVisitJSFunction;

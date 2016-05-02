@@ -12,24 +12,6 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-std::ostream& operator<<(std::ostream& os, TruncationMode mode) {
-  switch (mode) {
-    case TruncationMode::kJavaScript:
-      return os << "JavaScript";
-    case TruncationMode::kRoundToZero:
-      return os << "RoundToZero";
-  }
-  UNREACHABLE();
-  return os;
-}
-
-
-TruncationMode TruncationModeOf(Operator const* op) {
-  DCHECK_EQ(IrOpcode::kTruncateFloat64ToInt32, op->opcode());
-  return OpParameter<TruncationMode>(op);
-}
-
-
 std::ostream& operator<<(std::ostream& os, WriteBarrierKind kind) {
   switch (kind) {
     case kNoWriteBarrier:
@@ -69,7 +51,8 @@ std::ostream& operator<<(std::ostream& os, StoreRepresentation rep) {
 
 
 LoadRepresentation LoadRepresentationOf(Operator const* op) {
-  DCHECK_EQ(IrOpcode::kLoad, op->opcode());
+  DCHECK(IrOpcode::kLoad == op->opcode() ||
+         IrOpcode::kAtomicLoad == op->opcode());
   return OpParameter<LoadRepresentation>(op);
 }
 
@@ -145,9 +128,12 @@ MachineRepresentation StackSlotRepresentationOf(Operator const* op) {
   V(Uint64Mod, Operator::kNoProperties, 2, 1, 1)                              \
   V(Uint64LessThan, Operator::kNoProperties, 2, 0, 1)                         \
   V(Uint64LessThanOrEqual, Operator::kNoProperties, 2, 0, 1)                  \
+  V(BitcastWordToTagged, Operator::kNoProperties, 1, 0, 1)                    \
+  V(TruncateFloat64ToWord32, Operator::kNoProperties, 1, 0, 1)                \
   V(ChangeFloat32ToFloat64, Operator::kNoProperties, 1, 0, 1)                 \
   V(ChangeFloat64ToInt32, Operator::kNoProperties, 1, 0, 1)                   \
   V(ChangeFloat64ToUint32, Operator::kNoProperties, 1, 0, 1)                  \
+  V(TruncateFloat64ToUint32, Operator::kNoProperties, 1, 0, 1)                \
   V(TruncateFloat32ToInt32, Operator::kNoProperties, 1, 0, 1)                 \
   V(TruncateFloat32ToUint32, Operator::kNoProperties, 1, 0, 1)                \
   V(TryTruncateFloat32ToInt64, Operator::kNoProperties, 1, 0, 2)              \
@@ -155,6 +141,7 @@ MachineRepresentation StackSlotRepresentationOf(Operator const* op) {
   V(TryTruncateFloat32ToUint64, Operator::kNoProperties, 1, 0, 2)             \
   V(TryTruncateFloat64ToUint64, Operator::kNoProperties, 1, 0, 2)             \
   V(ChangeInt32ToFloat64, Operator::kNoProperties, 1, 0, 1)                   \
+  V(RoundFloat64ToInt32, Operator::kNoProperties, 1, 0, 1)                    \
   V(RoundInt32ToFloat32, Operator::kNoProperties, 1, 0, 1)                    \
   V(RoundInt64ToFloat32, Operator::kNoProperties, 1, 0, 1)                    \
   V(RoundInt64ToFloat64, Operator::kNoProperties, 1, 0, 1)                    \
@@ -195,7 +182,13 @@ MachineRepresentation StackSlotRepresentationOf(Operator const* op) {
   V(Float64InsertHighWord32, Operator::kNoProperties, 2, 0, 1)                \
   V(LoadStackPointer, Operator::kNoProperties, 0, 0, 1)                       \
   V(LoadFramePointer, Operator::kNoProperties, 0, 0, 1)                       \
-  V(LoadParentFramePointer, Operator::kNoProperties, 0, 0, 1)
+  V(LoadParentFramePointer, Operator::kNoProperties, 0, 0, 1)                 \
+  V(Int32PairAdd, Operator::kNoProperties, 4, 0, 2)                           \
+  V(Int32PairSub, Operator::kNoProperties, 4, 0, 2)                           \
+  V(Int32PairMul, Operator::kNoProperties, 4, 0, 2)                           \
+  V(Word32PairShl, Operator::kNoProperties, 3, 0, 2)                          \
+  V(Word32PairShr, Operator::kNoProperties, 3, 0, 2)                          \
+  V(Word32PairSar, Operator::kNoProperties, 3, 0, 2)
 
 #define PURE_OPTIONAL_OP_LIST(V)                            \
   V(Word32Ctz, Operator::kNoProperties, 1, 0, 1)            \
@@ -243,6 +236,14 @@ MachineRepresentation StackSlotRepresentationOf(Operator const* op) {
   V(kWord64)                           \
   V(kTagged)
 
+#define ATOMIC_TYPE_LIST(V) \
+  V(Int8)                   \
+  V(Uint8)                  \
+  V(Int16)                  \
+  V(Uint16)                 \
+  V(Int32)                  \
+  V(Uint32)
+
 struct MachineOperatorGlobalCache {
 #define PURE(Name, properties, value_input_count, control_input_count,         \
              output_count)                                                     \
@@ -256,19 +257,6 @@ struct MachineOperatorGlobalCache {
   PURE_OP_LIST(PURE)
   PURE_OPTIONAL_OP_LIST(PURE)
 #undef PURE
-
-  template <TruncationMode kMode>
-  struct TruncateFloat64ToInt32Operator final
-      : public Operator1<TruncationMode> {
-    TruncateFloat64ToInt32Operator()
-        : Operator1<TruncationMode>(IrOpcode::kTruncateFloat64ToInt32,
-                                    Operator::kPure, "TruncateFloat64ToInt32",
-                                    1, 0, 0, 1, 0, 0, kMode) {}
-  };
-  TruncateFloat64ToInt32Operator<TruncationMode::kJavaScript>
-      kTruncateFloat64ToInt32JavaScript;
-  TruncateFloat64ToInt32Operator<TruncationMode::kRoundToZero>
-      kTruncateFloat64ToInt32RoundToZero;
 
 #define LOAD(Type)                                                             \
   struct Load##Type##Operator final : public Operator1<LoadRepresentation> {   \
@@ -346,6 +334,18 @@ struct MachineOperatorGlobalCache {
   CheckedStore##Type##Operator kCheckedStore##Type;
   MACHINE_REPRESENTATION_LIST(STORE)
 #undef STORE
+
+#define ATOMIC(Type)                                                          \
+  struct AtomicLoad##Type##Operator final                                     \
+      : public Operator1<LoadRepresentation> {                                \
+    AtomicLoad##Type##Operator()                                              \
+        : Operator1<LoadRepresentation>(                                      \
+              IrOpcode::kAtomicLoad, Operator::kNoThrow | Operator::kNoWrite, \
+              "AtomicLoad", 2, 1, 1, 1, 1, 0, MachineType::Type()) {}         \
+  };                                                                          \
+  AtomicLoad##Type##Operator kAtomicLoad##Type;
+  ATOMIC_TYPE_LIST(ATOMIC)
+#undef ATOMIC
 };
 
 
@@ -375,19 +375,6 @@ PURE_OP_LIST(PURE)
   }
 PURE_OPTIONAL_OP_LIST(PURE)
 #undef PURE
-
-
-const Operator* MachineOperatorBuilder::TruncateFloat64ToInt32(
-    TruncationMode mode) {
-  switch (mode) {
-    case TruncationMode::kJavaScript:
-      return &cache_.kTruncateFloat64ToInt32JavaScript;
-    case TruncationMode::kRoundToZero:
-      return &cache_.kTruncateFloat64ToInt32RoundToZero;
-  }
-  UNREACHABLE();
-  return nullptr;
-}
 
 
 const Operator* MachineOperatorBuilder::Load(LoadRepresentation rep) {
@@ -463,6 +450,31 @@ const Operator* MachineOperatorBuilder::CheckedStore(
     case MachineRepresentation::kNone:
       break;
   }
+  UNREACHABLE();
+  return nullptr;
+}
+
+// On 32 bit platforms we need to get a reference to optional operators of
+// 64-bit instructions for later Int64Lowering, even though 32 bit platforms
+// don't support the original 64-bit instruction.
+const Operator* MachineOperatorBuilder::Word64PopcntPlaceholder() {
+  return &cache_.kWord64Popcnt;
+}
+
+// On 32 bit platforms we need to get a reference to optional operators of
+// 64-bit instructions for later Int64Lowering, even though 32 bit platforms
+// don't support the original 64-bit instruction.
+const Operator* MachineOperatorBuilder::Word64CtzPlaceholder() {
+  return &cache_.kWord64Ctz;
+}
+
+const Operator* MachineOperatorBuilder::AtomicLoad(LoadRepresentation rep) {
+#define LOAD(Type)                    \
+  if (rep == MachineType::Type()) {   \
+    return &cache_.kAtomicLoad##Type; \
+  }
+  ATOMIC_TYPE_LIST(LOAD)
+#undef LOAD
   UNREACHABLE();
   return nullptr;
 }

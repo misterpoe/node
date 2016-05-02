@@ -346,7 +346,8 @@ const CreateClosureParameters& CreateClosureParametersOf(const Operator* op) {
 bool operator==(CreateLiteralParameters const& lhs,
                 CreateLiteralParameters const& rhs) {
   return lhs.constant().location() == rhs.constant().location() &&
-         lhs.flags() == rhs.flags() && lhs.index() == rhs.index();
+         lhs.length() == rhs.length() && lhs.flags() == rhs.flags() &&
+         lhs.index() == rhs.index();
 }
 
 
@@ -357,12 +358,14 @@ bool operator!=(CreateLiteralParameters const& lhs,
 
 
 size_t hash_value(CreateLiteralParameters const& p) {
-  return base::hash_combine(p.constant().location(), p.flags(), p.index());
+  return base::hash_combine(p.constant().location(), p.length(), p.flags(),
+                            p.index());
 }
 
 
 std::ostream& operator<<(std::ostream& os, CreateLiteralParameters const& p) {
-  return os << Brief(*p.constant()) << ", " << p.flags() << ", " << p.index();
+  return os << Brief(*p.constant()) << ", " << p.length() << ", " << p.flags()
+            << ", " << p.index();
 }
 
 
@@ -376,21 +379,23 @@ const CreateLiteralParameters& CreateLiteralParametersOf(const Operator* op) {
 #define CACHED_OP_LIST(V)                                  \
   V(Equal, Operator::kNoProperties, 2, 1)                  \
   V(NotEqual, Operator::kNoProperties, 2, 1)               \
-  V(StrictEqual, Operator::kNoThrow, 2, 1)                 \
-  V(StrictNotEqual, Operator::kNoThrow, 2, 1)              \
+  V(StrictEqual, Operator::kPure, 2, 1)                    \
+  V(StrictNotEqual, Operator::kPure, 2, 1)                 \
   V(LessThan, Operator::kNoProperties, 2, 1)               \
   V(GreaterThan, Operator::kNoProperties, 2, 1)            \
   V(LessThanOrEqual, Operator::kNoProperties, 2, 1)        \
   V(GreaterThanOrEqual, Operator::kNoProperties, 2, 1)     \
-  V(ToNumber, Operator::kNoProperties, 1, 1)               \
-  V(ToString, Operator::kNoProperties, 1, 1)               \
+  V(ToInteger, Operator::kNoProperties, 1, 1)              \
+  V(ToLength, Operator::kNoProperties, 1, 1)               \
   V(ToName, Operator::kNoProperties, 1, 1)                 \
-  V(ToObject, Operator::kNoProperties, 1, 1)               \
+  V(ToNumber, Operator::kNoProperties, 1, 1)               \
+  V(ToObject, Operator::kFoldable, 1, 1)                   \
+  V(ToString, Operator::kNoProperties, 1, 1)               \
   V(Yield, Operator::kNoProperties, 1, 1)                  \
   V(Create, Operator::kEliminatable, 2, 1)                 \
   V(CreateIterResultObject, Operator::kEliminatable, 2, 1) \
   V(HasProperty, Operator::kNoProperties, 2, 1)            \
-  V(TypeOf, Operator::kEliminatable, 1, 1)                 \
+  V(TypeOf, Operator::kPure, 1, 1)                         \
   V(InstanceOf, Operator::kNoProperties, 2, 1)             \
   V(ForInDone, Operator::kPure, 2, 1)                      \
   V(ForInNext, Operator::kNoProperties, 4, 1)              \
@@ -536,11 +541,11 @@ const Operator* JSOperatorBuilder::Modulus(BinaryOperationHints hints) {
 
 const Operator* JSOperatorBuilder::ToBoolean(ToBooleanHints hints) {
   // TODO(turbofan): Cache most important versions of this operator.
-  return new (zone()) Operator1<ToBooleanHints>(        //--
-      IrOpcode::kJSToBoolean, Operator::kEliminatable,  // opcode
-      "JSToBoolean",                                    // name
-      1, 1, 0, 1, 1, 0,                                 // inputs/outputs
-      hints);                                           // parameter
+  return new (zone()) Operator1<ToBooleanHints>(  //--
+      IrOpcode::kJSToBoolean, Operator::kPure,    // opcode
+      "JSToBoolean",                              // name
+      1, 0, 0, 1, 0, 0,                           // inputs/outputs
+      hints);                                     // parameter
 }
 
 const Operator* JSOperatorBuilder::CallFunction(
@@ -733,12 +738,11 @@ const Operator* JSOperatorBuilder::CreateClosure(
       parameters);                                         // parameter
 }
 
-
 const Operator* JSOperatorBuilder::CreateLiteralArray(
-    Handle<FixedArray> constant_elements, int literal_flags,
-    int literal_index) {
-  CreateLiteralParameters parameters(constant_elements, literal_flags,
-                                     literal_index);
+    Handle<FixedArray> constant_elements, int literal_flags, int literal_index,
+    int number_of_elements) {
+  CreateLiteralParameters parameters(constant_elements, number_of_elements,
+                                     literal_flags, literal_index);
   return new (zone()) Operator1<CreateLiteralParameters>(        // --
       IrOpcode::kJSCreateLiteralArray, Operator::kNoProperties,  // opcode
       "JSCreateLiteralArray",                                    // name
@@ -746,12 +750,11 @@ const Operator* JSOperatorBuilder::CreateLiteralArray(
       parameters);                                               // parameter
 }
 
-
 const Operator* JSOperatorBuilder::CreateLiteralObject(
     Handle<FixedArray> constant_properties, int literal_flags,
-    int literal_index) {
-  CreateLiteralParameters parameters(constant_properties, literal_flags,
-                                     literal_index);
+    int literal_index, int number_of_properties) {
+  CreateLiteralParameters parameters(constant_properties, number_of_properties,
+                                     literal_flags, literal_index);
   return new (zone()) Operator1<CreateLiteralParameters>(         // --
       IrOpcode::kJSCreateLiteralObject, Operator::kNoProperties,  // opcode
       "JSCreateLiteralObject",                                    // name
@@ -762,7 +765,7 @@ const Operator* JSOperatorBuilder::CreateLiteralObject(
 
 const Operator* JSOperatorBuilder::CreateLiteralRegExp(
     Handle<String> constant_pattern, int literal_flags, int literal_index) {
-  CreateLiteralParameters parameters(constant_pattern, literal_flags,
+  CreateLiteralParameters parameters(constant_pattern, -1, literal_flags,
                                      literal_index);
   return new (zone()) Operator1<CreateLiteralParameters>(         // --
       IrOpcode::kJSCreateLiteralRegExp, Operator::kNoProperties,  // opcode

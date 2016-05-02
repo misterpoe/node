@@ -112,12 +112,12 @@ Factory::NewSloppyBlockWithEvalContextExtension(
   return result;
 }
 
-
 Handle<Oddball> Factory::NewOddball(Handle<Map> map, const char* to_string,
-                                    Handle<Object> to_number,
+                                    Handle<Object> to_number, bool to_boolean,
                                     const char* type_of, byte kind) {
   Handle<Oddball> oddball = New<Oddball>(map, OLD_SPACE);
-  Oddball::Initialize(isolate(), oddball, to_string, to_number, type_of, kind);
+  Oddball::Initialize(isolate(), oddball, to_string, to_number, to_boolean,
+                      type_of, kind);
   return oddball;
 }
 
@@ -800,6 +800,22 @@ Handle<Context> Factory::NewCatchContext(Handle<JSFunction> function,
   return context;
 }
 
+Handle<Context> Factory::NewDebugEvaluateContext(Handle<Context> previous,
+                                                 Handle<JSReceiver> extension,
+                                                 Handle<Context> wrapped,
+                                                 Handle<StringSet> whitelist) {
+  STATIC_ASSERT(Context::WHITE_LIST_INDEX == Context::MIN_CONTEXT_SLOTS + 1);
+  Handle<FixedArray> array = NewFixedArray(Context::MIN_CONTEXT_SLOTS + 2);
+  array->set_map_no_write_barrier(*debug_evaluate_context_map());
+  Handle<Context> c = Handle<Context>::cast(array);
+  c->set_closure(wrapped.is_null() ? previous->closure() : wrapped->closure());
+  c->set_previous(*previous);
+  c->set_native_context(previous->native_context());
+  if (!extension.is_null()) c->set(Context::EXTENSION_INDEX, *extension);
+  if (!wrapped.is_null()) c->set(Context::WRAPPED_CONTEXT_INDEX, *wrapped);
+  if (!whitelist.is_null()) c->set(Context::WHITE_LIST_INDEX, *whitelist);
+  return c;
+}
 
 Handle<Context> Factory::NewWithContext(Handle<JSFunction> function,
                                         Handle<Context> previous,
@@ -837,15 +853,6 @@ Handle<Struct> Factory::NewStruct(InstanceType type) {
 }
 
 
-Handle<CodeCache> Factory::NewCodeCache() {
-  Handle<CodeCache> code_cache =
-      Handle<CodeCache>::cast(NewStruct(CODE_CACHE_TYPE));
-  code_cache->set_default_cache(*empty_fixed_array(), SKIP_WRITE_BARRIER);
-  code_cache->set_normal_type_cache(*undefined_value(), SKIP_WRITE_BARRIER);
-  return code_cache;
-}
-
-
 Handle<AliasedArgumentsEntry> Factory::NewAliasedArgumentsEntry(
     int aliased_context_slot) {
   Handle<AliasedArgumentsEntry> entry = Handle<AliasedArgumentsEntry>::cast(
@@ -877,7 +884,7 @@ Handle<Script> Factory::NewScript(Handle<String> source) {
   script->set_wrapper(heap->undefined_value());
   script->set_line_ends(heap->undefined_value());
   script->set_eval_from_shared(heap->undefined_value());
-  script->set_eval_from_instructions_offset(0);
+  script->set_eval_from_position(0);
   script->set_shared_function_infos(Smi::FromInt(0));
   script->set_flags(0);
 
@@ -1350,33 +1357,8 @@ Handle<JSFunction> Factory::NewFunctionFromSharedFunctionInfo(
     info->ResetForNewContext(isolate()->heap()->global_ic_age());
   }
 
-  if (FLAG_always_opt && info->allows_lazy_compilation()) {
-    result->MarkForOptimization();
-  }
-
-  CodeAndLiterals cached = info->SearchOptimizedCodeMap(
-      context->native_context(), BailoutId::None());
-  if (cached.code != nullptr) {
-    // Caching of optimized code enabled and optimized code found.
-    DCHECK(!cached.code->marked_for_deoptimization());
-    DCHECK(result->shared()->is_compiled());
-    result->ReplaceCode(cached.code);
-  }
-
-  if (cached.literals != nullptr) {
-    result->set_literals(cached.literals);
-  } else {
-    int number_of_literals = info->num_literals();
-    Handle<LiteralsArray> literals =
-        LiteralsArray::New(isolate(), handle(info->feedback_vector()),
-                           number_of_literals, pretenure);
-    result->set_literals(*literals);
-
-    // Cache context-specific literals.
-    Handle<Context> native_context(context->native_context());
-    SharedFunctionInfo::AddLiteralsToOptimizedCodeMap(info, native_context,
-                                                      literals);
-  }
+  // Give compiler a chance to pre-initialize.
+  Compiler::PostInstantiation(result, pretenure);
 
   return result;
 }
@@ -1419,8 +1401,10 @@ Handle<Code> Factory::NewCode(const CodeDesc& desc,
   int obj_size = Code::SizeFor(body_size);
 
   Handle<Code> code = NewCodeRaw(obj_size, immovable);
-  DCHECK(isolate()->code_range() == NULL || !isolate()->code_range()->valid() ||
-         isolate()->code_range()->contains(code->address()) ||
+  DCHECK(isolate()->heap()->memory_allocator()->code_range() == NULL ||
+         !isolate()->heap()->memory_allocator()->code_range()->valid() ||
+         isolate()->heap()->memory_allocator()->code_range()->contains(
+             code->address()) ||
          obj_size <= isolate()->heap()->code_space()->AreaSize());
 
   // The code object has not been fully initialized yet.  We rely on the
@@ -1507,6 +1491,14 @@ Handle<JSObject> Factory::NewJSObjectWithMemento(
       JSObject);
 }
 
+Handle<JSObject> Factory::NewJSObjectWithNullProto() {
+  Handle<JSObject> result = NewJSObject(isolate()->object_function());
+  Handle<Map> new_map =
+      Map::Copy(Handle<Map>(result->map()), "ObjectWithNullProto");
+  Map::SetPrototype(new_map, null_value());
+  JSObject::MigrateToMap(result, new_map);
+  return result;
+}
 
 Handle<JSModule> Factory::NewJSModule(Handle<Context> context,
                                       Handle<ScopeInfo> scope_info) {
@@ -1596,11 +1588,9 @@ Handle<JSObject> Factory::NewJSObjectFromMap(
 
 
 Handle<JSArray> Factory::NewJSArray(ElementsKind elements_kind,
-                                    Strength strength,
                                     PretenureFlag pretenure) {
-  Map* map = isolate()->get_initial_js_array_map(elements_kind, strength);
+  Map* map = isolate()->get_initial_js_array_map(elements_kind);
   if (map == nullptr) {
-    DCHECK(strength == Strength::WEAK);
     Context* native_context = isolate()->context()->native_context();
     JSFunction* array_function = native_context->array_function();
     map = array_function->initial_map();
@@ -1608,23 +1598,21 @@ Handle<JSArray> Factory::NewJSArray(ElementsKind elements_kind,
   return Handle<JSArray>::cast(NewJSObjectFromMap(handle(map), pretenure));
 }
 
-
 Handle<JSArray> Factory::NewJSArray(ElementsKind elements_kind, int length,
-                                    int capacity, Strength strength,
+                                    int capacity,
                                     ArrayStorageAllocationMode mode,
                                     PretenureFlag pretenure) {
-  Handle<JSArray> array = NewJSArray(elements_kind, strength, pretenure);
+  Handle<JSArray> array = NewJSArray(elements_kind, pretenure);
   NewJSArrayStorage(array, length, capacity, mode);
   return array;
 }
 
-
 Handle<JSArray> Factory::NewJSArrayWithElements(Handle<FixedArrayBase> elements,
                                                 ElementsKind elements_kind,
-                                                int length, Strength strength,
+                                                int length,
                                                 PretenureFlag pretenure) {
   DCHECK(length <= elements->length());
-  Handle<JSArray> array = NewJSArray(elements_kind, strength, pretenure);
+  Handle<JSArray> array = NewJSArray(elements_kind, pretenure);
 
   array->set_elements(*elements);
   array->set_length(Smi::FromInt(length));
@@ -1972,13 +1960,9 @@ MaybeHandle<JSBoundFunction> Factory::NewJSBoundFunction(
   }
 
   // Setup the map for the JSBoundFunction instance.
-  Handle<Map> map = handle(
-      target_function->IsConstructor()
-          ? isolate()->native_context()->bound_function_with_constructor_map()
-          : isolate()
-                ->native_context()
-                ->bound_function_without_constructor_map(),
-      isolate());
+  Handle<Map> map = target_function->IsConstructor()
+                        ? isolate()->bound_function_with_constructor_map()
+                        : isolate()->bound_function_without_constructor_map();
   if (map->prototype() != *prototype) {
     map = Map::TransitionToPrototype(map, prototype, REGULAR_PROTOTYPE);
   }
@@ -1990,8 +1974,6 @@ MaybeHandle<JSBoundFunction> Factory::NewJSBoundFunction(
   result->set_bound_target_function(*target_function);
   result->set_bound_this(*bound_this);
   result->set_bound_arguments(*bound_arguments);
-  result->set_length(Smi::FromInt(0));
-  result->set_name(*undefined_value(), SKIP_WRITE_BARRIER);
   return result;
 }
 
@@ -2071,16 +2053,13 @@ void Factory::ReinitializeJSGlobalProxy(Handle<JSGlobalProxy> object,
   object->set_hash(*hash);
 }
 
-
 Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
     Handle<String> name, int number_of_literals, FunctionKind kind,
-    Handle<Code> code, Handle<ScopeInfo> scope_info,
-    Handle<TypeFeedbackVector> feedback_vector) {
+    Handle<Code> code, Handle<ScopeInfo> scope_info) {
   DCHECK(IsValidFunctionKind(kind));
   Handle<SharedFunctionInfo> shared = NewSharedFunctionInfo(
       name, code, IsConstructable(kind, scope_info->language_mode()));
   shared->set_scope_info(*scope_info);
-  shared->set_feedback_vector(*feedback_vector);
   shared->set_kind(kind);
   shared->set_num_literals(number_of_literals);
   if (IsGeneratorFunction(kind)) {
@@ -2136,7 +2115,7 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
   share->set_function_data(*undefined_value(), SKIP_WRITE_BARRIER);
   share->set_script(*undefined_value(), SKIP_WRITE_BARRIER);
   share->set_debug_info(DebugInfo::uninitialized(), SKIP_WRITE_BARRIER);
-  share->set_inferred_name(*empty_string(), SKIP_WRITE_BARRIER);
+  share->set_function_identifier(*undefined_value(), SKIP_WRITE_BARRIER);
   StaticFeedbackVectorSpec empty_spec;
   Handle<TypeFeedbackMetadata> feedback_metadata =
       TypeFeedbackMetadata::New(isolate(), &empty_spec);
@@ -2253,15 +2232,20 @@ Handle<DebugInfo> Factory::NewDebugInfo(Handle<SharedFunctionInfo> shared) {
   Handle<DebugInfo> debug_info =
       Handle<DebugInfo>::cast(NewStruct(DEBUG_INFO_TYPE));
   debug_info->set_shared(*shared);
-  if (shared->HasBytecodeArray()) {
-    // Create a copy for debugging.
-    Handle<BytecodeArray> original(shared->bytecode_array(), isolate());
-    Handle<BytecodeArray> copy = CopyBytecodeArray(original);
-    debug_info->set_abstract_code(AbstractCode::cast(*copy));
+  if (shared->IsInterpreted()) {
+    // We need to create a copy, but delay since this may cause heap
+    // verification.
+    debug_info->set_abstract_code(AbstractCode::cast(shared->bytecode_array()));
   } else {
     debug_info->set_abstract_code(AbstractCode::cast(shared->code()));
   }
   debug_info->set_break_points(*break_points);
+  if (shared->IsInterpreted()) {
+    // Create a copy for debugging.
+    Handle<BytecodeArray> original(shared->bytecode_array());
+    Handle<BytecodeArray> copy = CopyBytecodeArray(original);
+    debug_info->set_abstract_code(AbstractCode::cast(*copy));
+  }
 
   // Link debug info to function.
   shared->set_debug_info(*debug_info);
@@ -2300,7 +2284,6 @@ Handle<JSWeakMap> Factory::NewJSWeakMap() {
 
 Handle<Map> Factory::ObjectLiteralMapFromCache(Handle<Context> context,
                                                int number_of_properties,
-                                               bool is_strong,
                                                bool* is_result_from_cache) {
   const int kMapCacheSize = 128;
 
@@ -2309,29 +2292,21 @@ Handle<Map> Factory::ObjectLiteralMapFromCache(Handle<Context> context,
       isolate()->bootstrapper()->IsActive()) {
     *is_result_from_cache = false;
     Handle<Map> map = Map::Create(isolate(), number_of_properties);
-    if (is_strong) map->set_is_strong();
     return map;
   }
   *is_result_from_cache = true;
   if (number_of_properties == 0) {
     // Reuse the initial map of the Object function if the literal has no
-    // predeclared properties, or the strong map if strong.
-    return handle(is_strong
-                      ? context->js_object_strong_map()
-                      : context->object_function()->initial_map(), isolate());
+    // predeclared properties.
+    return handle(context->object_function()->initial_map(), isolate());
   }
 
   int cache_index = number_of_properties - 1;
-  Handle<Object> maybe_cache(is_strong ? context->strong_map_cache()
-                                       : context->map_cache(), isolate());
+  Handle<Object> maybe_cache(context->map_cache(), isolate());
   if (maybe_cache->IsUndefined()) {
     // Allocate the new map cache for the native context.
     maybe_cache = NewFixedArray(kMapCacheSize, TENURED);
-    if (is_strong) {
-      context->set_strong_map_cache(*maybe_cache);
-    } else {
-      context->set_map_cache(*maybe_cache);
-    }
+    context->set_map_cache(*maybe_cache);
   } else {
     // Check to see whether there is a matching element in the cache.
     Handle<FixedArray> cache = Handle<FixedArray>::cast(maybe_cache);
@@ -2346,7 +2321,6 @@ Handle<Map> Factory::ObjectLiteralMapFromCache(Handle<Context> context,
   // Create a new map and add it to the cache.
   Handle<FixedArray> cache = Handle<FixedArray>::cast(maybe_cache);
   Handle<Map> map = Map::Create(isolate(), number_of_properties);
-  if (is_strong) map->set_is_strong();
   Handle<WeakCell> cell = NewWeakCell(map);
   cache->set(cache_index, *cell);
   return map;

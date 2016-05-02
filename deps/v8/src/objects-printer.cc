@@ -33,7 +33,13 @@ void Object::Print(std::ostream& os) {  // NOLINT
 
 
 void HeapObject::PrintHeader(std::ostream& os, const char* id) {  // NOLINT
-  os << reinterpret_cast<void*>(this) << ": [" << id << "]";
+  os << reinterpret_cast<void*>(this) << ": [";
+  if (id != nullptr) {
+    os << id;
+  } else {
+    os << map()->instance_type();
+  }
+  os << "]";
 }
 
 
@@ -95,11 +101,15 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
       os << "filler";
       break;
     case JS_OBJECT_TYPE:  // fall through
+    case JS_API_OBJECT_TYPE:
+    case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
-    case JS_ARRAY_TYPE:
     case JS_GENERATOR_OBJECT_TYPE:
     case JS_PROMISE_TYPE:
       JSObject::cast(this)->JSObjectPrint(os);
+      break;
+    case JS_ARRAY_TYPE:
+      JSArray::cast(this)->JSArrayPrint(os);
       break;
     case JS_REGEXP_TYPE:
       JSRegExp::cast(this)->JSRegExpPrint(os);
@@ -395,10 +405,20 @@ static void JSObjectPrintHeader(std::ostream& os, JSObject* obj,
   obj->PrintHeader(os, id);
   // Don't call GetElementsKind, its validation code can cause the printer to
   // fail when debugging.
+  os << "\n - map = " << reinterpret_cast<void*>(obj->map()) << " [";
+  if (obj->HasFastProperties()) {
+    os << "FastProperties";
+  } else {
+    os << "DictionaryProperties";
+  }
   PrototypeIterator iter(obj->GetIsolate(), obj);
-  os << "\n - map = " << reinterpret_cast<void*>(obj->map()) << " ["
-     << ElementsKindToString(obj->map()->elements_kind())
-     << "]\n - prototype = " << reinterpret_cast<void*>(iter.GetCurrent());
+  os << "]\n - prototype = " << reinterpret_cast<void*>(iter.GetCurrent());
+  os << "\n - elements = " << Brief(obj->elements()) << " ["
+     << ElementsKindToString(obj->map()->elements_kind());
+  if (obj->elements()->map() == obj->GetHeap()->fixed_cow_array_map()) {
+    os << " (COW)";
+  }
+  os << "]";
 }
 
 
@@ -406,14 +426,19 @@ static void JSObjectPrintBody(std::ostream& os, JSObject* obj,  // NOLINT
                               bool print_elements = true) {
   os << "\n {";
   obj->PrintProperties(os);
-  obj->PrintTransitions(os);
   if (print_elements) obj->PrintElements(os);
   os << "\n }\n";
 }
 
 
 void JSObject::JSObjectPrint(std::ostream& os) {  // NOLINT
-  JSObjectPrintHeader(os, this, "JSObject");
+  JSObjectPrintHeader(os, this, nullptr);
+  JSObjectPrintBody(os, this);
+}
+
+void JSArray::JSArrayPrint(std::ostream& os) {  // NOLINT
+  JSObjectPrintHeader(os, this, "JSArray");
+  os << "\n - length = " << Brief(this->length());
   JSObjectPrintBody(os, this);
 }
 
@@ -454,6 +479,12 @@ void Map::MapPrint(std::ostream& os) {  // NOLINT
   }
   os << "\n - elements kind: " << ElementsKindToString(elements_kind());
   os << "\n - unused property fields: " << unused_property_fields();
+  os << "\n - enum length: ";
+  if (EnumLength() == kInvalidEnumCacheSentinel) {
+    os << "invalid";
+  } else {
+    os << EnumLength();
+  }
   if (is_deprecated()) os << "\n - deprecated_map";
   if (is_stable()) os << "\n - stable_map";
   if (is_dictionary_map()) os << "\n - dictionary_map";
@@ -465,8 +496,6 @@ void Map::MapPrint(std::ostream& os) {  // NOLINT
   if (is_constructor()) os << "\n - constructor";
   if (is_access_check_needed()) os << "\n - access_check_needed";
   if (!is_extensible()) os << "\n - non-extensible";
-  if (is_observed()) os << "\n - observed";
-  if (is_strong()) os << "\n - strong_map";
   if (is_prototype_map()) {
     os << "\n - prototype_map";
     os << "\n - prototype info: " << Brief(prototype_info());
@@ -491,20 +520,6 @@ void Map::MapPrint(std::ostream& os) {  // NOLINT
   os << "\n - dependent code: " << Brief(dependent_code());
   os << "\n - construction counter: " << construction_counter();
   os << "\n";
-}
-
-
-void CodeCache::CodeCachePrint(std::ostream& os) {  // NOLINT
-  HeapObject::PrintHeader(os, "CodeCache");
-  os << "\n - default_cache: " << Brief(default_cache());
-  os << "\n - normal_type_cache: " << Brief(normal_type_cache());
-}
-
-
-void PolymorphicCodeCache::PolymorphicCodeCachePrint(
-    std::ostream& os) {  // NOLINT
-  HeapObject::PrintHeader(os, "PolymorphicCodeCache");
-  os << "\n - cache: " << Brief(cache());
 }
 
 
@@ -856,6 +871,8 @@ void JSFunction::JSFunctionPrint(std::ostream& os) {  // NOLINT
   if (has_initial_map()) os << Brief(initial_map());
   os << "\n - shared_info = " << Brief(shared());
   os << "\n - name = " << Brief(shared()->name());
+  os << "\n - formal_parameter_count = "
+     << shared()->internal_formal_parameter_count();
   if (shared()->is_generator()) {
     os << "\n   - generator";
   }
@@ -868,9 +885,10 @@ void JSFunction::JSFunctionPrint(std::ostream& os) {  // NOLINT
 
 void SharedFunctionInfo::SharedFunctionInfoPrint(std::ostream& os) {  // NOLINT
   HeapObject::PrintHeader(os, "SharedFunctionInfo");
-  os << "\n - name: " << Brief(name());
-  os << "\n - expected_nof_properties: " << expected_nof_properties();
-  os << "\n - ast_node_count: " << ast_node_count();
+  os << "\n - name = " << Brief(name());
+  os << "\n - formal_parameter_count = " << internal_formal_parameter_count();
+  os << "\n - expected_nof_properties = " << expected_nof_properties();
+  os << "\n - ast_node_count = " << ast_node_count();
   os << "\n - instance class name = ";
   instance_class_name()->Print(os);
   os << "\n - code = " << Brief(code());
@@ -973,6 +991,7 @@ void AccessorInfo::AccessorInfoPrint(std::ostream& os) {  // NOLINT
   os << "\n - flag: " << flag();
   os << "\n - getter: " << Brief(getter());
   os << "\n - setter: " << Brief(setter());
+  os << "\n - js_getter: " << Brief(js_getter());
   os << "\n - data: " << Brief(data());
   os << "\n";
 }
@@ -1125,8 +1144,7 @@ void Script::ScriptPrint(std::ostream& os) {  // NOLINT
   os << "\n - compilation type: " << compilation_type();
   os << "\n - line ends: " << Brief(line_ends());
   os << "\n - eval from shared: " << Brief(eval_from_shared());
-  os << "\n - eval from instructions offset: "
-     << eval_from_instructions_offset();
+  os << "\n - eval from position: " << eval_from_position();
   os << "\n - shared function infos: " << Brief(shared_function_infos());
   os << "\n";
 }
@@ -1278,7 +1296,7 @@ void TransitionArray::PrintTransitions(std::ostream& os, Object* transitions,
   for (int i = 0; i < num_transitions; i++) {
     Name* key = GetKey(transitions, i);
     Map* target = GetTarget(transitions, i);
-    os << "\n   ";
+    os << "\n     ";
 #ifdef OBJECT_PRINT
     key->NamePrint(os);
 #else
@@ -1297,10 +1315,6 @@ void TransitionArray::PrintTransitions(std::ostream& os, Object* transitions,
          << ")";
     } else if (key == heap->strict_function_transition_symbol()) {
       os << " (transition to strict function)";
-    } else if (key == heap->strong_function_transition_symbol()) {
-      os << " (transition to strong function)";
-    } else if (key == heap->observed_symbol()) {
-      os << " (transition to Object.observe)";
     } else {
       PropertyDetails details = GetTargetDetails(key, target);
       os << "(transition to ";

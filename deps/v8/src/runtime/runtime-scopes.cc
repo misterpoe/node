@@ -44,7 +44,8 @@ static Object* DeclareGlobals(Isolate* isolate, Handle<JSGlobalObject> global,
   }
 
   // Do the lookup own properties only, see ES5 erratum.
-  LookupIterator it(global, name, LookupIterator::HIDDEN_SKIP_INTERCEPTOR);
+  LookupIterator it(global, name, global,
+                    LookupIterator::HIDDEN_SKIP_INTERCEPTOR);
   Maybe<PropertyAttributes> maybe = JSReceiver::GetPropertyAttributes(&it);
   if (!maybe.IsJust()) return isolate->heap()->exception();
 
@@ -102,8 +103,7 @@ RUNTIME_FUNCTION(Runtime_DeclareGlobals) {
 
   // Traverse the name/value pairs and set the properties.
   int length = pairs->length();
-  for (int i = 0; i < length; i += 2) {
-    HandleScope scope(isolate);
+  FOR_WITH_HANDLE_SCOPE(isolate, int, i = 0, i, i < length, i += 2, {
     Handle<String> name(String::cast(pairs->get(i)));
     Handle<Object> initial_value(pairs->get(i + 1), isolate);
 
@@ -142,7 +142,7 @@ RUNTIME_FUNCTION(Runtime_DeclareGlobals) {
                                     static_cast<PropertyAttributes>(attr),
                                     is_var, is_const, is_function);
     if (isolate->has_pending_exception()) return result;
-  }
+  });
 
   return isolate->heap()->undefined_value();
 }
@@ -182,7 +182,8 @@ RUNTIME_FUNCTION(Runtime_InitializeConstGlobal) {
   Handle<JSGlobalObject> global = isolate->global_object();
 
   // Lookup the property as own on the global object.
-  LookupIterator it(global, name, LookupIterator::HIDDEN_SKIP_INTERCEPTOR);
+  LookupIterator it(global, name, global,
+                    LookupIterator::HIDDEN_SKIP_INTERCEPTOR);
   Maybe<PropertyAttributes> maybe = JSReceiver::GetPropertyAttributes(&it);
   DCHECK(maybe.IsJust());
   PropertyAttributes old_attributes = maybe.FromJust();
@@ -236,10 +237,7 @@ Object* DeclareLookupSlot(Isolate* isolate, Handle<String> name,
     // Check for a conflict with a lexically scoped variable
     context_arg->Lookup(name, LEXICAL_TEST, &index, &attributes,
                         &binding_flags);
-    if (attributes != ABSENT &&
-        (binding_flags == MUTABLE_CHECK_INITIALIZED ||
-         binding_flags == IMMUTABLE_CHECK_INITIALIZED ||
-         binding_flags == IMMUTABLE_CHECK_INITIALIZED_HARMONY)) {
+    if (attributes != ABSENT && binding_flags == BINDING_CHECK_INITIALIZED) {
       return ThrowRedeclarationError(isolate, name);
     }
     attr = static_cast<PropertyAttributes>(attr & ~EVAL_DECLARED);
@@ -335,85 +333,6 @@ RUNTIME_FUNCTION(Runtime_DeclareLookupSlot) {
   PropertyAttributes attributes =
       static_cast<PropertyAttributes>(property_attributes->value());
   return DeclareLookupSlot(isolate, name, initial_value, attributes);
-}
-
-
-RUNTIME_FUNCTION(Runtime_InitializeLegacyConstLookupSlot) {
-  HandleScope scope(isolate);
-  DCHECK(args.length() == 3);
-
-  CONVERT_ARG_HANDLE_CHECKED(Object, value, 0);
-  DCHECK(!value->IsTheHole());
-  // Initializations are always done in a function or native context.
-  CONVERT_ARG_HANDLE_CHECKED(Context, context_arg, 1);
-  Handle<Context> context(context_arg->declaration_context());
-  CONVERT_ARG_HANDLE_CHECKED(String, name, 2);
-
-  int index;
-  PropertyAttributes attributes;
-  ContextLookupFlags flags = DONT_FOLLOW_CHAINS;
-  BindingFlags binding_flags;
-  Handle<Object> holder =
-      context->Lookup(name, flags, &index, &attributes, &binding_flags);
-  if (holder.is_null()) {
-    // In case of JSProxy, an exception might have been thrown.
-    if (isolate->has_pending_exception()) return isolate->heap()->exception();
-  }
-
-  if (index != Context::kNotFound) {
-    DCHECK(holder->IsContext());
-    // Property was found in a context.  Perform the assignment if the constant
-    // was uninitialized.
-    Handle<Context> context = Handle<Context>::cast(holder);
-    DCHECK((attributes & READ_ONLY) != 0);
-    if (context->get(index)->IsTheHole()) context->set(index, *value);
-    return *value;
-  }
-
-  PropertyAttributes attr =
-      static_cast<PropertyAttributes>(DONT_DELETE | READ_ONLY);
-
-  // Strict mode handling not needed (legacy const is disallowed in strict
-  // mode).
-
-  // The declared const was configurable, and may have been deleted in the
-  // meanwhile. If so, re-introduce the variable in the context extension.
-  if (attributes == ABSENT) {
-    Handle<Context> declaration_context(context_arg->declaration_context());
-    if (declaration_context->IsScriptContext()) {
-      holder = handle(declaration_context->global_object(), isolate);
-    } else {
-      holder = handle(declaration_context->extension_object(), isolate);
-      DCHECK(!holder.is_null());
-    }
-    CHECK(holder->IsJSObject());
-  } else {
-    // For JSContextExtensionObjects, the initializer can be run multiple times
-    // if in a for loop: for (var i = 0; i < 2; i++) { const x = i; }. Only the
-    // first assignment should go through. For JSGlobalObjects, additionally any
-    // code can run in between that modifies the declared property.
-    DCHECK(holder->IsJSGlobalObject() || holder->IsJSContextExtensionObject());
-
-    LookupIterator it(holder, name, LookupIterator::HIDDEN_SKIP_INTERCEPTOR);
-    Maybe<PropertyAttributes> maybe = JSReceiver::GetPropertyAttributes(&it);
-    if (!maybe.IsJust()) return isolate->heap()->exception();
-    PropertyAttributes old_attributes = maybe.FromJust();
-
-    // Ignore if we can't reconfigure the value.
-    if ((old_attributes & DONT_DELETE) != 0) {
-      if ((old_attributes & READ_ONLY) != 0 ||
-          it.state() == LookupIterator::ACCESSOR) {
-        return *value;
-      }
-      attr = static_cast<PropertyAttributes>(old_attributes | READ_ONLY);
-    }
-  }
-
-  RETURN_FAILURE_ON_EXCEPTION(
-      isolate, JSObject::SetOwnPropertyIgnoreAttributes(
-                   Handle<JSObject>::cast(holder), name, value, attr));
-
-  return *value;
 }
 
 
@@ -640,9 +559,9 @@ RUNTIME_FUNCTION(Runtime_NewRestParameter) {
   base::SmartArrayPointer<Handle<Object>> arguments =
       GetCallerArguments(isolate, &argument_count);
   int num_elements = std::max(0, argument_count - start_index);
-  Handle<JSObject> result = isolate->factory()->NewJSArray(
-      FAST_ELEMENTS, num_elements, num_elements, Strength::WEAK,
-      DONT_INITIALIZE_ARRAY_ELEMENTS);
+  Handle<JSObject> result =
+      isolate->factory()->NewJSArray(FAST_ELEMENTS, num_elements, num_elements,
+                                     DONT_INITIALIZE_ARRAY_ELEMENTS);
   {
     DisallowHeapAllocation no_gc;
     FixedArray* elements = FixedArray::cast(result->elements());
@@ -708,7 +627,7 @@ static Object* FindNameClash(Handle<ScopeInfo> scope_info,
     }
 
     if (IsLexicalVariableMode(mode)) {
-      LookupIterator it(global_object, name,
+      LookupIterator it(global_object, name, global_object,
                         LookupIterator::HIDDEN_SKIP_INTERCEPTOR);
       Maybe<PropertyAttributes> maybe = JSReceiver::GetPropertyAttributes(&it);
       if (!maybe.IsJust()) return isolate->heap()->exception();
@@ -873,8 +792,7 @@ RUNTIME_FUNCTION(Runtime_DeclareModules) {
         case VAR:
         case LET:
         case CONST:
-        case CONST_LEGACY:
-        case IMPORT: {
+        case CONST_LEGACY: {
           PropertyAttributes attr =
               IsImmutableVariableMode(mode) ? FROZEN : SEALED;
           Handle<AccessorInfo> info =
@@ -959,23 +877,14 @@ MaybeHandle<Object> LoadLookupSlot(Handle<String> name,
     Handle<Object> value = handle(Context::cast(*holder)->get(index), isolate);
     // Check for uninitialized bindings.
     switch (flags) {
-      case MUTABLE_CHECK_INITIALIZED:
-      case IMMUTABLE_CHECK_INITIALIZED_HARMONY:
+      case BINDING_CHECK_INITIALIZED:
         if (value->IsTheHole()) {
           THROW_NEW_ERROR(isolate,
                           NewReferenceError(MessageTemplate::kNotDefined, name),
                           Object);
         }
       // FALLTHROUGH
-      case IMMUTABLE_CHECK_INITIALIZED:
-        if (value->IsTheHole()) {
-          DCHECK(attributes & READ_ONLY);
-          value = isolate->factory()->undefined_value();
-        }
-      // FALLTHROUGH
-      case MUTABLE_IS_INITIALIZED:
-      case IMMUTABLE_IS_INITIALIZED:
-      case IMMUTABLE_IS_INITIALIZED_HARMONY:
+      case BINDING_IS_INITIALIZED:
         DCHECK(!value->IsTheHole());
         if (receiver_return) *receiver_return = receiver;
         return value;
@@ -1073,8 +982,7 @@ MaybeHandle<Object> StoreLookupSlot(Handle<String> name, Handle<Object> value,
 
   // The property was found in a context slot.
   if (index != Context::kNotFound) {
-    if ((flags == MUTABLE_CHECK_INITIALIZED ||
-         flags == IMMUTABLE_CHECK_INITIALIZED_HARMONY) &&
+    if (flags == BINDING_CHECK_INITIALIZED &&
         Handle<Context>::cast(holder)->is_the_hole(index)) {
       THROW_NEW_ERROR(isolate,
                       NewReferenceError(MessageTemplate::kNotDefined, name),

@@ -6,7 +6,7 @@
   'variables': {
     'v8_code': 1,
   },
-  'includes': ['../../build/toolchain.gypi', '../../build/features.gypi'],
+  'includes': ['../../gypfiles/toolchain.gypi', '../../gypfiles/features.gypi'],
   'targets': [
     {
       'target_name': 'unittests',
@@ -17,7 +17,7 @@
       'dependencies': [
         '../../testing/gmock.gyp:gmock',
         '../../testing/gtest.gyp:gtest',
-        '../../tools/gyp/v8.gyp:v8_libplatform',
+        '../../src/v8.gyp:v8_libplatform',
       ],
       'include_dirs': [
         '../..',
@@ -50,6 +50,7 @@
         'compiler/control-flow-optimizer-unittest.cc',
         'compiler/dead-code-elimination-unittest.cc',
         'compiler/diamond-unittest.cc',
+        'compiler/effect-control-linearizer-unittest.cc',
         'compiler/escape-analysis-unittest.cc',
         'compiler/graph-reducer-unittest.cc',
         'compiler/graph-reducer-unittest.h',
@@ -83,7 +84,6 @@
         'compiler/opcodes-unittest.cc',
         'compiler/register-allocator-unittest.cc',
         'compiler/schedule-unittest.cc',
-        'compiler/select-lowering-unittest.cc',
         'compiler/scheduler-unittest.cc',
         'compiler/scheduler-rpo-unittest.cc',
         'compiler/simplified-operator-reducer-unittest.cc',
@@ -101,25 +101,28 @@
         'interpreter/constant-array-builder-unittest.cc',
         'interpreter/interpreter-assembler-unittest.cc',
         'interpreter/interpreter-assembler-unittest.h',
-        'interpreter/register-translator-unittest.cc',
+        'interpreter/source-position-table-unittest.cc',
         'libplatform/default-platform-unittest.cc',
         'libplatform/task-queue-unittest.cc',
         'libplatform/worker-thread-unittest.cc',
         'heap/bitmap-unittest.cc',
         'heap/gc-idle-time-handler-unittest.cc',
+        'heap/gc-tracer-unittest.cc',
         'heap/memory-reducer-unittest.cc',
         'heap/heap-unittest.cc',
         'heap/scavenge-job-unittest.cc',
         'heap/slot-set-unittest.cc',
         'locked-queue-unittest.cc',
         'run-all-unittests.cc',
-        'runtime/runtime-interpreter-unittest.cc',
         'test-utils.h',
         'test-utils.cc',
         'wasm/ast-decoder-unittest.cc',
+        'wasm/decoder-unittest.cc',
         'wasm/encoder-unittest.cc',
+        'wasm/leb-helper-unittest.cc',
         'wasm/loop-assignment-analysis-unittest.cc',
         'wasm/module-decoder-unittest.cc',
+        'wasm/switch-logic-unittest.cc',
         'wasm/wasm-macro-gen-unittest.cc',
       ],
       'conditions': [
@@ -138,9 +141,19 @@
             'compiler/ia32/instruction-selector-ia32-unittest.cc',
           ],
         }],
+        ['v8_target_arch=="mips"', {
+          'sources': [  ### gcmole(arch:mips) ###
+            'compiler/mips/instruction-selector-mips-unittest.cc',
+          ],
+        }],
         ['v8_target_arch=="mipsel"', {
           'sources': [  ### gcmole(arch:mipsel) ###
             'compiler/mips/instruction-selector-mips-unittest.cc',
+          ],
+        }],
+        ['v8_target_arch=="mips64"', {
+          'sources': [  ### gcmole(arch:mips64) ###
+            'compiler/mips64/instruction-selector-mips64-unittest.cc',
           ],
         }],
         ['v8_target_arch=="mips64el"', {
@@ -158,15 +171,20 @@
             'compiler/ppc/instruction-selector-ppc-unittest.cc',
           ],
         }],
+        ['v8_target_arch=="s390" or v8_target_arch=="s390x"', {
+          'sources': [  ### gcmole(arch:s390) ###
+            'compiler/s390/instruction-selector-s390-unittest.cc',
+          ],
+        }],
         ['OS=="aix"', {
           'ldflags': [ '-Wl,-bbigtoc' ],
         }],
         ['component=="shared_library"', {
           # compiler-unittests can't be built against a shared library, so we
           # need to depend on the underlying static target in that case.
-          'dependencies': ['../../tools/gyp/v8.gyp:v8_maybe_snapshot'],
+          'dependencies': ['../../src/v8.gyp:v8_maybe_snapshot'],
         }, {
-          'dependencies': ['../../tools/gyp/v8.gyp:v8'],
+          'dependencies': ['../../src/v8.gyp:v8'],
         }],
         ['os_posix == 1', {
           # TODO(svenpanne): This is a temporary work-around to fix the warnings
@@ -193,7 +211,7 @@
             'unittests',
           ],
           'includes': [
-            '../../build/isolate.gypi',
+            '../../gypfiles/isolate.gypi',
           ],
           'sources': [
             'unittests.isolate',

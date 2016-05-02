@@ -1372,17 +1372,21 @@ void Assembler::bne(Register rs, Register rt, int16_t offset) {
 
 void Assembler::bovc(Register rs, Register rt, int16_t offset) {
   DCHECK(kArchVariant == kMips64r6);
-  DCHECK(!(rs.is(zero_reg)));
-  DCHECK(rs.code() >= rt.code());
-  GenInstrImmediate(ADDI, rs, rt, offset, CompactBranchType::COMPACT_BRANCH);
+  if (rs.code() >= rt.code()) {
+    GenInstrImmediate(ADDI, rs, rt, offset, CompactBranchType::COMPACT_BRANCH);
+  } else {
+    GenInstrImmediate(ADDI, rt, rs, offset, CompactBranchType::COMPACT_BRANCH);
+  }
 }
 
 
 void Assembler::bnvc(Register rs, Register rt, int16_t offset) {
   DCHECK(kArchVariant == kMips64r6);
-  DCHECK(!(rs.is(zero_reg)));
-  DCHECK(rs.code() >= rt.code());
-  GenInstrImmediate(DADDI, rs, rt, offset, CompactBranchType::COMPACT_BRANCH);
+  if (rs.code() >= rt.code()) {
+    GenInstrImmediate(DADDI, rs, rt, offset, CompactBranchType::COMPACT_BRANCH);
+  } else {
+    GenInstrImmediate(DADDI, rt, rs, offset, CompactBranchType::COMPACT_BRANCH);
+  }
 }
 
 
@@ -1863,6 +1867,12 @@ void Assembler::drotr(Register rd, Register rt, uint16_t sa) {
   emit(instr);
 }
 
+void Assembler::drotr32(Register rd, Register rt, uint16_t sa) {
+  DCHECK(rd.is_valid() && rt.is_valid() && is_uint5(sa));
+  Instr instr = SPECIAL | (1 << kRsShift) | (rt.code() << kRtShift) |
+                (rd.code() << kRdShift) | (sa << kSaShift) | DSRL32;
+  emit(instr);
+}
 
 void Assembler::drotrv(Register rd, Register rt, Register rs) {
   DCHECK(rd.is_valid() && rt.is_valid() && rs.is_valid() );
@@ -1899,20 +1909,20 @@ void Assembler::dsra32(Register rd, Register rt, uint16_t sa) {
 
 void Assembler::lsa(Register rd, Register rt, Register rs, uint8_t sa) {
   DCHECK(rd.is_valid() && rt.is_valid() && rs.is_valid());
-  DCHECK(sa < 5 && sa > 0);
+  DCHECK(sa <= 3);
   DCHECK(kArchVariant == kMips64r6);
-  Instr instr = SPECIAL | (rs.code() << kRsShift) | (rt.code() << kRtShift) |
-                (rd.code() << kRdShift) | (sa - 1) << kSaShift | LSA;
+  Instr instr = SPECIAL | rs.code() << kRsShift | rt.code() << kRtShift |
+                rd.code() << kRdShift | sa << kSaShift | LSA;
   emit(instr);
 }
 
 
 void Assembler::dlsa(Register rd, Register rt, Register rs, uint8_t sa) {
   DCHECK(rd.is_valid() && rt.is_valid() && rs.is_valid());
-  DCHECK(sa < 5 && sa > 0);
+  DCHECK(sa <= 3);
   DCHECK(kArchVariant == kMips64r6);
-  Instr instr = SPECIAL | (rs.code() << kRsShift) | (rt.code() << kRtShift) |
-                (rd.code() << kRdShift) | (sa - 1) << kSaShift | DLSA;
+  Instr instr = SPECIAL | rs.code() << kRsShift | rt.code() << kRtShift |
+                rd.code() << kRdShift | sa << kSaShift | DLSA;
   emit(instr);
 }
 
@@ -1991,11 +2001,15 @@ void Assembler::lwu(Register rd, const MemOperand& rs) {
 
 
 void Assembler::lwl(Register rd, const MemOperand& rs) {
+  DCHECK(is_int16(rs.offset_));
+  DCHECK(kArchVariant == kMips64r2);
   GenInstrImmediate(LWL, rs.rm(), rd, rs.offset_);
 }
 
 
 void Assembler::lwr(Register rd, const MemOperand& rs) {
+  DCHECK(is_int16(rs.offset_));
+  DCHECK(kArchVariant == kMips64r2);
   GenInstrImmediate(LWR, rs.rm(), rd, rs.offset_);
 }
 
@@ -2031,11 +2045,15 @@ void Assembler::sw(Register rd, const MemOperand& rs) {
 
 
 void Assembler::swl(Register rd, const MemOperand& rs) {
+  DCHECK(is_int16(rs.offset_));
+  DCHECK(kArchVariant == kMips64r2);
   GenInstrImmediate(SWL, rs.rm(), rd, rs.offset_);
 }
 
 
 void Assembler::swr(Register rd, const MemOperand& rs) {
+  DCHECK(is_int16(rs.offset_));
+  DCHECK(kArchVariant == kMips64r2);
   GenInstrImmediate(SWR, rs.rm(), rd, rs.offset_);
 }
 
@@ -2074,21 +2092,29 @@ void Assembler::dati(Register rs, int32_t j) {
 
 
 void Assembler::ldl(Register rd, const MemOperand& rs) {
+  DCHECK(is_int16(rs.offset_));
+  DCHECK(kArchVariant == kMips64r2);
   GenInstrImmediate(LDL, rs.rm(), rd, rs.offset_);
 }
 
 
 void Assembler::ldr(Register rd, const MemOperand& rs) {
+  DCHECK(is_int16(rs.offset_));
+  DCHECK(kArchVariant == kMips64r2);
   GenInstrImmediate(LDR, rs.rm(), rd, rs.offset_);
 }
 
 
 void Assembler::sdl(Register rd, const MemOperand& rs) {
+  DCHECK(is_int16(rs.offset_));
+  DCHECK(kArchVariant == kMips64r2);
   GenInstrImmediate(SDL, rs.rm(), rd, rs.offset_);
 }
 
 
 void Assembler::sdr(Register rd, const MemOperand& rs) {
+  DCHECK(is_int16(rs.offset_));
+  DCHECK(kArchVariant == kMips64r2);
   GenInstrImmediate(SDR, rs.rm(), rd, rs.offset_);
 }
 
@@ -2245,6 +2271,10 @@ void Assembler::tne(Register rs, Register rt, uint16_t code) {
   emit(instr);
 }
 
+void Assembler::sync() {
+  Instr sync_instr = SPECIAL | SYNC;
+  emit(sync_instr);
+}
 
 // Move from HI/LO register.
 
@@ -2493,7 +2523,6 @@ void Assembler::lwc1(FPURegister fd, const MemOperand& src) {
 
 
 void Assembler::ldc1(FPURegister fd, const MemOperand& src) {
-  DCHECK(!src.rm().is(at));
   if (is_int16(src.offset_)) {
     GenInstrImmediate(LDC1, src.rm(), fd, src.offset_);
   } else {  // Offset > 16 bits, use multiple instructions to load.
@@ -3199,6 +3228,7 @@ void Assembler::dd(Label* label) {
     data = reinterpret_cast<uint64_t>(buffer_ + label->pos());
   } else {
     data = jump_address(label);
+    unbound_labels_count_++;
     internal_reference_positions_.insert(label->pos());
   }
   RecordRelocInfo(RelocInfo::INTERNAL_REFERENCE);
@@ -3210,7 +3240,7 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   // We do not try to reuse pool constants.
   RelocInfo rinfo(isolate(), pc_, rmode, data, NULL);
   if (rmode >= RelocInfo::COMMENT &&
-      rmode <= RelocInfo::DEBUG_BREAK_SLOT_AT_CALL) {
+      rmode <= RelocInfo::DEBUG_BREAK_SLOT_AT_TAIL_CALL) {
     // Adjust code for new modes.
     DCHECK(RelocInfo::IsDebugBreakSlot(rmode)
            || RelocInfo::IsComment(rmode)

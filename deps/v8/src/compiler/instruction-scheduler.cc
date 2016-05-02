@@ -82,7 +82,8 @@ InstructionScheduler::InstructionScheduler(Zone* zone,
       graph_(zone),
       last_side_effect_instr_(nullptr),
       pending_loads_(zone),
-      last_live_in_reg_marker_(nullptr) {
+      last_live_in_reg_marker_(nullptr),
+      last_deopt_(nullptr) {
 }
 
 
@@ -91,6 +92,7 @@ void InstructionScheduler::StartBlock(RpoNumber rpo) {
   DCHECK(last_side_effect_instr_ == nullptr);
   DCHECK(pending_loads_.empty());
   DCHECK(last_live_in_reg_marker_ == nullptr);
+  DCHECK(last_deopt_ == nullptr);
   sequence()->StartBlock(rpo);
 }
 
@@ -106,6 +108,7 @@ void InstructionScheduler::EndBlock(RpoNumber rpo) {
   last_side_effect_instr_ = nullptr;
   pending_loads_.clear();
   last_live_in_reg_marker_ = nullptr;
+  last_deopt_ = nullptr;
 }
 
 
@@ -115,7 +118,7 @@ void InstructionScheduler::AddInstruction(Instruction* instr) {
   if (IsBlockTerminator(instr)) {
     // Make sure that basic block terminators are not moved by adding them
     // as successor of every instruction.
-    for (auto node : graph_) {
+    for (ScheduleGraphNode* node : graph_) {
       node->AddSuccessor(new_node);
     }
   } else if (IsFixedRegisterParameter(instr)) {
@@ -128,13 +131,19 @@ void InstructionScheduler::AddInstruction(Instruction* instr) {
       last_live_in_reg_marker_->AddSuccessor(new_node);
     }
 
+    // Make sure that new instructions are not scheduled before the last
+    // deoptimization point.
+    if (last_deopt_ != nullptr) {
+      last_deopt_->AddSuccessor(new_node);
+    }
+
     // Instructions with side effects and memory operations can't be
     // reordered with respect to each other.
     if (HasSideEffect(instr)) {
       if (last_side_effect_instr_ != nullptr) {
         last_side_effect_instr_->AddSuccessor(new_node);
       }
-      for (auto load : pending_loads_) {
+      for (ScheduleGraphNode* load : pending_loads_) {
         load->AddSuccessor(new_node);
       }
       pending_loads_.clear();
@@ -146,10 +155,17 @@ void InstructionScheduler::AddInstruction(Instruction* instr) {
         last_side_effect_instr_->AddSuccessor(new_node);
       }
       pending_loads_.push_back(new_node);
+    } else if (instr->IsDeoptimizeCall()) {
+      // Ensure that deopts are not reordered with respect to side-effect
+      // instructions.
+      if (last_side_effect_instr_ != nullptr) {
+        last_side_effect_instr_->AddSuccessor(new_node);
+      }
+      last_deopt_ = new_node;
     }
 
     // Look for operand dependencies.
-    for (auto node : graph_) {
+    for (ScheduleGraphNode* node : graph_) {
       if (HasOperandDependency(node->instruction(), instr)) {
         node->AddSuccessor(new_node);
       }
@@ -168,7 +184,7 @@ void InstructionScheduler::ScheduleBlock() {
   ComputeTotalLatencies();
 
   // Add nodes which don't have dependencies to the ready list.
-  for (auto node : graph_) {
+  for (ScheduleGraphNode* node : graph_) {
     if (!node->HasUnscheduledPredecessor()) {
       ready_list.AddNode(node);
     }
@@ -177,12 +193,12 @@ void InstructionScheduler::ScheduleBlock() {
   // Go through the ready list and schedule the instructions.
   int cycle = 0;
   while (!ready_list.IsEmpty()) {
-    auto candidate = ready_list.PopBestCandidate(cycle);
+    ScheduleGraphNode* candidate = ready_list.PopBestCandidate(cycle);
 
     if (candidate != nullptr) {
       sequence()->AddInstruction(candidate->instruction());
 
-      for (auto successor : candidate->successors()) {
+      for (ScheduleGraphNode* successor : candidate->successors()) {
         successor->DropUnscheduledPredecessor();
         successor->set_start_cycle(
             std::max(successor->start_cycle(),
@@ -220,8 +236,11 @@ int InstructionScheduler::GetInstructionFlags(const Instruction* instr) const {
     case kArchCallJSFunction:
       return kHasSideEffect;
 
+    case kArchTailCallCodeObjectFromJSFunction:
     case kArchTailCallCodeObject:
+    case kArchTailCallJSFunctionFromJSFunction:
     case kArchTailCallJSFunction:
+    case kArchTailCallAddress:
       return kHasSideEffect | kIsBlockTerminator;
 
     case kArchDeoptimize:
@@ -250,6 +269,13 @@ int InstructionScheduler::GetInstructionFlags(const Instruction* instr) const {
     case kCheckedStoreFloat64:
     case kArchStoreWithWriteBarrier:
       return kHasSideEffect;
+
+    case kAtomicLoadInt8:
+    case kAtomicLoadUint8:
+    case kAtomicLoadInt16:
+    case kAtomicLoadUint16:
+    case kAtomicLoadWord32:
+      return kIsLoadOperation;
 
 #define CASE(Name) case k##Name:
     TARGET_ARCH_OPCODE_LIST(CASE)
@@ -296,10 +322,10 @@ bool InstructionScheduler::IsBlockTerminator(const Instruction* instr) const {
 
 
 void InstructionScheduler::ComputeTotalLatencies() {
-  for (auto node : base::Reversed(graph_)) {
+  for (ScheduleGraphNode* node : base::Reversed(graph_)) {
     int max_latency = 0;
 
-    for (auto successor : node->successors()) {
+    for (ScheduleGraphNode* successor : node->successors()) {
       DCHECK(successor->total_latency() != -1);
       if (successor->total_latency() > max_latency) {
         max_latency = successor->total_latency();

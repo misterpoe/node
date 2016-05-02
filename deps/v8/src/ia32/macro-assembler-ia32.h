@@ -19,17 +19,15 @@ const Register kReturnRegister1 = {Register::kCode_edx};
 const Register kReturnRegister2 = {Register::kCode_edi};
 const Register kJSFunctionRegister = {Register::kCode_edi};
 const Register kContextRegister = {Register::kCode_esi};
+const Register kAllocateSizeRegister = {Register::kCode_edx};
 const Register kInterpreterAccumulatorRegister = {Register::kCode_eax};
-const Register kInterpreterRegisterFileRegister = {Register::kCode_edx};
 const Register kInterpreterBytecodeOffsetRegister = {Register::kCode_ecx};
 const Register kInterpreterBytecodeArrayRegister = {Register::kCode_edi};
+const Register kInterpreterDispatchTableRegister = {Register::kCode_esi};
 const Register kJavaScriptCallArgCountRegister = {Register::kCode_eax};
 const Register kJavaScriptCallNewTargetRegister = {Register::kCode_edx};
 const Register kRuntimeCallFunctionRegister = {Register::kCode_ebx};
 const Register kRuntimeCallArgCountRegister = {Register::kCode_eax};
-
-// Spill slots used by interpreter dispatch calling convention.
-const int kInterpreterDispatchTableSpillSlot = -1;
 
 // Convenience for platform-independent signatures.  We do not normally
 // distinguish memory operands from other operands on ia32.
@@ -43,6 +41,8 @@ enum PointersToHereCheck {
 };
 
 enum RegisterValueType { REGISTER_VALUE_IS_SMI, REGISTER_VALUE_IS_INT32 };
+
+enum class ReturnAddressState { kOnStack, kNotOnStack };
 
 #ifdef DEBUG
 bool AreAliased(Register reg1, Register reg2, Register reg3 = no_reg,
@@ -234,7 +234,7 @@ class MacroAssembler: public Assembler {
   void DebugBreak();
 
   // Generates function and stub prologue code.
-  void StubPrologue();
+  void StubPrologue(StackFrame::Type type);
   void Prologue(bool code_pre_aging);
 
   // Enter specific kind of exit frame. Expects the number of
@@ -323,6 +323,20 @@ class MacroAssembler: public Assembler {
   // ---------------------------------------------------------------------------
   // JavaScript invokes
 
+  // Removes current frame and its arguments from the stack preserving
+  // the arguments and a return address pushed to the stack for the next call.
+  // |ra_state| defines whether return address is already pushed to stack or
+  // not. Both |callee_args_count| and |caller_args_count_reg| do not include
+  // receiver. |callee_args_count| is not modified, |caller_args_count_reg|
+  // is trashed. |number_of_temp_values_after_return_address| specifies
+  // the number of words pushed to the stack after the return address. This is
+  // to allow "allocation" of scratch registers that this function requires
+  // by saving their values on the stack.
+  void PrepareForTailCall(const ParameterCount& callee_args_count,
+                          Register caller_args_count_reg, Register scratch0,
+                          Register scratch1, ReturnAddressState ra_state,
+                          int number_of_temp_values_after_return_address);
+
   // Invoke the JavaScript function code by either calling or jumping.
 
   void InvokeFunctionCode(Register function, Register new_target,
@@ -357,6 +371,13 @@ class MacroAssembler: public Assembler {
   void Cvtsi2sd(XMMRegister dst, const Operand& src);
 
   void Cvtui2ss(XMMRegister dst, Register src, Register tmp);
+
+  void ShlPair(Register high, Register low, uint8_t imm8);
+  void ShlPair_cl(Register high, Register low);
+  void ShrPair(Register high, Register low, uint8_t imm8);
+  void ShrPair_cl(Register high, Register src);
+  void SarPair(Register high, Register low, uint8_t imm8);
+  void SarPair_cl(Register high, Register low);
 
   // Support for constant splitting.
   bool IsUnsafeImmediate(const Immediate& x);
@@ -488,6 +509,23 @@ class MacroAssembler: public Assembler {
     j(not_zero, not_smi_label, distance);
   }
 
+  // Jump if the value cannot be represented by a smi.
+  inline void JumpIfNotValidSmiValue(Register value, Register scratch,
+                                     Label* on_invalid,
+                                     Label::Distance distance = Label::kFar) {
+    mov(scratch, value);
+    add(scratch, Immediate(0x40000000U));
+    j(sign, on_invalid, distance);
+  }
+
+  // Jump if the unsigned integer value cannot be represented by a smi.
+  inline void JumpIfUIntNotValidSmiValue(
+      Register value, Label* on_invalid,
+      Label::Distance distance = Label::kFar) {
+    cmp(value, Immediate(0x40000000U));
+    j(above_equal, on_invalid, distance);
+  }
+
   void LoadInstanceDescriptors(Register map, Register descriptors);
   void EnumLength(Register dst, Register map);
   void NumberOfOwnDescriptors(Register dst, Register map);
@@ -522,6 +560,7 @@ class MacroAssembler: public Assembler {
 
   // Abort execution if argument is not a number, enabled via --debug-code.
   void AssertNumber(Register object);
+  void AssertNotNumber(Register object);
 
   // Abort execution if argument is not a smi, enabled via --debug-code.
   void AssertSmi(Register object);
@@ -541,6 +580,10 @@ class MacroAssembler: public Assembler {
   // Abort execution if argument is not a JSBoundFunction,
   // enabled via --debug-code.
   void AssertBoundFunction(Register object);
+
+  // Abort execution if argument is not a JSGeneratorObject,
+  // enabled via --debug-code.
+  void AssertGeneratorObject(Register object);
 
   // Abort execution if argument is not a JSReceiver, enabled via --debug-code.
   void AssertReceiver(Register object);
@@ -777,12 +820,6 @@ class MacroAssembler: public Assembler {
   void Popcnt(Register dst, Register src) { Popcnt(dst, Operand(src)); }
   void Popcnt(Register dst, const Operand& src);
 
-  // Emit call to the code we are currently generating.
-  void CallSelf() {
-    Handle<Code> self(reinterpret_cast<Code**>(CodeObject().location()));
-    call(self, RelocInfo::CODE_TARGET);
-  }
-
   // Move if the registers are not identical.
   void Move(Register target, Register source);
 
@@ -796,6 +833,7 @@ class MacroAssembler: public Assembler {
   void Move(XMMRegister dst, float src) { Move(dst, bit_cast<uint32_t>(src)); }
   void Move(XMMRegister dst, double src) { Move(dst, bit_cast<uint64_t>(src)); }
 
+  void Move(Register dst, Handle<Object> handle) { LoadObject(dst, handle); }
   void Move(Register dst, Smi* source) { Move(dst, Immediate(source)); }
 
   // Push a handle value.

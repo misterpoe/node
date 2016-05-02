@@ -130,6 +130,7 @@ bool RegExpParser::IsSyntaxCharacterOrSlash(uc32 c) {
 
 
 RegExpTree* RegExpParser::ReportError(Vector<const char> message) {
+  if (failed_) return NULL;  // Do not overwrite any existing error.
   failed_ = true;
   *error_ = isolate()->factory()->NewStringFromAscii(message).ToHandleChecked();
   // Zip to the end to make sure the no more input is read.
@@ -359,14 +360,17 @@ RegExpTree* RegExpParser::ParseDisjunction() {
             Advance(2);
             if (unicode()) {
               if (FLAG_harmony_regexp_property) {
-                ZoneList<CharacterRange>* ranges = ParsePropertyClass();
-                if (ranges == nullptr) {
+                ZoneList<CharacterRange>* ranges =
+                    new (zone()) ZoneList<CharacterRange>(2, zone());
+                if (!ParsePropertyClass(ranges)) {
                   return ReportError(CStrVector("Invalid property name"));
                 }
                 RegExpCharacterClass* cc =
                     new (zone()) RegExpCharacterClass(ranges, p == 'P');
                 builder->AddCharacterClass(cc);
               } else {
+                // With /u, no identity escapes except for syntax characters
+                // are allowed. Otherwise, all identity escapes are allowed.
                 return ReportError(CStrVector("Invalid escape"));
               }
             } else {
@@ -508,9 +512,8 @@ RegExpTree* RegExpParser::ParseDisjunction() {
         break;
       case '{': {
         int dummy;
-        if (ParseIntervalQuantifier(&dummy, &dummy)) {
-          return ReportError(CStrVector("Nothing to repeat"));
-        }
+        bool parsed = ParseIntervalQuantifier(&dummy, &dummy CHECK_FAILED);
+        if (parsed) return ReportError(CStrVector("Nothing to repeat"));
         // fallthrough
       }
       case '}':
@@ -841,55 +844,139 @@ bool RegExpParser::ParseUnicodeEscape(uc32* value) {
   return result;
 }
 
-ZoneList<CharacterRange>* RegExpParser::ParsePropertyClass() {
 #ifdef V8_I18N_SUPPORT
-  char property_name[3];
-  memset(property_name, 0, sizeof(property_name));
-  if (current() == '{') {
-    Advance();
-    if (current() < 'A' || current() > 'Z') return nullptr;
-    property_name[0] = static_cast<char>(current());
-    Advance();
-    if (current() >= 'a' && current() <= 'z') {
-      property_name[1] = static_cast<char>(current());
-      Advance();
-    }
-    if (current() != '}') return nullptr;
-  } else if (current() >= 'A' && current() <= 'Z') {
-    property_name[0] = static_cast<char>(current());
-  } else {
-    return nullptr;
+bool IsExactPropertyAlias(const char* property_name, UProperty property) {
+  const char* short_name = u_getPropertyName(property, U_SHORT_PROPERTY_NAME);
+  if (short_name != NULL && strcmp(property_name, short_name) == 0) return true;
+  for (int i = 0;; i++) {
+    const char* long_name = u_getPropertyName(
+        property, static_cast<UPropertyNameChoice>(U_LONG_PROPERTY_NAME + i));
+    if (long_name == NULL) break;
+    if (strcmp(property_name, long_name) == 0) return true;
   }
-  Advance();
+  return false;
+}
 
-  int32_t category =
-      u_getPropertyValueEnum(UCHAR_GENERAL_CATEGORY_MASK, property_name);
-  if (category == UCHAR_INVALID_CODE) return nullptr;
+bool IsExactPropertyValueAlias(const char* property_value_name,
+                               UProperty property, int32_t property_value) {
+  const char* short_name =
+      u_getPropertyValueName(property, property_value, U_SHORT_PROPERTY_NAME);
+  if (short_name != NULL && strcmp(property_value_name, short_name) == 0) {
+    return true;
+  }
+  for (int i = 0;; i++) {
+    const char* long_name = u_getPropertyValueName(
+        property, property_value,
+        static_cast<UPropertyNameChoice>(U_LONG_PROPERTY_NAME + i));
+    if (long_name == NULL) break;
+    if (strcmp(property_value_name, long_name) == 0) return true;
+  }
+  return false;
+}
+
+bool LookupPropertyValueName(UProperty property,
+                             const char* property_value_name,
+                             ZoneList<CharacterRange>* result, Zone* zone) {
+  int32_t property_value =
+      u_getPropertyValueEnum(property, property_value_name);
+  if (property_value == UCHAR_INVALID_CODE) return false;
+
+  // We require the property name to match exactly to one of the property value
+  // aliases. However, u_getPropertyValueEnum uses loose matching.
+  if (!IsExactPropertyValueAlias(property_value_name, property,
+                                 property_value)) {
+    return false;
+  }
 
   USet* set = uset_openEmpty();
   UErrorCode ec = U_ZERO_ERROR;
-  uset_applyIntPropertyValue(set, UCHAR_GENERAL_CATEGORY_MASK, category, &ec);
-  ZoneList<CharacterRange>* ranges = nullptr;
-  if (ec == U_ZERO_ERROR && !uset_isEmpty(set)) {
+  uset_applyIntPropertyValue(set, property, property_value, &ec);
+  bool success = ec == U_ZERO_ERROR && !uset_isEmpty(set);
+
+  if (success) {
     uset_removeAllStrings(set);
     int item_count = uset_getItemCount(set);
-    ranges = new (zone()) ZoneList<CharacterRange>(item_count, zone());
     int item_result = 0;
     for (int i = 0; i < item_count; i++) {
       uc32 start = 0;
       uc32 end = 0;
       item_result += uset_getItem(set, i, &start, &end, nullptr, 0, &ec);
-      ranges->Add(CharacterRange::Range(start, end), zone());
+      result->Add(CharacterRange::Range(start, end), zone);
     }
     DCHECK_EQ(U_ZERO_ERROR, ec);
     DCHECK_EQ(0, item_result);
   }
   uset_close(set);
-  return ranges;
-#else   // V8_I18N_SUPPORT
-  return nullptr;
-#endif  // V8_I18N_SUPPORT
+  return success;
 }
+
+bool RegExpParser::ParsePropertyClass(ZoneList<CharacterRange>* result) {
+  // Parse the property class as follows:
+  // - \pN with a single-character N is equivalent to \p{N}
+  // - In \p{name}, 'name' is interpreted
+  //   - either as a general category property value name.
+  //   - or as a binary property name.
+  // - In \p{name=value}, 'name' is interpreted as an enumerated property name,
+  //   and 'value' is interpreted as one of the available property value names.
+  // - Aliases in PropertyAlias.txt and PropertyValueAlias.txt can be used.
+  // - Loose matching is not applied.
+  List<char> first_part;
+  List<char> second_part;
+  if (current() == '{') {
+    // Parse \p{[PropertyName=]PropertyNameValue}
+    for (Advance(); current() != '}' && current() != '='; Advance()) {
+      if (!has_next()) return false;
+      first_part.Add(static_cast<char>(current()));
+    }
+    if (current() == '=') {
+      for (Advance(); current() != '}'; Advance()) {
+        if (!has_next()) return false;
+        second_part.Add(static_cast<char>(current()));
+      }
+      second_part.Add(0);  // null-terminate string.
+    }
+  } else if (current() != kEndMarker) {
+    // Parse \pN, where N is a single-character property name value.
+    first_part.Add(static_cast<char>(current()));
+  } else {
+    return false;
+  }
+  Advance();
+  first_part.Add(0);  // null-terminate string.
+
+  if (second_part.is_empty()) {
+    // First attempt to interpret as general category property value name.
+    const char* name = first_part.ToConstVector().start();
+    if (LookupPropertyValueName(UCHAR_GENERAL_CATEGORY_MASK, name, result,
+                                zone())) {
+      return true;
+    }
+    // Then attempt to interpret as binary property name with value name 'Y'.
+    UProperty property = u_getPropertyEnum(name);
+    if (property < UCHAR_BINARY_START) return false;
+    if (property >= UCHAR_BINARY_LIMIT) return false;
+    if (!IsExactPropertyAlias(name, property)) return false;
+    return LookupPropertyValueName(property, "Y", result, zone());
+  } else {
+    // Both property name and value name are specified. Attempt to interpret
+    // the property name as enumerated property.
+    const char* property_name = first_part.ToConstVector().start();
+    const char* value_name = second_part.ToConstVector().start();
+    UProperty property = u_getPropertyEnum(property_name);
+    if (property < UCHAR_INT_START) return false;
+    if (property >= UCHAR_INT_LIMIT) return false;
+    if (!IsExactPropertyAlias(property_name, property)) return false;
+    return LookupPropertyValueName(property, value_name, result, zone());
+  }
+}
+
+#else  // V8_I18N_SUPPORT
+
+bool RegExpParser::ParsePropertyClass(ZoneList<CharacterRange>* result) {
+  return false;
+}
+
+#endif  // V8_I18N_SUPPORT
 
 bool RegExpParser::ParseUnlimitedLengthHexNumber(int max_value, uc32* value) {
   uc32 x = 0;
@@ -1068,6 +1155,34 @@ static inline void AddRangeOrEscape(ZoneList<CharacterRange>* ranges,
   }
 }
 
+bool RegExpParser::ParseClassProperty(ZoneList<CharacterRange>* ranges) {
+  if (!FLAG_harmony_regexp_property) return false;
+  if (!unicode()) return false;
+  if (current() != '\\') return false;
+  uc32 next = Next();
+  bool parse_success = false;
+  if (next == 'p') {
+    Advance(2);
+    parse_success = ParsePropertyClass(ranges);
+  } else if (next == 'P') {
+    Advance(2);
+    ZoneList<CharacterRange>* property_class =
+        new (zone()) ZoneList<CharacterRange>(2, zone());
+    parse_success = ParsePropertyClass(property_class);
+    if (parse_success) {
+      ZoneList<CharacterRange>* negated =
+          new (zone()) ZoneList<CharacterRange>(2, zone());
+      CharacterRange::Negate(property_class, negated, zone());
+      const Vector<CharacterRange> negated_vector = negated->ToVector();
+      ranges->AddAll(negated_vector, zone());
+    }
+  } else {
+    return false;
+  }
+  if (!parse_success)
+    ReportError(CStrVector("Invalid property name in character class"));
+  return parse_success;
+}
 
 RegExpTree* RegExpParser::ParseCharacterClass() {
   static const char* kUnterminated = "Unterminated character class";
@@ -1084,6 +1199,8 @@ RegExpTree* RegExpParser::ParseCharacterClass() {
   ZoneList<CharacterRange>* ranges =
       new (zone()) ZoneList<CharacterRange>(2, zone());
   while (has_more() && current() != ']') {
+    bool parsed_property = ParseClassProperty(ranges CHECK_FAILED);
+    if (parsed_property) continue;
     uc16 char_class = kNoCharClass;
     CharacterRange first = ParseClassAtom(&char_class CHECK_FAILED);
     if (current() == '-') {

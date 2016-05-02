@@ -96,6 +96,13 @@ RUNTIME_FUNCTION(Runtime_ThrowStackOverflow) {
   return isolate->StackOverflow();
 }
 
+RUNTIME_FUNCTION(Runtime_ThrowWasmError) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_SMI_ARG_CHECKED(message_id, 0);
+  THROW_NEW_ERROR_RETURN_FAILURE(
+      isolate, NewError(static_cast<MessageTemplate::Template>(message_id)));
+}
 
 RUNTIME_FUNCTION(Runtime_UnwindAndFindExceptionHandler) {
   SealHandleScope shs(isolate);
@@ -160,6 +167,15 @@ RUNTIME_FUNCTION(Runtime_ThrowIllegalInvocation) {
       isolate, NewTypeError(MessageTemplate::kIllegalInvocation));
 }
 
+RUNTIME_FUNCTION(Runtime_ThrowIncompatibleMethodReceiver) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(2, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(Object, arg0, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Object, arg1, 1);
+  THROW_NEW_ERROR_RETURN_FAILURE(
+      isolate,
+      NewTypeError(MessageTemplate::kIncompatibleMethodReceiver, arg0, arg1));
+}
 
 RUNTIME_FUNCTION(Runtime_ThrowIteratorResultNotAnObject) {
   HandleScope scope(isolate);
@@ -170,14 +186,12 @@ RUNTIME_FUNCTION(Runtime_ThrowIteratorResultNotAnObject) {
       NewTypeError(MessageTemplate::kIteratorResultNotAnObject, value));
 }
 
-
-RUNTIME_FUNCTION(Runtime_ThrowStrongModeImplicitConversion) {
+RUNTIME_FUNCTION(Runtime_ThrowGeneratorRunning) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 0);
+  DCHECK_EQ(0, args.length());
   THROW_NEW_ERROR_RETURN_FAILURE(
-      isolate, NewTypeError(MessageTemplate::kStrongImplicitConversion));
+      isolate, NewTypeError(MessageTemplate::kGeneratorRunning));
 }
-
 
 RUNTIME_FUNCTION(Runtime_ThrowApplyNonFunction) {
   HandleScope scope(isolate);
@@ -271,7 +285,7 @@ RUNTIME_FUNCTION(Runtime_AllocateInTargetSpace) {
 RUNTIME_FUNCTION(Runtime_CollectStackTrace) {
   HandleScope scope(isolate);
   DCHECK(args.length() == 2);
-  CONVERT_ARG_HANDLE_CHECKED(JSObject, error_object, 0);
+  CONVERT_ARG_HANDLE_CHECKED(JSReceiver, error_object, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, caller, 1);
 
   if (!isolate->bootstrapper()->IsActive()) {
@@ -317,7 +331,6 @@ RUNTIME_FUNCTION(Runtime_FormatMessageString) {
   return *result;
 }
 
-
 #define CALLSITE_GET(NAME, RETURN)                          \
   RUNTIME_FUNCTION(Runtime_CallSite##NAME##RT) {            \
     HandleScope scope(isolate);                             \
@@ -325,7 +338,7 @@ RUNTIME_FUNCTION(Runtime_FormatMessageString) {
     CONVERT_ARG_HANDLE_CHECKED(JSObject, call_site_obj, 0); \
     Handle<String> result;                                  \
     CallSite call_site(isolate, call_site_obj);             \
-    RUNTIME_ASSERT(call_site.IsValid())                     \
+    RUNTIME_ASSERT(call_site.IsValid());                    \
     return RETURN(call_site.NAME(), isolate);               \
   }
 
@@ -366,18 +379,6 @@ RUNTIME_FUNCTION(Runtime_IS_VAR) {
 }
 
 
-RUNTIME_FUNCTION(Runtime_IncrementStatsCounter) {
-  SealHandleScope shs(isolate);
-  DCHECK(args.length() == 1);
-  CONVERT_ARG_CHECKED(String, name, 0);
-
-  if (FLAG_native_code_counters) {
-    StatsCounter(isolate, name->ToCString().get()).Increment();
-  }
-  return isolate->heap()->undefined_value();
-}
-
-
 namespace {
 
 bool ComputeLocation(Isolate* isolate, MessageLocation* target) {
@@ -407,7 +408,7 @@ bool ComputeLocation(Isolate* isolate, MessageLocation* target) {
 Handle<String> RenderCallSite(Isolate* isolate, Handle<Object> object) {
   MessageLocation location;
   if (ComputeLocation(isolate, &location)) {
-    Zone zone;
+    Zone zone(isolate->allocator());
     base::SmartPointer<ParseInfo> info(
         location.function()->shared()->is_function()
             ? new ParseInfo(&zone, location.function())
@@ -437,6 +438,13 @@ RUNTIME_FUNCTION(Runtime_ThrowCalledNonCallable) {
       isolate, NewTypeError(MessageTemplate::kCalledNonCallable, callsite));
 }
 
+RUNTIME_FUNCTION(Runtime_ThrowCalledOnNullOrUndefined) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
+  THROW_NEW_ERROR_RETURN_FAILURE(
+      isolate, NewTypeError(MessageTemplate::kCalledOnNullOrUndefined, name));
+}
 
 RUNTIME_FUNCTION(Runtime_ThrowConstructedNonConstructable) {
   HandleScope scope(isolate);
@@ -477,6 +485,12 @@ RUNTIME_FUNCTION(Runtime_IncrementUseCounter) {
   return isolate->heap()->undefined_value();
 }
 
+RUNTIME_FUNCTION(Runtime_GetOrdinaryHasInstance) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(0, args.length());
+
+  return isolate->native_context()->ordinary_has_instance();
+}
 
 RUNTIME_FUNCTION(Runtime_GetAndResetRuntimeCallStats) {
   HandleScope scope(isolate);
@@ -489,5 +503,19 @@ RUNTIME_FUNCTION(Runtime_GetAndResetRuntimeCallStats) {
   return *result;
 }
 
+RUNTIME_FUNCTION(Runtime_EnqueueMicrotask) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, microtask, 0);
+  isolate->EnqueueMicrotask(microtask);
+  return isolate->heap()->undefined_value();
+}
+
+RUNTIME_FUNCTION(Runtime_RunMicrotasks) {
+  HandleScope scope(isolate);
+  DCHECK(args.length() == 0);
+  isolate->RunMicrotasks();
+  return isolate->heap()->undefined_value();
+}
 }  // namespace internal
 }  // namespace v8

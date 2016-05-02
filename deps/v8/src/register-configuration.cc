@@ -41,7 +41,7 @@ static const char* const kDoubleRegisterNames[] = {
 
 STATIC_ASSERT(RegisterConfiguration::kMaxGeneralRegisters >=
               Register::kNumRegisters);
-STATIC_ASSERT(RegisterConfiguration::kMaxDoubleRegisters >=
+STATIC_ASSERT(RegisterConfiguration::kMaxFPRegisters >=
               DoubleRegister::kMaxNumRegisters);
 
 class ArchDefaultRegisterConfiguration : public RegisterConfiguration {
@@ -88,6 +88,10 @@ class ArchDefaultRegisterConfiguration : public RegisterConfiguration {
                               kMaxAllocatableDoubleRegisterCount,
                               kMaxAllocatableDoubleRegisterCount,
 #elif V8_TARGET_ARCH_PPC
+                              kMaxAllocatableGeneralRegisterCount,
+                              kMaxAllocatableDoubleRegisterCount,
+                              kMaxAllocatableDoubleRegisterCount,
+#elif V8_TARGET_ARCH_S390
                               kMaxAllocatableGeneralRegisterCount,
                               kMaxAllocatableDoubleRegisterCount,
                               kMaxAllocatableDoubleRegisterCount,
@@ -148,6 +152,8 @@ RegisterConfiguration::RegisterConfiguration(
       allocatable_double_codes_(allocatable_double_codes),
       general_register_names_(general_register_names),
       double_register_names_(double_register_names) {
+  DCHECK(num_general_registers_ <= RegisterConfiguration::kMaxGeneralRegisters);
+  DCHECK(num_double_registers_ <= RegisterConfiguration::kMaxFPRegisters);
   for (int i = 0; i < num_allocatable_general_registers_; ++i) {
     allocatable_general_codes_mask_ |= (1 << allocatable_general_codes_[i]);
   }

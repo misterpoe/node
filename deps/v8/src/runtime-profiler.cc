@@ -90,7 +90,8 @@ static void GetICCounts(SharedFunctionInfo* shared,
 
 
 void RuntimeProfiler::Optimize(JSFunction* function, const char* reason) {
-  if (FLAG_trace_opt && function->PassesFilter(FLAG_hydrogen_filter)) {
+  if (FLAG_trace_opt &&
+      function->shared()->PassesFilter(FLAG_hydrogen_filter)) {
     PrintF("[marking ");
     function->ShortPrint();
     PrintF(" for recompilation, reason: %s", reason);
@@ -105,7 +106,11 @@ void RuntimeProfiler::Optimize(JSFunction* function, const char* reason) {
     PrintF("]\n");
   }
 
-  function->AttemptConcurrentOptimization();
+  if (function->shared()->HasBytecodeArray()) {
+    function->MarkForBaseline();
+  } else {
+    function->AttemptConcurrentOptimization();
+  }
 }
 
 
@@ -246,7 +251,8 @@ void RuntimeProfiler::MaybeOptimizeIgnition(JSFunction* function,
   // TODO(rmcilroy): Consider whether we should optimize small functions when
   // they are first seen on the stack (e.g., kMaxSizeEarlyOpt).
 
-  if (!frame_optimized && (function->IsMarkedForOptimization() ||
+  if (!frame_optimized && (function->IsMarkedForBaseline() ||
+                           function->IsMarkedForOptimization() ||
                            function->IsMarkedForConcurrentOptimization() ||
                            function->IsOptimized())) {
     // TODO(rmcilroy): Support OSR in these cases.
@@ -319,7 +325,7 @@ void RuntimeProfiler::MarkCandidatesForOptimization() {
       }
     }
 
-    if (FLAG_ignition) {
+    if (frame->is_interpreted()) {
       MaybeOptimizeIgnition(function, frame->is_optimized());
     } else {
       MaybeOptimizeFullCodegen(function, frame_count, frame->is_optimized());

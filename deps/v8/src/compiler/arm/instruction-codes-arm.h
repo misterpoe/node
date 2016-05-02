@@ -46,6 +46,12 @@ namespace compiler {
   V(ArmUxtab)                      \
   V(ArmRbit)                       \
   V(ArmUxtah)                      \
+  V(ArmAddPair)                    \
+  V(ArmSubPair)                    \
+  V(ArmMulPair)                    \
+  V(ArmLslPair)                    \
+  V(ArmLsrPair)                    \
+  V(ArmAsrPair)                    \
   V(ArmVcmpF32)                    \
   V(ArmVaddF32)                    \
   V(ArmVsubF32)                    \
@@ -95,6 +101,10 @@ namespace compiler {
   V(ArmVstrF32)                    \
   V(ArmVldrF64)                    \
   V(ArmVstrF64)                    \
+  V(ArmFloat32Max)                 \
+  V(ArmFloat32Min)                 \
+  V(ArmFloat64Max)                 \
+  V(ArmFloat64Min)                 \
   V(ArmLdrb)                       \
   V(ArmLdrsb)                      \
   V(ArmStrb)                       \

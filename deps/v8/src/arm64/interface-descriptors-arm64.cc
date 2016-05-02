@@ -55,9 +55,8 @@ const Register InstanceOfDescriptor::RightRegister() { return x0; }
 const Register StringCompareDescriptor::LeftRegister() { return x1; }
 const Register StringCompareDescriptor::RightRegister() { return x0; }
 
-
-const Register ApiGetterDescriptor::function_address() { return x2; }
-
+const Register ApiGetterDescriptor::HolderRegister() { return x0; }
+const Register ApiGetterDescriptor::CallbackRegister() { return x3; }
 
 const Register MathPowTaggedDescriptor::exponent() { return x11; }
 
@@ -114,37 +113,8 @@ void FastNewStrictArgumentsDescriptor::InitializePlatformSpecific(
 }
 
 
-void ToNumberDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // x0: value
-  Register registers[] = {x0};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-
 // static
-const Register ToLengthDescriptor::ReceiverRegister() { return x0; }
-
-
-// static
-const Register ToStringDescriptor::ReceiverRegister() { return x0; }
-
-
-// static
-const Register ToNameDescriptor::ReceiverRegister() { return x0; }
-
-
-// static
-const Register ToObjectDescriptor::ReceiverRegister() { return x0; }
-
-
-void NumberToStringDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // x0: value
-  Register registers[] = {x0};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
+const Register TypeConversionDescriptor::ArgumentRegister() { return x0; }
 
 void TypeofDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
@@ -294,13 +264,13 @@ void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(0, nullptr, nullptr);
 }
 
-
-void AllocateInNewSpaceDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  Register registers[] = {x0};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
+#define SIMD128_ALLOC_DESC(TYPE, Type, type, lane_count, lane_type) \
+  void Allocate##Type##Descriptor::InitializePlatformSpecific(      \
+      CallInterfaceDescriptorData* data) {                          \
+    data->InitializePlatformSpecific(0, nullptr, nullptr);          \
+  }
+SIMD128_TYPES(SIMD128_ALLOC_DESC)
+#undef SIMD128_ALLOC_DESC
 
 void ArrayConstructorConstantArgCountDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
@@ -336,28 +306,18 @@ void InternalArrayConstructorDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
+void FastArrayPushDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // stack param count needs (arg count)
+  Register registers[] = {x0};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
 
 void CompareDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   // x1: left operand
   // x0: right operand
   Register registers[] = {x1, x0};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-
-void CompareNilDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // x0: value to compare
-  Register registers[] = {x0};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
-}
-
-
-void ToBooleanDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  // x0: value
-  Register registers[] = {x0};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -380,6 +340,11 @@ void BinaryOpWithAllocationSiteDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
+void CountOpDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  Register registers[] = {x1};
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
 
 void StringAddDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
@@ -444,25 +409,7 @@ void ArgumentAdaptorDescriptor::InitializePlatformSpecific(
                                    &default_descriptor);
 }
 
-
-void ApiFunctionDescriptor::InitializePlatformSpecific(
-    CallInterfaceDescriptorData* data) {
-  static PlatformInterfaceDescriptor default_descriptor =
-      PlatformInterfaceDescriptor(CAN_INLINE_TARGET_ADDRESS);
-
-  Register registers[] = {
-      x0,  // callee
-      x4,  // call_data
-      x2,  // holder
-      x1,  // api_function_address
-      x3,  // actual number of arguments
-  };
-  data->InitializePlatformSpecific(arraysize(registers), registers,
-                                   &default_descriptor);
-}
-
-
-void ApiAccessorDescriptor::InitializePlatformSpecific(
+void ApiCallbackDescriptorBase::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   static PlatformInterfaceDescriptor default_descriptor =
       PlatformInterfaceDescriptor(CAN_INLINE_TARGET_ADDRESS);
@@ -480,9 +427,8 @@ void ApiAccessorDescriptor::InitializePlatformSpecific(
 void InterpreterDispatchDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   Register registers[] = {
-      kInterpreterAccumulatorRegister, kInterpreterRegisterFileRegister,
-      kInterpreterBytecodeOffsetRegister, kInterpreterBytecodeArrayRegister,
-      kInterpreterDispatchTableRegister};
+      kInterpreterAccumulatorRegister, kInterpreterBytecodeOffsetRegister,
+      kInterpreterBytecodeArrayRegister, kInterpreterDispatchTableRegister};
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
@@ -517,6 +463,15 @@ void InterpreterCEntryDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
+void ResumeGeneratorDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  Register registers[] = {
+      x0,  // the value to pass to the generator
+      x1,  // the JSGeneratorObject to resume
+      x2   // the resume mode (tagged)
+  };
+  data->InitializePlatformSpecific(arraysize(registers), registers);
+}
 
 }  // namespace internal
 }  // namespace v8

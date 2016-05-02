@@ -6,6 +6,7 @@
 
 #include "src/ic/handler-compiler.h"
 
+#include "src/api-arguments.h"
 #include "src/field-type.h"
 #include "src/ic/call-optimization.h"
 #include "src/ic/ic.h"
@@ -23,6 +24,9 @@ void NamedLoadHandlerCompiler::GenerateLoadViaGetter(
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
 
+    // Save context register
+    __ push(esi);
+
     if (accessor_index >= 0) {
       DCHECK(!holder.is(scratch));
       DCHECK(!receiver.is(scratch));
@@ -34,11 +38,11 @@ void NamedLoadHandlerCompiler::GenerateLoadViaGetter(
         receiver = scratch;
       }
       __ push(receiver);
-      ParameterCount actual(0);
-      ParameterCount expected(expected_arguments);
       __ LoadAccessor(edi, holder, accessor_index, ACCESSOR_GETTER);
-      __ InvokeFunction(edi, expected, actual, CALL_FUNCTION,
-                        CheckDebugStepCallWrapper());
+      __ Set(eax, 0);
+      __ Call(masm->isolate()->builtins()->CallFunction(
+                  ConvertReceiverMode::kNotNullOrUndefined),
+              RelocInfo::CODE_TARGET);
     } else {
       // If we generate a global code snippet for deoptimization only, remember
       // the place to continue after deoptimization.
@@ -46,7 +50,7 @@ void NamedLoadHandlerCompiler::GenerateLoadViaGetter(
     }
 
     // Restore context register.
-    __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
+    __ pop(esi);
   }
   __ ret(0);
 }
@@ -90,7 +94,7 @@ void PropertyHandlerCompiler::GenerateDictionaryNegativeLookup(
 
   // Bail out if the receiver has a named interceptor or requires access checks.
   __ test_b(FieldOperand(scratch0, Map::kBitFieldOffset),
-            kInterceptorOrAccessCheckNeededMask);
+            Immediate(kInterceptorOrAccessCheckNeededMask));
   __ j(not_zero, miss_label);
 
   // Check that receiver is a JSObject.
@@ -158,7 +162,7 @@ void PropertyHandlerCompiler::GenerateApiAccessorCall(
   // Stack now matches JSFunction abi.
   DCHECK(optimization.is_simple_api_call());
 
-  // Abi for CallApiFunctionStub.
+  // Abi for CallApiCallbackStub.
   Register callee = edi;
   Register data = ebx;
   Register holder = ecx;
@@ -220,7 +224,7 @@ void PropertyHandlerCompiler::GenerateApiAccessorCall(
   __ mov(api_function_address, Immediate(function_address));
 
   // Jump to stub.
-  CallApiAccessorStub stub(isolate, is_store, call_data_undefined,
+  CallApiCallbackStub stub(isolate, is_store, call_data_undefined,
                            !optimization.is_constant_call());
   __ TailCallStub(&stub);
 }
@@ -252,6 +256,8 @@ void NamedStoreHandlerCompiler::GenerateStoreViaSetter(
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
 
+    // Save context register
+    __ push(esi);
     // Save value register, so we can restore it later.
     __ push(value());
 
@@ -267,11 +273,11 @@ void NamedStoreHandlerCompiler::GenerateStoreViaSetter(
       }
       __ push(receiver);
       __ push(value());
-      ParameterCount actual(1);
-      ParameterCount expected(expected_arguments);
       __ LoadAccessor(edi, holder, accessor_index, ACCESSOR_SETTER);
-      __ InvokeFunction(edi, expected, actual, CALL_FUNCTION,
-                        CheckDebugStepCallWrapper());
+      __ Set(eax, 1);
+      __ Call(masm->isolate()->builtins()->CallFunction(
+                  ConvertReceiverMode::kNotNullOrUndefined),
+              RelocInfo::CODE_TARGET);
     } else {
       // If we generate a global code snippet for deoptimization only, remember
       // the place to continue after deoptimization.
@@ -280,9 +286,8 @@ void NamedStoreHandlerCompiler::GenerateStoreViaSetter(
 
     // We have to return the passed value, not the return value of the setter.
     __ pop(eax);
-
     // Restore context register.
-    __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
+    __ pop(esi);
   }
   __ ret(0);
 }
@@ -589,58 +594,6 @@ void NamedStoreHandlerCompiler::FrontendFooter(Handle<Name> name, Label* miss) {
 }
 
 
-void NamedLoadHandlerCompiler::GenerateLoadCallback(
-    Register reg, Handle<AccessorInfo> callback) {
-  DCHECK(!AreAliased(scratch2(), scratch3(), receiver()));
-  DCHECK(!AreAliased(scratch2(), scratch3(), reg));
-
-  // Insert additional parameters into the stack frame above return address.
-  __ pop(scratch3());  // Get return address to place it below.
-
-  // Build v8::PropertyCallbackInfo::args_ array on the stack and push property
-  // name below the exit frame to make GC aware of them.
-  STATIC_ASSERT(PropertyCallbackArguments::kShouldThrowOnErrorIndex == 0);
-  STATIC_ASSERT(PropertyCallbackArguments::kHolderIndex == 1);
-  STATIC_ASSERT(PropertyCallbackArguments::kIsolateIndex == 2);
-  STATIC_ASSERT(PropertyCallbackArguments::kReturnValueDefaultValueIndex == 3);
-  STATIC_ASSERT(PropertyCallbackArguments::kReturnValueOffset == 4);
-  STATIC_ASSERT(PropertyCallbackArguments::kDataIndex == 5);
-  STATIC_ASSERT(PropertyCallbackArguments::kThisIndex == 6);
-  STATIC_ASSERT(PropertyCallbackArguments::kArgsLength == 7);
-
-  __ push(receiver());  // receiver
-  // Push data from AccessorInfo.
-  Handle<Object> data(callback->data(), isolate());
-  if (data->IsUndefined() || data->IsSmi()) {
-    __ push(Immediate(data));
-  } else {
-    Handle<WeakCell> cell =
-        isolate()->factory()->NewWeakCell(Handle<HeapObject>::cast(data));
-    // The callback is alive if this instruction is executed,
-    // so the weak cell is not cleared and points to data.
-    __ GetWeakValue(scratch2(), cell);
-    __ push(scratch2());
-  }
-  __ push(Immediate(isolate()->factory()->undefined_value()));  // ReturnValue
-  // ReturnValue default value
-  __ push(Immediate(isolate()->factory()->undefined_value()));
-  __ push(Immediate(reinterpret_cast<int>(isolate())));
-  __ push(reg);  // holder
-  __ push(Immediate(Smi::FromInt(0)));  // should_throw_on_error -> false
-
-  __ push(name());  // name
-  __ push(scratch3());  // Restore return address.
-
-  // Abi for CallApiGetter
-  Register getter_address = ApiGetterDescriptor::function_address();
-  Address function_address = v8::ToCData<Address>(callback->getter());
-  __ mov(getter_address, Immediate(function_address));
-
-  CallApiGetterStub stub(isolate());
-  __ TailCallStub(&stub);
-}
-
-
 void NamedLoadHandlerCompiler::GenerateLoadConstant(Handle<Object> value) {
   // Return the constant value.
   __ LoadObject(eax, value);
@@ -754,23 +707,7 @@ Handle<Code> NamedStoreHandlerCompiler::CompileStoreCallback(
   __ TailCallRuntime(Runtime::kStoreCallbackProperty);
 
   // Return the generated code.
-  return GetCode(kind(), Code::FAST, name);
-}
-
-
-Handle<Code> NamedStoreHandlerCompiler::CompileStoreInterceptor(
-    Handle<Name> name) {
-  __ pop(scratch1());  // remove the return address
-  __ push(receiver());
-  __ push(this->name());
-  __ push(value());
-  __ push(scratch1());  // restore return address
-
-  // Do tail-call to the runtime system.
-  __ TailCallRuntime(Runtime::kStorePropertyWithInterceptor);
-
-  // Return the generated code.
-  return GetCode(kind(), Code::FAST, name);
+  return GetCode(kind(), name);
 }
 
 
@@ -812,7 +749,7 @@ Handle<Code> NamedLoadHandlerCompiler::CompileLoadGlobal(
   FrontendFooter(name, &miss);
 
   // Return the generated code.
-  return GetCode(kind(), Code::NORMAL, name);
+  return GetCode(kind(), name);
 }
 
 

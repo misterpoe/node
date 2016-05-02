@@ -32,22 +32,6 @@ class OptionalOperator final {
   const Operator* const op_;
 };
 
-
-// Supported float64 to int32 truncation modes.
-enum class TruncationMode : uint8_t {
-  kJavaScript,  // ES6 section 7.1.5
-  kRoundToZero  // Round towards zero. Implementation defined for NaN and ovf.
-};
-
-V8_INLINE size_t hash_value(TruncationMode mode) {
-  return static_cast<uint8_t>(mode);
-}
-
-std::ostream& operator<<(std::ostream&, TruncationMode);
-
-TruncationMode TruncationModeOf(Operator const*);
-
-
 // Supported write barrier modes.
 enum WriteBarrierKind {
   kNoWriteBarrier,
@@ -164,6 +148,7 @@ class MachineOperatorBuilder final : public ZoneObject {
   const OptionalOperator Word32Ctz();
   const OptionalOperator Word32Popcnt();
   const OptionalOperator Word64Popcnt();
+  const Operator* Word64PopcntPlaceholder();
   const OptionalOperator Word32ReverseBits();
   const OptionalOperator Word64ReverseBits();
   bool Word32ShiftIsSafe() const { return flags_ & kWord32ShiftIsSafe; }
@@ -177,7 +162,15 @@ class MachineOperatorBuilder final : public ZoneObject {
   const Operator* Word64Ror();
   const Operator* Word64Clz();
   const OptionalOperator Word64Ctz();
+  const Operator* Word64CtzPlaceholder();
   const Operator* Word64Equal();
+
+  const Operator* Int32PairAdd();
+  const Operator* Int32PairSub();
+  const Operator* Int32PairMul();
+  const Operator* Word32PairShl();
+  const Operator* Word32PairShr();
+  const Operator* Word32PairSar();
 
   const Operator* Int32Add();
   const Operator* Int32AddWithOverflow();
@@ -211,6 +204,12 @@ class MachineOperatorBuilder final : public ZoneObject {
   const Operator* Uint64LessThanOrEqual();
   const Operator* Uint64Mod();
 
+  // This operator reinterprets the bits of a word as tagged pointer.
+  const Operator* BitcastWordToTagged();
+
+  // JavaScript float64 to int32/uint32 truncation.
+  const Operator* TruncateFloat64ToWord32();
+
   // These operators change the representation of numbers while preserving the
   // value of the number. Narrowing operators assume the input is representable
   // in the target type and are *not* defined for other inputs.
@@ -219,6 +218,7 @@ class MachineOperatorBuilder final : public ZoneObject {
   const Operator* ChangeFloat32ToFloat64();
   const Operator* ChangeFloat64ToInt32();   // narrowing
   const Operator* ChangeFloat64ToUint32();  // narrowing
+  const Operator* TruncateFloat64ToUint32();
   const Operator* TruncateFloat32ToInt32();
   const Operator* TruncateFloat32ToUint32();
   const Operator* TryTruncateFloat32ToInt64();
@@ -233,8 +233,8 @@ class MachineOperatorBuilder final : public ZoneObject {
   // These operators truncate or round numbers, both changing the representation
   // of the number and mapping multiple input values onto the same output value.
   const Operator* TruncateFloat64ToFloat32();
-  const Operator* TruncateFloat64ToInt32(TruncationMode);
   const Operator* TruncateInt64ToInt32();
+  const Operator* RoundFloat64ToInt32();
   const Operator* RoundInt32ToFloat32();
   const Operator* RoundInt64ToFloat32();
   const Operator* RoundInt64ToFloat64();
@@ -325,6 +325,9 @@ class MachineOperatorBuilder final : public ZoneObject {
   // checked-store heap, index, length, value
   const Operator* CheckedStore(CheckedStoreRepresentation);
 
+  // atomic-load [base + index]
+  const Operator* AtomicLoad(LoadRepresentation rep);
+
   // Target machine word-size assumed by this builder.
   bool Is32() const { return word() == MachineRepresentation::kWord32; }
   bool Is64() const { return word() == MachineRepresentation::kWord64; }
@@ -340,6 +343,7 @@ class MachineOperatorBuilder final : public ZoneObject {
   V(Word, Shr)            \
   V(Word, Sar)            \
   V(Word, Ror)            \
+  V(Word, Clz)            \
   V(Word, Equal)          \
   V(Int, Add)             \
   V(Int, Sub)             \

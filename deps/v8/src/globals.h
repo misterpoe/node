@@ -59,6 +59,9 @@ namespace internal {
 #if (V8_TARGET_ARCH_MIPS64 && !V8_HOST_ARCH_MIPS64)
 #define USE_SIMULATOR 1
 #endif
+#if (V8_TARGET_ARCH_S390 && !V8_HOST_ARCH_S390)
+#define USE_SIMULATOR 1
+#endif
 #endif
 
 // Determine whether the architecture uses an embedded constant pool
@@ -110,6 +113,7 @@ const int kMaxUInt16 = (1 << 16) - 1;
 const int kMinUInt16 = 0;
 
 const uint32_t kMaxUInt32 = 0xFFFFFFFFu;
+const int kMinUInt32 = 0;
 
 const int kCharSize      = sizeof(char);      // NOLINT
 const int kShortSize     = sizeof(short);     // NOLINT
@@ -127,6 +131,12 @@ const int kRegisterSize  = kPointerSize;
 #endif
 const int kPCOnStackSize = kRegisterSize;
 const int kFPOnStackSize = kRegisterSize;
+
+#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X87
+const int kElidedFrameSlots = kPCOnStackSize / kPointerSize;
+#else
+const int kElidedFrameSlots = 0;
+#endif
 
 const int kDoubleSizeLog2 = 3;
 
@@ -243,89 +253,36 @@ template <typename T, class P = FreeStoreAllocationPolicy> class List;
 
 // The Strict Mode (ECMA-262 5th edition, 4.2.2).
 
-enum LanguageMode {
-  // LanguageMode is expressed as a bitmask. Descriptions of the bits:
-  STRICT_BIT = 1 << 0,
-  STRONG_BIT = 1 << 1,
-  LANGUAGE_END,
-
-  // Shorthands for some common language modes.
-  SLOPPY = 0,
-  STRICT = STRICT_BIT,
-  STRONG = STRICT_BIT | STRONG_BIT
-};
+enum LanguageMode { SLOPPY, STRICT, LANGUAGE_END = 3 };
 
 
 inline std::ostream& operator<<(std::ostream& os, const LanguageMode& mode) {
   switch (mode) {
-    case SLOPPY:
-      return os << "sloppy";
-    case STRICT:
-      return os << "strict";
-    case STRONG:
-      return os << "strong";
-    default:
-      return os << "unknown";
+    case SLOPPY: return os << "sloppy";
+    case STRICT: return os << "strict";
+    default: UNREACHABLE();
   }
+  return os;
 }
 
 
 inline bool is_sloppy(LanguageMode language_mode) {
-  return (language_mode & STRICT_BIT) == 0;
+  return language_mode == SLOPPY;
 }
 
 
 inline bool is_strict(LanguageMode language_mode) {
-  return language_mode & STRICT_BIT;
-}
-
-
-inline bool is_strong(LanguageMode language_mode) {
-  return language_mode & STRONG_BIT;
+  return language_mode != SLOPPY;
 }
 
 
 inline bool is_valid_language_mode(int language_mode) {
-  return language_mode == SLOPPY || language_mode == STRICT ||
-         language_mode == STRONG;
+  return language_mode == SLOPPY || language_mode == STRICT;
 }
 
 
-inline LanguageMode construct_language_mode(bool strict_bit, bool strong_bit) {
-  int language_mode = 0;
-  if (strict_bit) language_mode |= STRICT_BIT;
-  if (strong_bit) language_mode |= STRONG_BIT;
-  DCHECK(is_valid_language_mode(language_mode));
-  return static_cast<LanguageMode>(language_mode);
-}
-
-
-// Strong mode behaviour must sometimes be signalled by a two valued enum where
-// caching is involved, to prevent sloppy and strict mode from being incorrectly
-// differentiated.
-enum class Strength : bool {
-  WEAK,   // sloppy, strict behaviour
-  STRONG  // strong behaviour
-};
-
-
-inline bool is_strong(Strength strength) {
-  return strength == Strength::STRONG;
-}
-
-
-inline std::ostream& operator<<(std::ostream& os, const Strength& strength) {
-  return os << (is_strong(strength) ? "strong" : "weak");
-}
-
-
-inline Strength strength(LanguageMode language_mode) {
-  return is_strong(language_mode) ? Strength::STRONG : Strength::WEAK;
-}
-
-
-inline size_t hash_value(Strength strength) {
-  return static_cast<size_t>(strength);
+inline LanguageMode construct_language_mode(bool strict_bit) {
+  return static_cast<LanguageMode>(strict_bit);
 }
 
 
@@ -525,7 +482,9 @@ enum VisitMode {
   VISIT_ALL,
   VISIT_ALL_IN_SCAVENGE,
   VISIT_ALL_IN_SWEEP_NEWSPACE,
-  VISIT_ONLY_STRONG
+  VISIT_ONLY_STRONG,
+  VISIT_ONLY_STRONG_FOR_SERIALIZATION,
+  VISIT_ONLY_STRONG_ROOT_LIST,
 };
 
 // Flag indicating whether code is built into the VM (one of the natives files).
@@ -587,7 +546,7 @@ enum InlineCacheState {
   // Has been executed and only one receiver type has been seen.
   MONOMORPHIC,
   // Check failed due to prototype (or map deprecation).
-  PROTOTYPE_FAILURE,
+  RECOMPUTE_HANDLER,
   // Multiple receiver types have been seen.
   POLYMORPHIC,
   // Many receiver types have been seen.
@@ -597,7 +556,6 @@ enum InlineCacheState {
   // Special state for debug break or step in prepare stubs.
   DEBUG_STUB
 };
-
 
 enum CacheHolderFlag {
   kCacheOnPrototype,
@@ -726,9 +684,12 @@ enum CpuFeature {
   FPR_GPR_MOV,
   LWSYNC,
   ISELECT,
+  // S390
+  DISTINCT_OPS,
+  GENERAL_INSTR_EXT,
+  FLOATING_POINT_EXT,
   NUMBER_OF_CPU_FEATURES
 };
-
 
 // Defines hints about receiver values based on structural knowledge.
 enum class ConvertReceiverMode : unsigned {
@@ -833,33 +794,30 @@ const double kMaxSafeInteger = 9007199254740991.0;  // 2^53-1
 // The order of this enum has to be kept in sync with the predicates below.
 enum VariableMode {
   // User declared variables:
-  VAR,             // declared via 'var', and 'function' declarations
+  VAR,  // declared via 'var', and 'function' declarations
 
-  CONST_LEGACY,    // declared via legacy 'const' declarations
+  CONST_LEGACY,  // declared via legacy 'const' declarations
 
-  LET,             // declared via 'let' declarations (first lexical)
+  LET,  // declared via 'let' declarations (first lexical)
 
-  CONST,           // declared via 'const' declarations
-
-  IMPORT,          // declared via 'import' declarations (last lexical)
+  CONST,  // declared via 'const' declarations (last lexical)
 
   // Variables introduced by the compiler:
-  TEMPORARY,       // temporary variables (not user-visible), stack-allocated
-                   // unless the scope as a whole has forced context allocation
+  TEMPORARY,  // temporary variables (not user-visible), stack-allocated
+              // unless the scope as a whole has forced context allocation
 
-  DYNAMIC,         // always require dynamic lookup (we don't know
-                   // the declaration)
+  DYNAMIC,  // always require dynamic lookup (we don't know
+            // the declaration)
 
   DYNAMIC_GLOBAL,  // requires dynamic lookup, but we know that the
                    // variable is global unless it has been shadowed
                    // by an eval-introduced variable
 
-  DYNAMIC_LOCAL    // requires dynamic lookup, but we know that the
-                   // variable is local and where it is unless it
-                   // has been shadowed by an eval-introduced
-                   // variable
+  DYNAMIC_LOCAL  // requires dynamic lookup, but we know that the
+                 // variable is local and where it is unless it
+                 // has been shadowed by an eval-introduced
+                 // variable
 };
-
 
 inline bool IsDynamicVariableMode(VariableMode mode) {
   return mode >= DYNAMIC && mode <= DYNAMIC_LOCAL;
@@ -867,17 +825,17 @@ inline bool IsDynamicVariableMode(VariableMode mode) {
 
 
 inline bool IsDeclaredVariableMode(VariableMode mode) {
-  return mode >= VAR && mode <= IMPORT;
+  return mode >= VAR && mode <= CONST;
 }
 
 
 inline bool IsLexicalVariableMode(VariableMode mode) {
-  return mode >= LET && mode <= IMPORT;
+  return mode >= LET && mode <= CONST;
 }
 
 
 inline bool IsImmutableVariableMode(VariableMode mode) {
-  return mode == CONST || mode == CONST_LEGACY || mode == IMPORT;
+  return mode == CONST || mode == CONST_LEGACY;
 }
 
 
@@ -957,12 +915,6 @@ enum MaybeAssignedFlag { kNotAssigned, kMaybeAssigned };
 
 // Serialized in PreparseData, so numeric values should not be changed.
 enum ParseErrorType { kSyntaxError = 0, kReferenceError = 1 };
-
-
-enum ClearExceptionFlag {
-  KEEP_EXCEPTION,
-  CLEAR_EXCEPTION
-};
 
 
 enum MinusZeroMode {
@@ -1069,7 +1021,6 @@ inline bool IsConstructable(FunctionKind kind, LanguageMode mode) {
   if (IsConciseMethod(kind)) return false;
   if (IsArrowFunction(kind)) return false;
   if (IsGeneratorFunction(kind)) return false;
-  if (is_strong(mode)) return IsClassConstructor(kind);
   return true;
 }
 

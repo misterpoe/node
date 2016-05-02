@@ -341,7 +341,6 @@ class AstGraphBuilder : public AstVisitor {
   Node* BuildThrowUnsupportedSuperError(BailoutId bailout_id);
 
   // Builders for dynamic hole-checks at runtime.
-  Node* BuildHoleCheckSilent(Node* value, Node* for_hole, Node* not_hole);
   Node* BuildHoleCheckThenThrow(Node* value, Variable* var, Node* not_hole,
                                 BailoutId bailout_id);
   Node* BuildHoleCheckElseThrow(Node* value, Variable* var, Node* for_hole,
@@ -419,10 +418,19 @@ class AstGraphBuilder : public AstVisitor {
   void VisitTypeof(UnaryOperation* expr);
   void VisitNot(UnaryOperation* expr);
 
+  // Dispatched from VisitTypeof, VisitLiteralCompareTypeof.
+  void VisitTypeofExpression(Expression* expr);
+
   // Dispatched from VisitBinaryOperation.
   void VisitComma(BinaryOperation* expr);
   void VisitLogicalExpression(BinaryOperation* expr);
   void VisitArithmeticExpression(BinaryOperation* expr);
+
+  // Dispatched from VisitCompareOperation.
+  void VisitLiteralCompareNil(CompareOperation* expr, Expression* sub_expr,
+                              Node* nil_value);
+  void VisitLiteralCompareTypeof(CompareOperation* expr, Expression* sub_expr,
+                                 Handle<String> check);
 
   // Dispatched from VisitForInStatement.
   void VisitForInAssignment(Expression* expr, Node* value,
