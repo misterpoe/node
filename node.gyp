@@ -108,8 +108,8 @@
 
       'dependencies': [
         'node_js2c#host',
-        'deps/v8/tools/gyp/v8.gyp:v8',
-        'deps/v8/tools/gyp/v8.gyp:v8_libplatform'
+        'deps/v8/src/v8.gyp:v8',
+        'deps/v8/src/v8.gyp:v8_libplatform'
       ],
 
       'include_dirs': [
@@ -372,7 +372,7 @@
           'defines': [ 'NODE_NO_BROWSER_GLOBALS' ],
         } ],
         [ 'v8_postmortem_support=="true"', {
-          'dependencies': [ 'deps/v8/tools/gyp/v8.gyp:postmortem-metadata' ],
+          'dependencies': [ 'deps/v8/src/v8.gyp:postmortem-metadata' ],
           'conditions': [
             # -force_load is not applicable for the static library
             [ 'node_target_type!="static_library"', {
@@ -691,8 +691,8 @@
       'type': 'executable',
       'dependencies': [
         'deps/gtest/gtest.gyp:gtest',
-        'deps/v8/tools/gyp/v8.gyp:v8',
-        'deps/v8/tools/gyp/v8.gyp:v8_libplatform'
+        'deps/v8/src/v8.gyp:v8',
+        'deps/v8/src/v8.gyp:v8_libplatform'
       ],
       'include_dirs': [
         'src',
