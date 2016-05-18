@@ -46,10 +46,6 @@ const Register StoreGlobalViaContextDescriptor::SlotRegister() { return a2; }
 const Register StoreGlobalViaContextDescriptor::ValueRegister() { return a0; }
 
 
-const Register InstanceOfDescriptor::LeftRegister() { return a1; }
-const Register InstanceOfDescriptor::RightRegister() { return a0; }
-
-
 const Register StringCompareDescriptor::LeftRegister() { return a1; }
 const Register StringCompareDescriptor::RightRegister() { return a0; }
 
@@ -67,6 +63,8 @@ const Register MathPowIntegerDescriptor::exponent() {
 const Register GrowArrayElementsDescriptor::ObjectRegister() { return a0; }
 const Register GrowArrayElementsDescriptor::KeyRegister() { return a3; }
 
+const Register HasPropertyDescriptor::ObjectRegister() { return a0; }
+const Register HasPropertyDescriptor::KeyRegister() { return a3; }
 
 void FastNewClosureDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
@@ -245,6 +243,16 @@ void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
   }
 SIMD128_TYPES(SIMD128_ALLOC_DESC)
 #undef SIMD128_ALLOC_DESC
+
+void ArrayNoArgumentConstructorDescriptor::InitializePlatformSpecific(
+    CallInterfaceDescriptorData* data) {
+  // register state
+  // a0 -- number of arguments
+  // a1 -- function
+  // a2 -- allocation site with elements kind
+  Register registers[] = {a1, a2, a0};
+  data->InitializePlatformSpecific(arraysize(registers), registers, NULL);
+}
 
 void ArrayConstructorConstantArgCountDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {

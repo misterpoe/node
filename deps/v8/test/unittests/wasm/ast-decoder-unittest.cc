@@ -52,7 +52,6 @@ static const WasmOpcode kInt32BinopOpcodes[] = {
     Verify(kSuccess, env, code, code + arraysize(code)); \
   } while (false)
 
-
 #define EXPECT_FAILURE_INLINE(env, ...)                \
   do {                                                 \
     static byte code[] = {__VA_ARGS__};                \
@@ -69,7 +68,8 @@ class AstDecoderTest : public TestWithZone {
  public:
   typedef std::pair<uint32_t, LocalType> LocalsDecl;
 
-  AstDecoderTest() : module(nullptr) {}
+  AstDecoderTest() : module(nullptr), local_decls(zone()) {}
+
   TestSignatures sigs;
   ModuleEnv* module;
   LocalDeclEncoder local_decls;
@@ -307,16 +307,30 @@ TEST_F(AstDecoderTest, Binops_off_end) {
 
   byte code4[] = {kExprGetLocal, 0, 0, 0};  // [expr] [opcode] [opcode]
   for (size_t i = 0; i < arraysize(kInt32BinopOpcodes); i++) {
-    code4[1] = kInt32BinopOpcodes[i];
+    code4[2] = kInt32BinopOpcodes[i];
     code4[3] = kInt32BinopOpcodes[i];
     EXPECT_FAILURE(sigs.i_i(), code4);
   }
 }
 
+TEST_F(AstDecoderTest, BinopsAcrossBlock1) {
+  static const byte code[] = {WASM_ZERO, kExprBlock, WASM_ZERO, kExprI32Add,
+                              kExprEnd};
+  EXPECT_FAILURE(sigs.i_i(), code);
+}
 
-//===================================================================
-//== Statements
-//===================================================================
+TEST_F(AstDecoderTest, BinopsAcrossBlock2) {
+  static const byte code[] = {WASM_ZERO, WASM_ZERO, kExprBlock, kExprI32Add,
+                              kExprEnd};
+  EXPECT_FAILURE(sigs.i_i(), code);
+}
+
+TEST_F(AstDecoderTest, BinopsAcrossBlock3) {
+  static const byte code[] = {WASM_ZERO, WASM_ZERO,   kExprIf, kExprI32Add,
+                              kExprElse, kExprI32Add, kExprEnd};
+  EXPECT_FAILURE(sigs.i_i(), code);
+}
+
 TEST_F(AstDecoderTest, Nop) {
   static const byte code[] = {kExprNop};
   EXPECT_VERIFIES(sigs.v_v(), code);
@@ -498,6 +512,24 @@ TEST_F(AstDecoderTest, BlockBinop) {
 TEST_F(AstDecoderTest, BlockBrBinop) {
   EXPECT_VERIFIES_INLINE(sigs.i_i(),
                          WASM_I32_AND(B1(WASM_BRV(0, WASM_I8(1))), WASM_I8(2)));
+}
+
+TEST_F(AstDecoderTest, If_empty1) {
+  EXPECT_VERIFIES_INLINE(sigs.v_v(), WASM_ZERO, kExprIf, kExprEnd);
+}
+
+TEST_F(AstDecoderTest, If_empty2) {
+  EXPECT_VERIFIES_INLINE(sigs.v_v(), WASM_ZERO, kExprIf, kExprElse, kExprEnd);
+}
+
+TEST_F(AstDecoderTest, If_empty3) {
+  EXPECT_VERIFIES_INLINE(sigs.v_v(), WASM_ZERO, kExprIf, WASM_ZERO, kExprElse,
+                         kExprEnd);
+}
+
+TEST_F(AstDecoderTest, If_empty4) {
+  EXPECT_VERIFIES_INLINE(sigs.v_v(), WASM_ZERO, kExprIf, kExprElse, WASM_ZERO,
+                         kExprEnd);
 }
 
 TEST_F(AstDecoderTest, If_empty_stack) {
@@ -1118,7 +1150,6 @@ TEST_F(AstDecoderTest, AllStoreMemCombinations) {
   }
 }
 
-
 namespace {
 // A helper for tests that require a module environment for functions and
 // globals.
@@ -1140,12 +1171,24 @@ class TestModuleEnv : public ModuleEnv {
     return static_cast<byte>(mod.signatures.size() - 1);
   }
   byte AddFunction(FunctionSig* sig) {
-    mod.functions.push_back({sig, 0, 0, 0, 0, 0, 0, 0, false, false});
+    mod.functions.push_back({sig,      // sig
+                             0,        // func_index
+                             0,        // sig_index
+                             0,        // name_offset
+                             0,        // name_length
+                             0,        // code_start_offset
+                             0,        // code_end_offset
+                             false});  // exported
     CHECK(mod.functions.size() <= 127);
     return static_cast<byte>(mod.functions.size() - 1);
   }
   byte AddImport(FunctionSig* sig) {
-    mod.import_table.push_back({sig, 0, 0});
+    mod.import_table.push_back({sig,  // sig
+                                0,    // sig_index
+                                0,    // module_name_offset
+                                0,    // module_name_length
+                                0,    // function_name_offset
+                                0});  // function_name_length
     CHECK(mod.import_table.size() <= 127);
     return static_cast<byte>(mod.import_table.size() - 1);
   }
@@ -1813,7 +1856,6 @@ TEST_F(AstDecoderTest, Select_TypeCheck) {
       WASM_SELECT(WASM_F32(9.9), WASM_GET_LOCAL(0), WASM_I64V_1(0)));
 }
 
-
 class WasmOpcodeLengthTest : public TestWithZone {
  public:
   WasmOpcodeLengthTest() : TestWithZone() {}
@@ -1842,7 +1884,6 @@ TEST_F(WasmOpcodeLengthTest, Statements) {
   EXPECT_LENGTH(3, kExprBr);
   EXPECT_LENGTH(3, kExprBrIf);
 }
-
 
 TEST_F(WasmOpcodeLengthTest, MiscExpressions) {
   EXPECT_LENGTH(2, kExprI8Const);
@@ -1917,12 +1958,10 @@ TEST_F(WasmOpcodeLengthTest, LoadsAndStores) {
   EXPECT_LENGTH(3, kExprF64StoreMem);
 }
 
-
 TEST_F(WasmOpcodeLengthTest, MiscMemExpressions) {
   EXPECT_LENGTH(1, kExprMemorySize);
   EXPECT_LENGTH(1, kExprGrowMemory);
 }
-
 
 TEST_F(WasmOpcodeLengthTest, SimpleExpressions) {
   EXPECT_LENGTH(1, kExprI32Add);
@@ -2045,22 +2084,18 @@ TEST_F(WasmOpcodeLengthTest, SimpleExpressions) {
   EXPECT_LENGTH(1, kExprI64ReinterpretF64);
 }
 
-
 class WasmOpcodeArityTest : public TestWithZone {
  public:
   WasmOpcodeArityTest() : TestWithZone() {}
-  TestModuleEnv module;
-  TestSignatures sigs;
 };
 
-#define EXPECT_ARITY(expected, ...)                                            \
-  {                                                                            \
-    static const byte code[] = {__VA_ARGS__};                                  \
-    EXPECT_EQ(expected, OpcodeArity(&module, sig, code, code + sizeof(code))); \
+#define EXPECT_ARITY(expected, ...)                              \
+  {                                                              \
+    static const byte code[] = {__VA_ARGS__};                    \
+    EXPECT_EQ(expected, OpcodeArity(code, code + sizeof(code))); \
   }
 
 TEST_F(WasmOpcodeArityTest, Control) {
-  FunctionSig* sig = sigs.v_v();
   EXPECT_ARITY(0, kExprNop);
 
   EXPECT_ARITY(0, kExprBlock, 0);
@@ -2086,16 +2121,12 @@ TEST_F(WasmOpcodeArityTest, Control) {
   EXPECT_ARITY(2, kExprBrTable, ARITY_1);
 
   {
-    sig = sigs.v_v();
     EXPECT_ARITY(0, kExprReturn, ARITY_0);
-    sig = sigs.i_i();
     EXPECT_ARITY(1, kExprReturn, ARITY_1);
   }
 }
 
-
 TEST_F(WasmOpcodeArityTest, Misc) {
-  FunctionSig* sig = sigs.v_v();
   EXPECT_ARITY(0, kExprI8Const);
   EXPECT_ARITY(0, kExprI32Const);
   EXPECT_ARITY(0, kExprF32Const);
@@ -2107,20 +2138,8 @@ TEST_F(WasmOpcodeArityTest, Misc) {
   EXPECT_ARITY(1, kExprStoreGlobal);
 }
 
-
 TEST_F(WasmOpcodeArityTest, Calls) {
-  module.AddFunction(sigs.i_ii());
-  module.AddFunction(sigs.i_i());
-
-  module.AddSignature(sigs.f_ff());
-  module.AddSignature(sigs.i_d());
-
-  module.AddImport(sigs.f_ff());
-  module.AddImport(sigs.i_d());
-
   {
-    FunctionSig* sig = sigs.i_ii();
-
     EXPECT_ARITY(2, kExprCallFunction, 2, 0);
     EXPECT_ARITY(2, kExprCallImport, 2, 0);
     EXPECT_ARITY(3, kExprCallIndirect, 2, 0);
@@ -2135,8 +2154,6 @@ TEST_F(WasmOpcodeArityTest, Calls) {
   }
 
   {
-    FunctionSig* sig = sigs.v_v();
-
     EXPECT_ARITY(1, kExprCallFunction, ARITY_1, 1);
     EXPECT_ARITY(1, kExprCallImport, ARITY_1, 1);
     EXPECT_ARITY(2, kExprCallIndirect, ARITY_1, 1);
@@ -2151,9 +2168,7 @@ TEST_F(WasmOpcodeArityTest, Calls) {
   }
 }
 
-
 TEST_F(WasmOpcodeArityTest, LoadsAndStores) {
-  FunctionSig* sig = sigs.v_v();
   EXPECT_ARITY(1, kExprI32LoadMem8S);
   EXPECT_ARITY(1, kExprI32LoadMem8U);
   EXPECT_ARITY(1, kExprI32LoadMem16S);
@@ -2181,16 +2196,12 @@ TEST_F(WasmOpcodeArityTest, LoadsAndStores) {
   EXPECT_ARITY(2, kExprF64StoreMem);
 }
 
-
 TEST_F(WasmOpcodeArityTest, MiscMemExpressions) {
-  FunctionSig* sig = sigs.v_v();
   EXPECT_ARITY(0, kExprMemorySize);
   EXPECT_ARITY(1, kExprGrowMemory);
 }
 
-
 TEST_F(WasmOpcodeArityTest, SimpleExpressions) {
-  FunctionSig* sig = sigs.v_v();
   EXPECT_ARITY(2, kExprI32Add);
   EXPECT_ARITY(2, kExprI32Sub);
   EXPECT_ARITY(2, kExprI32Mul);
@@ -2411,7 +2422,7 @@ TEST_F(LocalDeclDecoderTest, MixedLocals) {
 TEST_F(LocalDeclDecoderTest, UseEncoder) {
   const byte* data = nullptr;
   const byte* end = nullptr;
-  LocalDeclEncoder local_decls;
+  LocalDeclEncoder local_decls(zone());
 
   local_decls.AddLocals(5, kAstF32);
   local_decls.AddLocals(1337, kAstI32);

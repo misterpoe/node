@@ -1075,6 +1075,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsFloat32(node), VisitFloat32Add(node);
     case IrOpcode::kFloat32Sub:
       return MarkAsFloat32(node), VisitFloat32Sub(node);
+    case IrOpcode::kFloat32SubPreserveNan:
+      return MarkAsFloat32(node), VisitFloat32SubPreserveNan(node);
     case IrOpcode::kFloat32Mul:
       return MarkAsFloat32(node), VisitFloat32Mul(node);
     case IrOpcode::kFloat32Div:
@@ -1097,6 +1099,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsFloat64(node), VisitFloat64Add(node);
     case IrOpcode::kFloat64Sub:
       return MarkAsFloat64(node), VisitFloat64Sub(node);
+    case IrOpcode::kFloat64SubPreserveNan:
+      return MarkAsFloat64(node), VisitFloat64SubPreserveNan(node);
     case IrOpcode::kFloat64Mul:
       return MarkAsFloat64(node), VisitFloat64Mul(node);
     case IrOpcode::kFloat64Div:
@@ -1188,6 +1192,8 @@ void InstructionSelector::VisitNode(Node* node) {
       MarkAsRepresentation(type.representation(), node);
       return VisitAtomicLoad(node);
     }
+    case IrOpcode::kAtomicStore:
+      return VisitAtomicStore(node);
     default:
       V8_Fatal(__FILE__, __LINE__, "Unexpected operator #%d:%s @ node #%d",
                node->opcode(), node->op()->mnemonic(), node->id());
@@ -1607,8 +1613,6 @@ void InstructionSelector::VisitTailCall(Node* node) {
   OperandGenerator g(this);
   CallDescriptor const* descriptor = CallDescriptorOf(node->op());
   DCHECK_NE(0, descriptor->flags() & CallDescriptor::kSupportsTailCalls);
-  DCHECK_EQ(0, descriptor->flags() & CallDescriptor::kPatchableCallSite);
-  DCHECK_EQ(0, descriptor->flags() & CallDescriptor::kNeedsNopAfterCall);
 
   // TODO(turbofan): Relax restriction for stack parameters.
 

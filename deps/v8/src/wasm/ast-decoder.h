@@ -224,6 +224,9 @@ TreeResult BuildTFGraph(base::AccountingAllocator* allocator,
                         TFBuilder* builder, FunctionBody& body);
 void PrintAst(base::AccountingAllocator* allocator, FunctionBody& body);
 
+// A simplified form of AST printing, e.g. from a debugger.
+void PrintAstForDebugging(const byte* start, const byte* end);
+
 inline TreeResult VerifyWasmCode(base::AccountingAllocator* allocator,
                                  ModuleEnv* module, FunctionSig* sig,
                                  const byte* start, const byte* end) {
@@ -262,8 +265,8 @@ BitVector* AnalyzeLoopAssignmentForTesting(Zone* zone, size_t num_locals,
 int OpcodeLength(const byte* pc, const byte* end);
 
 // Computes the arity (number of sub-nodes) of the opcode at the given address.
-int OpcodeArity(ModuleEnv* module, FunctionSig* sig, const byte* pc,
-                const byte* end);
+int OpcodeArity(const byte* pc, const byte* end);
+
 }  // namespace wasm
 }  // namespace internal
 }  // namespace v8

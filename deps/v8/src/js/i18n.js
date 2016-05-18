@@ -20,6 +20,7 @@
 var ArrayIndexOf;
 var ArrayJoin;
 var ArrayPush;
+var FLAG_intl_extra;
 var GlobalBoolean = global.Boolean;
 var GlobalDate = global.Date;
 var GlobalNumber = global.Number;
@@ -27,7 +28,7 @@ var GlobalRegExp = global.RegExp;
 var GlobalString = global.String;
 var InstallFunctions = utils.InstallFunctions;
 var InstallGetter = utils.InstallGetter;
-var InternalPackedArray = utils.InternalPackedArray;
+var InternalArray = utils.InternalArray;
 var InternalRegExpMatch;
 var InternalRegExpReplace
 var IsFinite;
@@ -62,6 +63,10 @@ utils.Import(function(from) {
   StringSplit = from.StringSplit;
   StringSubstr = from.StringSubstr;
   StringSubstring = from.StringSubstring;
+});
+
+utils.ImportFromExperimental(function(from) {
+  FLAG_intl_extra = from.FLAG_intl_extra;
 });
 
 // Utilities for definitions
@@ -141,6 +146,13 @@ var AVAILABLE_LOCALES = {
  * Caches default ICU locale.
  */
 var DEFAULT_ICU_LOCALE = UNDEFINED;
+
+function GetDefaultICULocaleJS() {
+  if (IS_UNDEFINED(DEFAULT_ICU_LOCALE)) {
+    DEFAULT_ICU_LOCALE = %GetDefaultICULocale();
+  }
+  return DEFAULT_ICU_LOCALE;
+}
 
 /**
  * Unicode extension regular expression.
@@ -305,7 +317,7 @@ function supportedLocalesOf(service, locales, options) {
  * Locales appear in the same order in the returned list as in the input list.
  */
 function lookupSupportedLocalesOf(requestedLocales, availableLocales) {
-  var matchedLocales = [];
+  var matchedLocales = new InternalArray();
   for (var i = 0; i < requestedLocales.length; ++i) {
     // Remove -u- extension.
     var locale = InternalRegExpReplace(
@@ -446,11 +458,7 @@ function lookupMatcher(service, requestedLocales) {
   }
 
   // Didn't find a match, return default.
-  if (IS_UNDEFINED(DEFAULT_ICU_LOCALE)) {
-    DEFAULT_ICU_LOCALE = %GetDefaultICULocale();
-  }
-
-  return {'locale': DEFAULT_ICU_LOCALE, 'extension': '', 'position': -1};
+  return {'locale': GetDefaultICULocaleJS(), 'extension': '', 'position': -1};
 }
 
 
@@ -565,14 +573,16 @@ function setOptions(inOptions, extensionMap, keyValues, getOption, outOptions) {
 
 
 /**
- * Converts all OwnProperties into
+ * Given an array-like, outputs an Array with the numbered
+ * properties copied over and defined
  * configurable: false, writable: false, enumerable: true.
  */
-function freezeArray(array) {
-  var l = array.length;
+function freezeArray(input) {
+  var array = [];
+  var l = input.length;
   for (var i = 0; i < l; i++) {
-    if (i in array) {
-      %object_define_property(array, i, {value: array[i],
+    if (i in input) {
+      %object_define_property(array, i, {value: input[i],
                                          configurable: false,
                                          writable: false,
                                          enumerable: true});
@@ -720,9 +730,16 @@ function toTitleCaseTimezoneLocation(location) {
  */
 function canonicalizeLanguageTag(localeID) {
   // null is typeof 'object' so we have to do extra check.
-  if (typeof localeID !== 'string' && typeof localeID !== 'object' ||
+  if ((!IS_STRING(localeID) && !IS_RECEIVER(localeID)) ||
       IS_NULL(localeID)) {
     throw MakeTypeError(kLanguageID);
+  }
+
+  // Optimize for the most common case; a language code alone in
+  // the canonical form/lowercase (e.g. "en", "fil").
+  if (IS_STRING(localeID) &&
+      !IS_NULL(InternalRegExpMatch(/^[a-z]{2,3}$/, localeID))) {
+    return localeID;
   }
 
   var localeString = GlobalString(localeID);
@@ -731,10 +748,6 @@ function canonicalizeLanguageTag(localeID) {
     throw MakeRangeError(kInvalidLanguageTag, localeString);
   }
 
-  // This call will strip -kn but not -kn-true extensions.
-  // ICU bug filled - http://bugs.icu-project.org/trac/ticket/9265.
-  // TODO(cira): check if -u-kn-true-kc-true-kh-true still throws after
-  // upgrade to ICU 4.9.
   var tag = %CanonicalizeLanguageTag(localeString);
   if (tag === 'invalid-tag') {
     throw MakeRangeError(kInvalidLanguageTag, localeString);
@@ -749,11 +762,8 @@ function canonicalizeLanguageTag(localeID) {
  * Throws on locales that are not well formed BCP47 tags.
  */
 function initializeLocaleList(locales) {
-  var seen = [];
-  if (IS_UNDEFINED(locales)) {
-    // Constructor is called without arguments.
-    seen = [];
-  } else {
+  var seen = new InternalArray();
+  if (!IS_UNDEFINED(locales)) {
     // We allow single string localeID.
     if (typeof locales === 'string') {
       %_Call(ArrayPush, seen, canonicalizeLanguageTag(locales));
@@ -808,8 +818,8 @@ function isValidLanguageTag(locale) {
   // Skip language since it can match variant regex, so we start from 1.
   // We are matching i-klingon here, but that's ok, since i-klingon-klingon
   // is not valid and would fail LANGUAGE_TAG_RE test.
-  var variants = [];
-  var extensions = [];
+  var variants = new InternalArray();
+  var extensions = new InternalArray();
   var parts = %_Call(StringSplit, locale, '-');
   for (var i = 1; i < parts.length; i++) {
     var value = parts[i];
@@ -983,7 +993,9 @@ function initializeCollator(collator, locales, options) {
   // Writable, configurable and enumerable are set to false by default.
   %MarkAsInitializedIntlObjectOfType(collator, 'collator', internalCollator);
   collator[resolvedSymbol] = resolved;
-  %object_define_property(collator, 'resolved', resolvedAccessor);
+  if (FLAG_intl_extra) {
+    %object_define_property(collator, 'resolved', resolvedAccessor);
+  }
 
   return collator;
 }
@@ -1204,7 +1216,6 @@ function initializeNumberFormat(numberFormat, locales, options) {
     minimumFractionDigits: {writable: true},
     minimumIntegerDigits: {writable: true},
     numberingSystem: {writable: true},
-    pattern: patternAccessor,
     requestedLocale: {value: requestedLocale, writable: true},
     style: {value: internalOptions.style, writable: true},
     useGrouping: {writable: true}
@@ -1226,7 +1237,10 @@ function initializeNumberFormat(numberFormat, locales, options) {
 
   %MarkAsInitializedIntlObjectOfType(numberFormat, 'numberformat', formatter);
   numberFormat[resolvedSymbol] = resolved;
-  %object_define_property(numberFormat, 'resolved', resolvedAccessor);
+  if (FLAG_intl_extra) {
+    %object_define_property(resolved, 'pattern', patternAccessor);
+    %object_define_property(numberFormat, 'resolved', resolvedAccessor);
+  }
 
   return numberFormat;
 }
@@ -1332,14 +1346,12 @@ function formatNumber(formatter, value) {
 /**
  * Returns a Number that represents string value that was passed in.
  */
-function parseNumber(formatter, value) {
+function IntlParseNumber(formatter, value) {
   return %InternalNumberParse(%GetImplFromInitializedIntlObject(formatter),
                               GlobalString(value));
 }
 
-
 AddBoundMethod(Intl.NumberFormat, 'format', formatNumber, 1);
-AddBoundMethod(Intl.NumberFormat, 'v8Parse', parseNumber, 1);
 
 /**
  * Returns a string that matches LDML representation of the options object.
@@ -1601,7 +1613,6 @@ function initializeDateTimeFormat(dateFormat, locales, options) {
     month: {writable: true},
     numberingSystem: {writable: true},
     [patternSymbol]: {writable: true},
-    pattern: patternAccessor,
     requestedLocale: {value: requestedLocale, writable: true},
     second: {writable: true},
     timeZone: {writable: true},
@@ -1620,7 +1631,10 @@ function initializeDateTimeFormat(dateFormat, locales, options) {
 
   %MarkAsInitializedIntlObjectOfType(dateFormat, 'dateformat', formatter);
   dateFormat[resolvedSymbol] = resolved;
-  %object_define_property(dateFormat, 'resolved', resolvedAccessor);
+  if (FLAG_intl_extra) {
+    %object_define_property(resolved, 'pattern', patternAccessor);
+    %object_define_property(dateFormat, 'resolved', resolvedAccessor);
+  }
 
   return dateFormat;
 }
@@ -1754,7 +1768,7 @@ function formatDate(formatter, dateValue) {
  * DateTimeFormat.
  * Returns undefined if date string cannot be parsed.
  */
-function parseDate(formatter, value) {
+function IntlParseDate(formatter, value) {
   return %InternalDateParse(%GetImplFromInitializedIntlObject(formatter),
                             GlobalString(value));
 }
@@ -1762,7 +1776,6 @@ function parseDate(formatter, value) {
 
 // 0 because date is optional argument.
 AddBoundMethod(Intl.DateTimeFormat, 'format', formatDate, 0);
-AddBoundMethod(Intl.DateTimeFormat, 'v8Parse', parseDate, 1);
 
 
 /**
@@ -1837,7 +1850,9 @@ function initializeBreakIterator(iterator, locales, options) {
   %MarkAsInitializedIntlObjectOfType(iterator, 'breakiterator',
                                      internalIterator);
   iterator[resolvedSymbol] = resolved;
-  %object_define_property(iterator, 'resolved', resolvedAccessor);
+  if (FLAG_intl_extra) {
+    %object_define_property(iterator, 'resolved', resolvedAccessor);
+  }
 
   return iterator;
 }
@@ -1990,6 +2005,37 @@ function cachedOrNewService(service, locales, options, defaults) {
   return new savedObjects[service](locales, useOptions);
 }
 
+function LocaleConvertCase(s, locales, isToUpper) {
+  // ECMA 402 section 13.1.2 steps 1 through 12.
+  var language;
+  // Optimize for the most common two cases. initializeLocaleList() can handle
+  // them as well, but it's rather slow accounting for over 60% of
+  // toLocale{U,L}Case() and about 40% of toLocale{U,L}Case("<locale>").
+  if (IS_UNDEFINED(locales)) {
+    language = GetDefaultICULocaleJS();
+  } else if (IS_STRING(locales)) {
+    language = canonicalizeLanguageTag(locales);
+  } else {
+    var locales = initializeLocaleList(locales);
+    language = locales.length > 0 ? locales[0] : GetDefaultICULocaleJS();
+  }
+
+  // StringSplit is slower than this.
+  var pos = %_Call(StringIndexOf, language, '-');
+  if (pos != -1) {
+    language = %_Call(StringSubstring, language, 0, pos);
+  }
+
+  var CUSTOM_CASE_LANGUAGES = ['az', 'el', 'lt', 'tr'];
+  var langIndex = %_Call(ArrayIndexOf, CUSTOM_CASE_LANGUAGES, language);
+  if (langIndex == -1) {
+    // language-independent case conversion.
+    return isToUpper ? %StringToUpperCaseI18N(s) : %StringToLowerCaseI18N(s);
+  }
+  return %StringLocaleConvertCase(s, isToUpper,
+                                  CUSTOM_CASE_LANGUAGES[langIndex]);
+}
+
 /**
  * Compares this and that, and returns less than 0, 0 or greater than 0 value.
  * Overrides the built-in method.
@@ -2041,6 +2087,56 @@ OverrideFunction(GlobalString.prototype, 'normalize', function() {
     return %StringNormalize(s, normalizationForm);
   }
 );
+
+function ToLowerCaseI18N() {
+  if (!IS_UNDEFINED(new.target)) {
+    throw MakeTypeError(kOrdinaryFunctionCalledAsConstructor);
+  }
+  CHECK_OBJECT_COERCIBLE(this, "String.prototype.toLowerCase");
+  var s = TO_STRING(this);
+  return %StringToLowerCaseI18N(s);
+}
+
+function ToUpperCaseI18N() {
+  if (!IS_UNDEFINED(new.target)) {
+    throw MakeTypeError(kOrdinaryFunctionCalledAsConstructor);
+  }
+  CHECK_OBJECT_COERCIBLE(this, "String.prototype.toUpperCase");
+  var s = TO_STRING(this);
+  return %StringToUpperCaseI18N(s);
+}
+
+function ToLocaleLowerCaseI18N(locales) {
+  if (!IS_UNDEFINED(new.target)) {
+    throw MakeTypeError(kOrdinaryFunctionCalledAsConstructor);
+  }
+  CHECK_OBJECT_COERCIBLE(this, "String.prototype.toLocaleLowerCase");
+  return LocaleConvertCase(TO_STRING(this), locales, false);
+}
+
+%FunctionSetLength(ToLocaleLowerCaseI18N, 0);
+
+function ToLocaleUpperCaseI18N(locales) {
+  if (!IS_UNDEFINED(new.target)) {
+    throw MakeTypeError(kOrdinaryFunctionCalledAsConstructor);
+  }
+  CHECK_OBJECT_COERCIBLE(this, "String.prototype.toLocaleUpperCase");
+  return LocaleConvertCase(TO_STRING(this), locales, true);
+}
+
+%FunctionSetLength(ToLocaleUpperCaseI18N, 0);
+
+%FunctionRemovePrototype(ToLowerCaseI18N);
+%FunctionRemovePrototype(ToUpperCaseI18N);
+%FunctionRemovePrototype(ToLocaleLowerCaseI18N);
+%FunctionRemovePrototype(ToLocaleUpperCaseI18N);
+
+utils.Export(function(to) {
+  to.ToLowerCaseI18N = ToLowerCaseI18N;
+  to.ToUpperCaseI18N = ToUpperCaseI18N;
+  to.ToLocaleLowerCaseI18N = ToLocaleLowerCaseI18N;
+  to.ToLocaleUpperCaseI18N = ToLocaleUpperCaseI18N;
+});
 
 
 /**
@@ -2135,5 +2231,11 @@ OverrideFunction(GlobalDate.prototype, 'toLocaleTimeString', function() {
         this, locales, options, 'time', 'time', 'dateformattime');
   }
 );
+
+utils.Export(function(to) {
+  to.AddBoundMethod = AddBoundMethod;
+  to.IntlParseDate = IntlParseDate;
+  to.IntlParseNumber = IntlParseNumber;
+});
 
 })

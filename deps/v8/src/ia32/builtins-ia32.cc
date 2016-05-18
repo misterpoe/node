@@ -572,8 +572,8 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
 
   // Push bytecode array.
   __ push(kInterpreterBytecodeArrayRegister);
-  // Push zero for bytecode array offset.
-  __ push(Immediate(0));
+  // Push Smi tagged initial bytecode array offset.
+  __ push(Immediate(Smi::FromInt(BytecodeArray::kHeaderSize - kHeapObjectTag)));
 
   // Allocate the local and temporary register file on the stack.
   {
@@ -606,11 +606,8 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
     __ j(greater_equal, &loop_header);
   }
 
-  // Load accumulator, register file, bytecode offset, dispatch table into
-  // registers.
+  // Load accumulator, bytecode offset and dispatch table into registers.
   __ LoadRoot(kInterpreterAccumulatorRegister, Heap::kUndefinedValueRootIndex);
-  __ mov(edx, ebp);
-  __ add(edx, Immediate(InterpreterFrameConstants::kRegisterFileFromFp));
   __ mov(kInterpreterBytecodeOffsetRegister,
          Immediate(BytecodeArray::kHeaderSize - kHeapObjectTag));
   __ mov(kInterpreterDispatchTableRegister,
@@ -1213,29 +1210,6 @@ void Builtins::Generate_DatePrototype_GetField(MacroAssembler* masm,
     __ EnterFrame(StackFrame::INTERNAL);
     __ CallRuntime(Runtime::kThrowNotDateError);
   }
-}
-
-// static
-void Builtins::Generate_FunctionHasInstance(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- eax    : argc
-  //  -- esp[0] : return address
-  //  -- esp[4] : first argument (left-hand side)
-  //  -- esp[8] : receiver (right-hand side)
-  // -----------------------------------
-
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ mov(InstanceOfDescriptor::LeftRegister(),
-           Operand(ebp, 2 * kPointerSize));  // Load left-hand side.
-    __ mov(InstanceOfDescriptor::RightRegister(),
-           Operand(ebp, 3 * kPointerSize));  // Load right-hand side.
-    InstanceOfStub stub(masm->isolate(), true);
-    __ CallStub(&stub);
-  }
-
-  // Pop the argument and the receiver.
-  __ ret(2 * kPointerSize);
 }
 
 // static
@@ -2624,11 +2598,6 @@ void Builtins::Generate_AllocateInNewSpace(MacroAssembler* masm) {
   //  -- edx    : requested object size (untagged)
   //  -- esp[0] : return address
   // -----------------------------------
-  Label runtime;
-  __ Allocate(edx, eax, ecx, edi, &runtime, NO_ALLOCATION_FLAGS);
-  __ Ret();
-
-  __ bind(&runtime);
   __ SmiTag(edx);
   __ PopReturnAddressTo(ecx);
   __ Push(edx);
@@ -2643,11 +2612,6 @@ void Builtins::Generate_AllocateInOldSpace(MacroAssembler* masm) {
   //  -- edx    : requested object size (untagged)
   //  -- esp[0] : return address
   // -----------------------------------
-  Label runtime;
-  __ Allocate(edx, eax, ecx, edi, &runtime, PRETENURE);
-  __ Ret();
-
-  __ bind(&runtime);
   __ SmiTag(edx);
   __ PopReturnAddressTo(ecx);
   __ Push(edx);

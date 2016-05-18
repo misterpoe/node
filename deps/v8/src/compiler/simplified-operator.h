@@ -25,8 +25,9 @@ namespace compiler {
 class Operator;
 struct SimplifiedOperatorGlobalCache;
 
+enum BaseTaggedness : uint8_t { kUntaggedBase, kTaggedBase };
 
-enum BaseTaggedness { kUntaggedBase, kTaggedBase };
+size_t hash_value(BaseTaggedness);
 
 std::ostream& operator<<(std::ostream&, BaseTaggedness);
 
@@ -63,6 +64,7 @@ struct FieldAccess {
   MaybeHandle<Name> name;         // debugging only.
   Type* type;                     // type of the field.
   MachineType machine_type;       // machine type of the field.
+  WriteBarrierKind write_barrier_kind;  // write barrier hint.
 
   int tag() const { return base_is_tagged == kTaggedBase ? kHeapObjectTag : 0; }
 };
@@ -86,6 +88,7 @@ struct ElementAccess {
   int header_size;                // size of the header, without tag.
   Type* type;                     // type of the element.
   MachineType machine_type;       // machine type of the element.
+  WriteBarrierKind write_barrier_kind;  // write barrier hint.
 
   int tag() const { return base_is_tagged == kTaggedBase ? kHeapObjectTag : 0; }
 };
@@ -143,6 +146,7 @@ class SimplifiedOperatorBuilder final : public ZoneObject {
   const Operator* NumberShiftLeft();
   const Operator* NumberShiftRight();
   const Operator* NumberShiftRightLogical();
+  const Operator* NumberImul();
   const Operator* NumberClz32();
   const Operator* NumberCeil();
   const Operator* NumberFloor();
@@ -163,12 +167,12 @@ class SimplifiedOperatorBuilder final : public ZoneObject {
   const Operator* ChangeTaggedToInt32();
   const Operator* ChangeTaggedToUint32();
   const Operator* ChangeTaggedToFloat64();
-  const Operator* ChangeInt31ToTagged();
+  const Operator* ChangeInt31ToTaggedSigned();
   const Operator* ChangeInt32ToTagged();
   const Operator* ChangeUint32ToTagged();
   const Operator* ChangeFloat64ToTagged();
-  const Operator* ChangeBoolToBit();
-  const Operator* ChangeBitToBool();
+  const Operator* ChangeTaggedToBit();
+  const Operator* ChangeBitToTagged();
   const Operator* TruncateTaggedToWord32();
 
   const Operator* ObjectIsCallable();

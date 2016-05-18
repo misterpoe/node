@@ -72,6 +72,8 @@ const Register MathPowIntegerDescriptor::exponent() {
 const Register GrowArrayElementsDescriptor::ObjectRegister() { return eax; }
 const Register GrowArrayElementsDescriptor::KeyRegister() { return ebx; }
 
+const Register HasPropertyDescriptor::ObjectRegister() { return eax; }
+const Register HasPropertyDescriptor::KeyRegister() { return ebx; }
 
 void FastNewClosureDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
@@ -249,12 +251,15 @@ void AllocateHeapNumberDescriptor::InitializePlatformSpecific(
 SIMD128_TYPES(SIMD128_ALLOC_DESC)
 #undef SIMD128_ALLOC_DESC
 
-void AllocateDescriptor::InitializePlatformSpecific(
+void ArrayNoArgumentConstructorDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
-  Register registers[] = {eax};
-  data->InitializePlatformSpecific(arraysize(registers), registers);
+  // register state
+  // eax -- number of arguments
+  // edi -- function
+  // ebx -- allocation site with elements kind
+  Register registers[] = {edi, ebx, eax};
+  data->InitializePlatformSpecific(arraysize(registers), registers, NULL);
 }
-
 
 void ArrayConstructorConstantArgCountDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {

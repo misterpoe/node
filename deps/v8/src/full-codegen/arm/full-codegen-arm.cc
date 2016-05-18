@@ -468,6 +468,9 @@ void FullCodeGenerator::EmitReturnSequence() {
   }
 }
 
+void FullCodeGenerator::RestoreContext() {
+  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+}
 
 void FullCodeGenerator::StackValueContext::Plug(Variable* var) const {
   DCHECK(var->IsStackAllocated() || var->IsContextSlot());
@@ -765,11 +768,9 @@ void FullCodeGenerator::VisitVariableDeclaration(
   switch (variable->location()) {
     case VariableLocation::GLOBAL:
     case VariableLocation::UNALLOCATED:
+      DCHECK(!variable->binding_needs_init());
       globals_->Add(variable->name(), zone());
-      globals_->Add(variable->binding_needs_init()
-                        ? isolate()->factory()->the_hole_value()
-                        : isolate()->factory()->undefined_value(),
-                    zone());
+      globals_->Add(isolate()->factory()->undefined_value(), zone());
       break;
 
     case VariableLocation::PARAMETER:
@@ -809,6 +810,7 @@ void FullCodeGenerator::VisitVariableDeclaration(
       __ Push(r2, r0);
       __ Push(Smi::FromInt(variable->DeclarationPropertyAttributes()));
       __ CallRuntime(Runtime::kDeclareLookupSlot);
+      PrepareForBailoutForId(proxy->id(), NO_REGISTERS);
       break;
     }
   }
@@ -866,6 +868,7 @@ void FullCodeGenerator::VisitFunctionDeclaration(
       VisitForStackValue(declaration->fun());
       PushOperand(Smi::FromInt(variable->DeclarationPropertyAttributes()));
       CallRuntimeWithOperands(Runtime::kDeclareLookupSlot);
+      PrepareForBailoutForId(proxy->id(), NO_REGISTERS);
       break;
     }
   }
@@ -1016,12 +1019,10 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   PrepareForBailoutForId(stmt->ToObjectId(), TOS_REG);
   __ push(r0);
 
-  // Check cache validity in generated code. This is a fast case for
-  // the JSObject::IsSimpleEnum cache validity checks. If we cannot
-  // guarantee cache validity, call the runtime system to check cache
-  // validity or get the property names in a fixed array.
-  // Note: Proxies never have an enum cache, so will always take the
-  // slow path.
+  // Check cache validity in generated code. If we cannot guarantee cache
+  // validity, call the runtime system to check cache validity or get the
+  // property names in a fixed array. Note: Proxies never have an enum cache,
+  // so will always take the slow path.
   Label call_runtime;
   __ CheckEnumCache(&call_runtime);
 
@@ -1418,7 +1419,7 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
   } else {
     FastCloneShallowObjectStub stub(isolate(), expr->properties_count());
     __ CallStub(&stub);
-    __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+    RestoreContext();
   }
   PrepareForBailoutForId(expr->CreateLiteralId(), TOS_REG);
 
@@ -1866,7 +1867,7 @@ void FullCodeGenerator::VisitYield(Yield* expr) {
   __ b(eq, &post_runtime);
   __ push(r0);  // generator object
   __ CallRuntime(Runtime::kSuspendJSGeneratorObject, 1);
-  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  RestoreContext();
   __ bind(&post_runtime);
   PopOperand(result_register());
   EmitReturnSequence();
@@ -2320,43 +2321,6 @@ void FullCodeGenerator::EmitKeyedPropertyAssignment(Assignment* expr) {
 }
 
 
-void FullCodeGenerator::VisitProperty(Property* expr) {
-  Comment cmnt(masm_, "[ Property");
-  SetExpressionPosition(expr);
-
-  Expression* key = expr->key();
-
-  if (key->IsPropertyName()) {
-    if (!expr->IsSuperAccess()) {
-      VisitForAccumulatorValue(expr->obj());
-      __ Move(LoadDescriptor::ReceiverRegister(), r0);
-      EmitNamedPropertyLoad(expr);
-    } else {
-      VisitForStackValue(expr->obj()->AsSuperPropertyReference()->this_var());
-      VisitForStackValue(
-          expr->obj()->AsSuperPropertyReference()->home_object());
-      EmitNamedSuperPropertyLoad(expr);
-    }
-  } else {
-    if (!expr->IsSuperAccess()) {
-      VisitForStackValue(expr->obj());
-      VisitForAccumulatorValue(expr->key());
-      __ Move(LoadDescriptor::NameRegister(), r0);
-      PopOperand(LoadDescriptor::ReceiverRegister());
-      EmitKeyedPropertyLoad(expr);
-    } else {
-      VisitForStackValue(expr->obj()->AsSuperPropertyReference()->this_var());
-      VisitForStackValue(
-          expr->obj()->AsSuperPropertyReference()->home_object());
-      VisitForStackValue(expr->key());
-      EmitKeyedSuperPropertyLoad(expr);
-    }
-  }
-  PrepareForBailoutForId(expr->LoadId(), TOS_REG);
-  context()->Plug(r0);
-}
-
-
 void FullCodeGenerator::CallIC(Handle<Code> code,
                                TypeFeedbackId ast_id) {
   ic_total_count_++;
@@ -2428,6 +2392,7 @@ void FullCodeGenerator::EmitSuperCallWithLoadIC(Call* expr) {
   //  - home_object
   //  - key
   CallRuntimeWithOperands(Runtime::kLoadFromSuper);
+  PrepareForBailoutForId(prop->LoadId(), TOS_REG);
 
   // Replace home_object with target function.
   __ str(r0, MemOperand(sp, kPointerSize));
@@ -2488,6 +2453,7 @@ void FullCodeGenerator::EmitKeyedSuperCallWithLoadIC(Call* expr) {
   //  - home_object
   //  - key
   CallRuntimeWithOperands(Runtime::kLoadKeyedFromSuper);
+  PrepareForBailoutForId(prop->LoadId(), TOS_REG);
 
   // Replace home_object with target function.
   __ str(r0, MemOperand(sp, kPointerSize));
@@ -2528,8 +2494,7 @@ void FullCodeGenerator::EmitCall(Call* expr, ConvertReceiverMode mode) {
   OperandStackDepthDecrement(arg_count + 1);
 
   RecordJSReturnSite(expr);
-  // Restore context register.
-  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  RestoreContext();
   context()->DropAndPlug(1, r0);
 }
 
@@ -2636,8 +2601,7 @@ void FullCodeGenerator::EmitPossiblyEvalCall(Call* expr) {
           RelocInfo::CODE_TARGET);
   OperandStackDepthDecrement(arg_count + 1);
   RecordJSReturnSite(expr);
-  // Restore context register.
-  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  RestoreContext();
   context()->DropAndPlug(1, r0);
 }
 
@@ -2677,8 +2641,7 @@ void FullCodeGenerator::VisitCallNew(CallNew* expr) {
   __ Call(stub.GetCode(), RelocInfo::CODE_TARGET);
   OperandStackDepthDecrement(arg_count + 1);
   PrepareForBailoutForId(expr->ReturnId(), TOS_REG);
-  // Restore context register.
-  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  RestoreContext();
   context()->Plug(r0);
 }
 
@@ -2721,9 +2684,7 @@ void FullCodeGenerator::EmitSuperConstructorCall(Call* expr) {
   OperandStackDepthDecrement(arg_count + 1);
 
   RecordJSReturnSite(expr);
-
-  // Restore context register.
-  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  RestoreContext();
   context()->Plug(r0);
 }
 
@@ -2873,9 +2834,10 @@ void FullCodeGenerator::EmitClassOf(CallRuntime* expr) {
   // Map is now in r0.
   __ b(lt, &null);
 
-  // Return 'Function' for JSFunction objects.
-  __ cmp(r1, Operand(JS_FUNCTION_TYPE));
-  __ b(eq, &function);
+  // Return 'Function' for JSFunction and JSBoundFunction objects.
+  __ cmp(r1, Operand(FIRST_FUNCTION_TYPE));
+  STATIC_ASSERT(LAST_FUNCTION_TYPE == LAST_TYPE);
+  __ b(hs, &function);
 
   // Check if the constructor in the map is a JS function.
   Register instance_type = r2;
@@ -3119,8 +3081,7 @@ void FullCodeGenerator::EmitCall(CallRuntime* expr) {
   __ mov(r0, Operand(argc));
   __ Call(isolate()->builtins()->Call(), RelocInfo::CODE_TARGET);
   OperandStackDepthDecrement(argc + 1);
-  // Restore context register.
-  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  RestoreContext();
   // Discard the function left on TOS.
   context()->DropAndPlug(1, r0);
 }
@@ -3167,12 +3128,6 @@ void FullCodeGenerator::EmitGetSuperConstructor(CallRuntime* expr) {
   __ AssertFunction(r0);
   __ ldr(r0, FieldMemOperand(r0, HeapObject::kMapOffset));
   __ ldr(r0, FieldMemOperand(r0, Map::kPrototypeOffset));
-  context()->Plug(r0);
-}
-
-void FullCodeGenerator::EmitGetOrdinaryHasInstance(CallRuntime* expr) {
-  DCHECK_EQ(0, expr->arguments()->length());
-  __ LoadNativeContextSlot(Context::ORDINARY_HAS_INSTANCE_INDEX, r0);
   context()->Plug(r0);
 }
 
@@ -3238,9 +3193,7 @@ void FullCodeGenerator::EmitCallJSRuntimeFunction(CallRuntime* expr) {
   __ Call(isolate()->builtins()->Call(ConvertReceiverMode::kNullOrUndefined),
           RelocInfo::CODE_TARGET);
   OperandStackDepthDecrement(arg_count + 1);
-
-  // Restore context register.
-  __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  RestoreContext();
 }
 
 
@@ -3706,7 +3659,7 @@ void FullCodeGenerator::VisitCompareOperation(CompareOperation* expr) {
     case Token::IN:
       VisitForStackValue(expr->right());
       SetExpressionPosition(expr);
-      CallRuntimeWithOperands(Runtime::kHasProperty);
+      EmitHasProperty();
       PrepareForBailoutBeforeSplit(expr, false, NULL, NULL);
       __ CompareRoot(r0, Heap::kTrueValueRootIndex);
       Split(eq, if_true, if_false, fall_through);

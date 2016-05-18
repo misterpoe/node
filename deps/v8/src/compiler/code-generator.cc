@@ -507,10 +507,6 @@ void CodeGenerator::RecordCallPosition(Instruction* instr) {
     handlers_.push_back({caught, GetLabel(handler_rpo), masm()->pc_offset()});
   }
 
-  if (flags & CallDescriptor::kNeedsNopAfterCall) {
-    AddNopForSmiCodeInlining();
-  }
-
   if (needs_frame_state) {
     MarkLazyDeoptSite();
     // If the frame state is present, it starts at argument 1 (just after the
@@ -537,7 +533,7 @@ void CodeGenerator::RecordCallPosition(Instruction* instr) {
     // by calls.)
     for (size_t i = 0; i < descriptor->GetSize(); i++) {
       InstructionOperand* op = instr->InputAt(frame_state_offset + 1 + i);
-      CHECK(op->IsStackSlot() || op->IsDoubleStackSlot() || op->IsImmediate());
+      CHECK(op->IsStackSlot() || op->IsFPStackSlot() || op->IsImmediate());
     }
 #endif
     safepoints()->RecordLazyDeoptimizationIndex(deopt_state_id);
@@ -719,7 +715,7 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
     } else {
       CHECK(false);
     }
-  } else if (op->IsDoubleStackSlot()) {
+  } else if (op->IsFPStackSlot()) {
     DCHECK(IsFloatingPoint(type.representation()));
     translation->StoreDoubleStackSlot(LocationOperand::cast(op)->index());
   } else if (op->IsRegister()) {
@@ -737,7 +733,7 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
     } else {
       CHECK(false);
     }
-  } else if (op->IsDoubleRegister()) {
+  } else if (op->IsFPRegister()) {
     DCHECK(IsFloatingPoint(type.representation()));
     InstructionOperandConverter converter(this, instr);
     translation->StoreDoubleRegister(converter.ToDoubleRegister(op));

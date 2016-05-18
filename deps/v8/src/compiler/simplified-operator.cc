@@ -13,6 +13,10 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
+size_t hash_value(BaseTaggedness base_taggedness) {
+  return static_cast<uint8_t>(base_taggedness);
+}
+
 std::ostream& operator<<(std::ostream& os, BaseTaggedness base_taggedness) {
   switch (base_taggedness) {
     case kUntaggedBase:
@@ -84,6 +88,9 @@ BufferAccess const BufferAccessOf(const Operator* op) {
 
 
 bool operator==(FieldAccess const& lhs, FieldAccess const& rhs) {
+  // On purpose we don't include the write barrier kind here, as this method is
+  // really only relevant for eliminating loads and they don't care about the
+  // write barrier mode.
   return lhs.base_is_tagged == rhs.base_is_tagged && lhs.offset == rhs.offset &&
          lhs.machine_type == rhs.machine_type;
 }
@@ -95,6 +102,9 @@ bool operator!=(FieldAccess const& lhs, FieldAccess const& rhs) {
 
 
 size_t hash_value(FieldAccess const& access) {
+  // On purpose we don't include the write barrier kind here, as this method is
+  // really only relevant for eliminating loads and they don't care about the
+  // write barrier mode.
   return base::hash_combine(access.base_is_tagged, access.offset,
                             access.machine_type);
 }
@@ -110,12 +120,15 @@ std::ostream& operator<<(std::ostream& os, FieldAccess const& access) {
   }
 #endif
   access.type->PrintTo(os);
-  os << ", " << access.machine_type << "]";
+  os << ", " << access.machine_type << ", " << access.write_barrier_kind << "]";
   return os;
 }
 
 
 bool operator==(ElementAccess const& lhs, ElementAccess const& rhs) {
+  // On purpose we don't include the write barrier kind here, as this method is
+  // really only relevant for eliminating loads and they don't care about the
+  // write barrier mode.
   return lhs.base_is_tagged == rhs.base_is_tagged &&
          lhs.header_size == rhs.header_size &&
          lhs.machine_type == rhs.machine_type;
@@ -128,6 +141,9 @@ bool operator!=(ElementAccess const& lhs, ElementAccess const& rhs) {
 
 
 size_t hash_value(ElementAccess const& access) {
+  // On purpose we don't include the write barrier kind here, as this method is
+  // really only relevant for eliminating loads and they don't care about the
+  // write barrier mode.
   return base::hash_combine(access.base_is_tagged, access.header_size,
                             access.machine_type);
 }
@@ -136,7 +152,7 @@ size_t hash_value(ElementAccess const& access) {
 std::ostream& operator<<(std::ostream& os, ElementAccess const& access) {
   os << access.base_is_tagged << ", " << access.header_size << ", ";
   access.type->PrintTo(os);
-  os << ", " << access.machine_type;
+  os << ", " << access.machine_type << ", " << access.write_barrier_kind;
   return os;
 }
 
@@ -173,6 +189,7 @@ const ElementAccess& ElementAccessOf(const Operator* op) {
   V(NumberShiftLeft, Operator::kNoProperties, 2)           \
   V(NumberShiftRight, Operator::kNoProperties, 2)          \
   V(NumberShiftRightLogical, Operator::kNoProperties, 2)   \
+  V(NumberImul, Operator::kCommutative, 2)                 \
   V(NumberClz32, Operator::kNoProperties, 1)               \
   V(NumberCeil, Operator::kNoProperties, 1)                \
   V(NumberFloor, Operator::kNoProperties, 1)               \
@@ -186,12 +203,12 @@ const ElementAccess& ElementAccessOf(const Operator* op) {
   V(ChangeTaggedToInt32, Operator::kNoProperties, 1)       \
   V(ChangeTaggedToUint32, Operator::kNoProperties, 1)      \
   V(ChangeTaggedToFloat64, Operator::kNoProperties, 1)     \
-  V(ChangeInt31ToTagged, Operator::kNoProperties, 1)       \
+  V(ChangeInt31ToTaggedSigned, Operator::kNoProperties, 1) \
   V(ChangeInt32ToTagged, Operator::kNoProperties, 1)       \
   V(ChangeUint32ToTagged, Operator::kNoProperties, 1)      \
   V(ChangeFloat64ToTagged, Operator::kNoProperties, 1)     \
-  V(ChangeBoolToBit, Operator::kNoProperties, 1)           \
-  V(ChangeBitToBool, Operator::kNoProperties, 1)           \
+  V(ChangeTaggedToBit, Operator::kNoProperties, 1)         \
+  V(ChangeBitToTagged, Operator::kNoProperties, 1)         \
   V(TruncateTaggedToWord32, Operator::kNoProperties, 1)    \
   V(ObjectIsCallable, Operator::kNoProperties, 1)          \
   V(ObjectIsNumber, Operator::kNoProperties, 1)            \

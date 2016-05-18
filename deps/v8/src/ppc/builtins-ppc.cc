@@ -1025,8 +1025,12 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
     __ Assert(eq, kFunctionDataShouldBeBytecodeArrayOnInterpreterEntry);
   }
 
-  // Push new.target, bytecode array and zero for bytecode array offset.
-  __ li(r3, Operand::Zero());
+  // Load initial bytecode offset.
+  __ mov(kInterpreterBytecodeOffsetRegister,
+         Operand(BytecodeArray::kHeaderSize - kHeapObjectTag));
+
+  // Push new.target, bytecode array and Smi tagged bytecode array offset.
+  __ SmiTag(r3, kInterpreterBytecodeOffsetRegister);
   __ Push(r6, kInterpreterBytecodeArrayRegister, r3);
 
   // Allocate the local and temporary register file on the stack.
@@ -1057,12 +1061,8 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
     __ bind(&no_args);
   }
 
-  // Load accumulator, register file, bytecode offset, dispatch table into
-  // registers.
+  // Load accumulator and dispatch table into registers.
   __ LoadRoot(kInterpreterAccumulatorRegister, Heap::kUndefinedValueRootIndex);
-  __ addi(r7, fp, Operand(InterpreterFrameConstants::kRegisterFileFromFp));
-  __ mov(kInterpreterBytecodeOffsetRegister,
-         Operand(BytecodeArray::kHeaderSize - kHeapObjectTag));
   __ mov(kInterpreterDispatchTableRegister,
          Operand(ExternalReference::interpreter_dispatch_table_address(
              masm->isolate())));
@@ -1768,28 +1768,6 @@ void Builtins::Generate_DatePrototype_GetField(MacroAssembler* masm,
   // 3. Raise a TypeError if the receiver is not a date.
   __ bind(&receiver_not_date);
   __ TailCallRuntime(Runtime::kThrowNotDateError);
-}
-
-// static
-void Builtins::Generate_FunctionHasInstance(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- r3    : argc
-  //  -- sp[0] : first argument (left-hand side)
-  //  -- sp[4] : receiver (right-hand side)
-  // -----------------------------------
-
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ LoadP(InstanceOfDescriptor::LeftRegister(),
-             MemOperand(fp, 2 * kPointerSize));  // Load left-hand side.
-    __ LoadP(InstanceOfDescriptor::RightRegister(),
-             MemOperand(fp, 3 * kPointerSize));  // Load right-hand side.
-    InstanceOfStub stub(masm->isolate(), true);
-    __ CallStub(&stub);
-  }
-
-  // Pop the argument and the receiver.
-  __ Ret(2);
 }
 
 // static
@@ -2734,6 +2712,30 @@ void Builtins::Generate_Construct(MacroAssembler* masm) {
           RelocInfo::CODE_TARGET);
 }
 
+// static
+void Builtins::Generate_AllocateInNewSpace(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- r4 : requested object size (untagged)
+  //  -- lr : return address
+  // -----------------------------------
+  __ SmiTag(r4);
+  __ Push(r4);
+  __ LoadSmiLiteral(cp, Smi::FromInt(0));
+  __ TailCallRuntime(Runtime::kAllocateInNewSpace);
+}
+
+// static
+void Builtins::Generate_AllocateInOldSpace(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- r4 : requested object size (untagged)
+  //  -- lr : return address
+  // -----------------------------------
+  __ SmiTag(r4);
+  __ LoadSmiLiteral(r5, Smi::FromInt(AllocateTargetSpace::encode(OLD_SPACE)));
+  __ Push(r4, r5);
+  __ LoadSmiLiteral(cp, Smi::FromInt(0));
+  __ TailCallRuntime(Runtime::kAllocateInTargetSpace);
+}
 
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   // ----------- S t a t e -------------

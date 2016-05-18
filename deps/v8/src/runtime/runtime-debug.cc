@@ -42,6 +42,9 @@ RUNTIME_FUNCTION(Runtime_DebugBreakOnBytecode) {
   JavaScriptFrameIterator it(isolate);
   isolate->debug()->Break(it.frame());
 
+  // If live-edit has dropped frames, we are not going back to dispatch.
+  if (LiveEdit::SetAfterBreakTarget(isolate->debug())) return Smi::FromInt(0);
+
   // Return the handler from the original bytecode array.
   DCHECK(it.frame()->is_interpreted());
   InterpretedFrame* interpreted_frame =
@@ -244,7 +247,7 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     Handle<JSObject> promise = Handle<JSObject>::cast(object);
 
     Handle<Object> status_obj =
-        DebugGetProperty(promise, isolate->factory()->promise_status_symbol());
+        DebugGetProperty(promise, isolate->factory()->promise_state_symbol());
     RUNTIME_ASSERT_HANDLIFIED(status_obj->IsSmi(), JSArray);
     const char* status = "rejected";
     int status_val = Handle<Smi>::cast(status_obj)->value();
@@ -267,11 +270,30 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     result->set(1, *status_str);
 
     Handle<Object> value_obj =
-        DebugGetProperty(promise, isolate->factory()->promise_value_symbol());
+        DebugGetProperty(promise, isolate->factory()->promise_result_symbol());
     Handle<String> promise_value =
         factory->NewStringFromAsciiChecked("[[PromiseValue]]");
     result->set(2, *promise_value);
     result->set(3, *value_obj);
+    return factory->NewJSArrayWithElements(result);
+  } else if (object->IsJSProxy()) {
+    Handle<JSProxy> js_proxy = Handle<JSProxy>::cast(object);
+    Handle<FixedArray> result = factory->NewFixedArray(3 * 2);
+
+    Handle<String> handler_str =
+        factory->NewStringFromAsciiChecked("[[Handler]]");
+    result->set(0, *handler_str);
+    result->set(1, js_proxy->handler());
+
+    Handle<String> target_str =
+        factory->NewStringFromAsciiChecked("[[Target]]");
+    result->set(2, *target_str);
+    result->set(3, js_proxy->target());
+
+    Handle<String> is_revoked_str =
+        factory->NewStringFromAsciiChecked("[[IsRevoked]]");
+    result->set(4, *is_revoked_str);
+    result->set(5, isolate->heap()->ToBoolean(js_proxy->IsRevoked()));
     return factory->NewJSArrayWithElements(result);
   } else if (object->IsJSValue()) {
     Handle<JSValue> js_value = Handle<JSValue>::cast(object);
@@ -339,7 +361,7 @@ RUNTIME_FUNCTION(Runtime_DebugGetPropertyDetails) {
     return *isolate->factory()->NewJSArrayWithElements(details);
   }
 
-  LookupIterator it(obj, name, LookupIterator::HIDDEN);
+  LookupIterator it(obj, name, LookupIterator::OWN);
   bool has_caught = false;
   Handle<Object> value = DebugGetProperty(&it, &has_caught);
   if (!it.IsFound()) return isolate->heap()->undefined_value();

@@ -28,6 +28,8 @@ namespace internal {
 bool FullCodeGenerator::MakeCode(CompilationInfo* info) {
   Isolate* isolate = info->isolate();
 
+  RuntimeCallTimerScope runtimeTimer(isolate,
+                                     &RuntimeCallStats::CompileFullCode);
   TimerEventScope<TimerEventCompileFullCode> timer(info->isolate());
   TRACE_EVENT0("v8", "V8.CompileFullCode");
 
@@ -442,10 +444,7 @@ void FullCodeGenerator::VisitSloppyBlockFunctionStatement(
 
 
 int FullCodeGenerator::DeclareGlobalsFlags() {
-  DCHECK(DeclareGlobalsLanguageMode::is_valid(language_mode()));
-  return DeclareGlobalsEvalFlag::encode(is_eval()) |
-         DeclareGlobalsNativeFlag::encode(is_native()) |
-         DeclareGlobalsLanguageMode::encode(language_mode());
+  return info_->GetDeclareGlobalsFlags();
 }
 
 void FullCodeGenerator::PushOperand(Handle<Object> handle) {
@@ -604,6 +603,13 @@ void FullCodeGenerator::EmitRegExpConstructResult(CallRuntime* expr) {
   EmitIntrinsicAsStubCall(expr, CodeFactory::RegExpConstructResult(isolate()));
 }
 
+void FullCodeGenerator::EmitHasProperty() {
+  Callable callable = CodeFactory::HasProperty(isolate());
+  PopOperand(callable.descriptor().GetRegisterParameter(1));
+  PopOperand(callable.descriptor().GetRegisterParameter(0));
+  __ Call(callable.code(), RelocInfo::CODE_TARGET);
+  RestoreContext();
+}
 
 bool RecordStatementPosition(MacroAssembler* masm, int pos) {
   if (pos == RelocInfo::kNoPosition) return false;
@@ -678,11 +684,15 @@ void FullCodeGenerator::SetCallPosition(Expression* expr,
 void FullCodeGenerator::VisitSuperPropertyReference(
     SuperPropertyReference* super) {
   __ CallRuntime(Runtime::kThrowUnsupportedSuperError);
+  // Even though this expression doesn't produce a value, we need to simulate
+  // plugging of the value context to ensure stack depth tracking is in sync.
+  if (context()->IsStackValue()) OperandStackDepthIncrement(1);
 }
 
 
 void FullCodeGenerator::VisitSuperCallReference(SuperCallReference* super) {
-  __ CallRuntime(Runtime::kThrowUnsupportedSuperError);
+  // Handled by VisitCall
+  UNREACHABLE();
 }
 
 
@@ -812,6 +822,41 @@ void FullCodeGenerator::VisitArithmeticExpression(BinaryOperation* expr) {
   }
 }
 
+void FullCodeGenerator::VisitProperty(Property* expr) {
+  Comment cmnt(masm_, "[ Property");
+  SetExpressionPosition(expr);
+
+  Expression* key = expr->key();
+
+  if (key->IsPropertyName()) {
+    if (!expr->IsSuperAccess()) {
+      VisitForAccumulatorValue(expr->obj());
+      __ Move(LoadDescriptor::ReceiverRegister(), result_register());
+      EmitNamedPropertyLoad(expr);
+    } else {
+      VisitForStackValue(expr->obj()->AsSuperPropertyReference()->this_var());
+      VisitForStackValue(
+          expr->obj()->AsSuperPropertyReference()->home_object());
+      EmitNamedSuperPropertyLoad(expr);
+    }
+  } else {
+    if (!expr->IsSuperAccess()) {
+      VisitForStackValue(expr->obj());
+      VisitForAccumulatorValue(expr->key());
+      __ Move(LoadDescriptor::NameRegister(), result_register());
+      PopOperand(LoadDescriptor::ReceiverRegister());
+      EmitKeyedPropertyLoad(expr);
+    } else {
+      VisitForStackValue(expr->obj()->AsSuperPropertyReference()->this_var());
+      VisitForStackValue(
+          expr->obj()->AsSuperPropertyReference()->home_object());
+      VisitForStackValue(expr->key());
+      EmitKeyedSuperPropertyLoad(expr);
+    }
+  }
+  PrepareForBailoutForId(expr->LoadId(), TOS_REG);
+  context()->Plug(result_register());
+}
 
 void FullCodeGenerator::VisitForTypeofValue(Expression* expr) {
   VariableProxy* proxy = expr->AsVariableProxy();
@@ -844,7 +889,6 @@ void FullCodeGenerator::VisitBlock(Block* stmt) {
 
 void FullCodeGenerator::VisitDoExpression(DoExpression* expr) {
   Comment cmnt(masm_, "[ Do Expression");
-  NestedStatement nested_block(this);
   SetExpressionPosition(expr);
   VisitBlock(expr->block());
   EmitVariableLoad(expr->result());
@@ -1458,6 +1502,7 @@ void FullCodeGenerator::VisitClassLiteral(ClassLiteral* lit) {
   Comment cmnt(masm_, "[ ClassLiteral");
 
   {
+    NestedClassLiteral nested_class_literal(this, lit);
     EnterBlockScopeIfNeeded block_scope_state(
         this, lit->scope(), lit->EntryId(), lit->DeclsId(), lit->ExitId());
 
@@ -1486,9 +1531,10 @@ void FullCodeGenerator::VisitClassLiteral(ClassLiteral* lit) {
     PushOperand(result_register());
 
     EmitClassDefineProperties(lit);
+    DropOperands(1);
 
-    // Set both the prototype and constructor to have fast properties.
-    CallRuntimeWithOperands(Runtime::kFinalizeClassDefinition);
+    // Set the constructor to have fast properties.
+    CallRuntimeWithOperands(Runtime::kToFastProperties);
 
     if (lit->class_variable_proxy() != nullptr) {
       EmitVariableAssignment(lit->class_variable_proxy()->var(), Token::INIT,

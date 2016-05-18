@@ -287,21 +287,19 @@ class WasmDecoder : public Decoder {
 
       case kExprCallFunction: {
         CallFunctionOperand operand(this, pc);
-        return static_cast<int>(
-            module_->GetFunctionSignature(operand.index)->parameter_count());
+        return operand.arity;
       }
       case kExprCallIndirect: {
         CallIndirectOperand operand(this, pc);
-        return 1 + static_cast<int>(
-                       module_->GetSignature(operand.index)->parameter_count());
+        return 1 + operand.arity;
       }
       case kExprCallImport: {
         CallImportOperand operand(this, pc);
-        return static_cast<int>(
-            module_->GetImportSignature(operand.index)->parameter_count());
+        return operand.arity;
       }
       case kExprReturn: {
-        return static_cast<int>(sig_->return_count());
+        ReturnArityOperand operand(this, pc);
+        return operand.arity;
       }
 
 #define DECLARE_OPCODE_CASE(name, opcode, sig) \
@@ -387,7 +385,6 @@ class WasmDecoder : public Decoder {
     }
   }
 };
-
 
 // A shift-reduce-parser strategy for decoding Wasm code that uses an explicit
 // shift-reduce strategy with multiple internal stacks.
@@ -489,9 +486,9 @@ class SR_WasmDecoder : public WasmDecoder {
 
   SsaEnv* ssa_env_;
 
-  ZoneVector<LocalType> local_type_vec_;
-  ZoneVector<Value> stack_;
-  ZoneVector<Control> control_;
+  ZoneVector<LocalType> local_type_vec_;  // types of local variables.
+  ZoneVector<Value> stack_;               // stack of values.
+  ZoneVector<Control> control_;           // stack of blocks, loops, and ifs.
 
   inline bool build() { return builder_ && ssa_env_->go(); }
 
@@ -615,13 +612,13 @@ class SR_WasmDecoder : public WasmDecoder {
         switch (sig->parameter_count()) {
           case 1: {
             Value val = Pop(0, sig->GetParam(0));
-            node = BUILD(Unop, opcode, val.node);
+            node = BUILD(Unop, opcode, val.node, position());
             break;
           }
           case 2: {
             Value rval = Pop(1, sig->GetParam(1));
             Value lval = Pop(0, sig->GetParam(0));
-            node = BUILD(Binop, opcode, lval.node, rval.node);
+            node = BUILD(Binop, opcode, lval.node, rval.node, position());
             break;
           }
           default:
@@ -829,8 +826,7 @@ class SR_WasmDecoder : public WasmDecoder {
             break;
           }
           case kExprUnreachable: {
-            // TODO(clemensh): add source position for unreachable
-            Push(kAstEnd, BUILD0(Unreachable));
+            Push(kAstEnd, BUILD(Unreachable, position()));
             ssa_env_->Kill(SsaEnv::kControlEnd);
             break;
           }
@@ -988,9 +984,9 @@ class SR_WasmDecoder : public WasmDecoder {
             CallFunctionOperand operand(this, pc_);
             if (Validate(pc_, operand)) {
               TFNode** buffer = PopArgs(operand.sig);
-              TFNode* call = BUILD(CallDirect, operand.index, buffer);
+              TFNode* call =
+                  BUILD(CallDirect, operand.index, buffer, position());
               Push(GetReturnType(operand.sig), call);
-              AddSourcePosition(call, pc_);
             }
             len = 1 + operand.length;
             break;
@@ -1001,9 +997,9 @@ class SR_WasmDecoder : public WasmDecoder {
               TFNode** buffer = PopArgs(operand.sig);
               Value index = Pop(0, kAstI32);
               if (buffer) buffer[0] = index.node;
-              TFNode* call = BUILD(CallIndirect, operand.index, buffer);
+              TFNode* call =
+                  BUILD(CallIndirect, operand.index, buffer, position());
               Push(GetReturnType(operand.sig), call);
-              AddSourcePosition(call, pc_);
             }
             len = 1 + operand.length;
             break;
@@ -1012,9 +1008,9 @@ class SR_WasmDecoder : public WasmDecoder {
             CallImportOperand operand(this, pc_);
             if (Validate(pc_, operand)) {
               TFNode** buffer = PopArgs(operand.sig);
-              TFNode* call = BUILD(CallImport, operand.index, buffer);
+              TFNode* call =
+                  BUILD(CallImport, operand.index, buffer, position());
               Push(GetReturnType(operand.sig), call);
-              AddSourcePosition(call, pc_);
             }
             len = 1 + operand.length;
             break;
@@ -1108,7 +1104,8 @@ class SR_WasmDecoder : public WasmDecoder {
   int DecodeLoadMem(LocalType type, MachineType mem_type) {
     MemoryAccessOperand operand(this, pc_);
     Value index = Pop(0, kAstI32);
-    TFNode* node = BUILD(LoadMem, type, mem_type, index.node, operand.offset);
+    TFNode* node =
+        BUILD(LoadMem, type, mem_type, index.node, operand.offset, position());
     Push(type, node);
     return 1 + operand.length;
   }
@@ -1117,7 +1114,7 @@ class SR_WasmDecoder : public WasmDecoder {
     MemoryAccessOperand operand(this, pc_);
     Value val = Pop(1, type);
     Value index = Pop(0, kAstI32);
-    BUILD(StoreMem, mem_type, index.node, operand.offset, val.node);
+    BUILD(StoreMem, mem_type, index.node, operand.offset, val.node, position());
     Push(type, val.node);
     return 1 + operand.length;
   }
@@ -1159,7 +1156,8 @@ class SR_WasmDecoder : public WasmDecoder {
   }
 
   Value Pop() {
-    if (stack_.empty()) {
+    size_t limit = control_.empty() ? 0 : control_.back().stack_depth;
+    if (stack_.size() <= limit) {
       Value val = {pc_, nullptr, kAstStmt};
       error(pc_, pc_, "%s found empty stack", SafeOpcodeNameAt(pc_));
       return val;
@@ -1295,7 +1293,7 @@ class SR_WasmDecoder : public WasmDecoder {
         builder_->AppendToMerge(merge, from->control);
         // Merge effects.
         if (builder_->IsPhiWithMerge(to->effect, merge)) {
-          builder_->AppendToPhi(merge, to->effect, from->effect);
+          builder_->AppendToPhi(to->effect, from->effect);
         } else if (to->effect != from->effect) {
           uint32_t count = builder_->InputCount(merge);
           TFNode** effects = builder_->Buffer(count);
@@ -1310,7 +1308,7 @@ class SR_WasmDecoder : public WasmDecoder {
           TFNode* tnode = to->locals[i];
           TFNode* fnode = from->locals[i];
           if (builder_->IsPhiWithMerge(tnode, merge)) {
-            builder_->AppendToPhi(merge, tnode, fnode);
+            builder_->AppendToPhi(tnode, fnode);
           } else if (tnode != fnode) {
             uint32_t count = builder_->InputCount(merge);
             TFNode** vals = builder_->Buffer(count);
@@ -1333,7 +1331,7 @@ class SR_WasmDecoder : public WasmDecoder {
   TFNode* CreateOrMergeIntoPhi(LocalType type, TFNode* merge, TFNode* tnode,
                                TFNode* fnode) {
     if (builder_->IsPhiWithMerge(tnode, merge)) {
-      builder_->AppendToPhi(merge, tnode, fnode);
+      builder_->AppendToPhi(tnode, fnode);
     } else if (tnode != fnode) {
       uint32_t count = builder_->InputCount(merge);
       TFNode** vals = builder_->Buffer(count);
@@ -1468,12 +1466,10 @@ class SR_WasmDecoder : public WasmDecoder {
     return assigned;
   }
 
-  void AddSourcePosition(TFNode* node, const byte* pc) {
-    if (node) {
-      int offset = static_cast<int>(pc - start_);
-      DCHECK_EQ(pc - start_, offset);  // overflows cannot happen
-      builder_->SetSourcePosition(node, offset);
-    }
+  inline wasm::WasmCodePosition position() {
+    int offset = static_cast<int>(pc_ - start_);
+    DCHECK_EQ(pc_ - start_, offset);  // overflows cannot happen
+    return offset;
   }
 };
 
@@ -1502,7 +1498,6 @@ TreeResult BuildTFGraph(base::AccountingAllocator* allocator,
   return decoder.toResult<Tree*>(nullptr);
 }
 
-
 std::ostream& operator<<(std::ostream& os, const Tree& tree) {
   if (tree.pc == nullptr) {
     os << "null";
@@ -1523,10 +1518,15 @@ int OpcodeLength(const byte* pc, const byte* end) {
   return decoder.OpcodeLength(pc);
 }
 
-int OpcodeArity(ModuleEnv* module, FunctionSig* sig, const byte* pc,
-                const byte* end) {
-  WasmDecoder decoder(module, sig, pc, end);
+int OpcodeArity(const byte* pc, const byte* end) {
+  WasmDecoder decoder(nullptr, nullptr, pc, end);
   return decoder.OpcodeArity(pc);
+}
+
+void PrintAstForDebugging(const byte* start, const byte* end) {
+  FunctionBody body = {nullptr, nullptr, start, start, end};
+  base::AccountingAllocator allocator;
+  PrintAst(&allocator, body);
 }
 
 void PrintAst(base::AccountingAllocator* allocator, FunctionBody& body) {
@@ -1545,7 +1545,7 @@ void PrintAst(base::AccountingAllocator* allocator, FunctionBody& body) {
   decoder.DecodeLocalDecls(decls);
   const byte* pc = decoder.pc();
   if (body.start != decoder.pc()) {
-    printf("// locals:");
+    os << "// locals: ";
     for (auto p : decls.local_types) {
       LocalType type = p.first;
       uint32_t count = p.second;
@@ -1556,64 +1556,90 @@ void PrintAst(base::AccountingAllocator* allocator, FunctionBody& body) {
     for (const byte* locals = body.start; locals < pc; locals++) {
       printf(" 0x%02x,", *locals);
     }
-    printf("\n");
+    os << std::endl;
   }
 
-  printf("// body: \n");
-  std::vector<int> arity_stack;
+  os << "// body: \n";
+  int control_depth = 0;
   while (pc < body.end) {
-    int arity = decoder.OpcodeArity(pc);
     size_t length = decoder.OpcodeLength(pc);
 
-    for (auto arity : arity_stack) {
-      printf("  ");
-      USE(arity);
-    }
-
     WasmOpcode opcode = static_cast<WasmOpcode>(*pc);
+    if (opcode == kExprElse) control_depth--;
+
+    for (int i = 0; i < control_depth && i < 32; i++) printf("  ");
     printf("k%s,", WasmOpcodes::OpcodeName(opcode));
 
     for (size_t i = 1; i < length; i++) {
       printf(" 0x%02x,", pc[i]);
     }
 
-    if (body.module) {
-      switch (opcode) {
-        case kExprCallIndirect: {
-          CallIndirectOperand operand(&decoder, pc);
-          if (decoder.Validate(pc, operand)) {
-            os << " // sig #" << operand.index << ": " << *operand.sig;
-          }
-          break;
-        }
-        case kExprCallImport: {
-          CallImportOperand operand(&decoder, pc);
-          if (decoder.Validate(pc, operand)) {
-            os << " // import #" << operand.index << ": " << *operand.sig;
-          }
-          break;
-        }
-        case kExprCallFunction: {
-          CallFunctionOperand operand(&decoder, pc);
-          if (decoder.Validate(pc, operand)) {
-            os << " // function #" << operand.index << ": " << *operand.sig;
-          }
-          break;
-        }
-        default:
-          break;
+    switch (opcode) {
+      case kExprIf:
+      case kExprElse:
+      case kExprLoop:
+      case kExprBlock:
+        os << "   // @" << static_cast<int>(pc - body.start);
+        control_depth++;
+        break;
+      case kExprEnd:
+        os << "   // @" << static_cast<int>(pc - body.start);
+        control_depth--;
+        break;
+      case kExprBr: {
+        BreakDepthOperand operand(&decoder, pc);
+        os << "   // arity=" << operand.arity << " depth=" << operand.depth;
+        break;
       }
-    }
+      case kExprBrIf: {
+        BreakDepthOperand operand(&decoder, pc);
+        os << "   // arity=" << operand.arity << " depth" << operand.depth;
+        break;
+      }
+      case kExprBrTable: {
+        BranchTableOperand operand(&decoder, pc);
+        os << "   // arity=" << operand.arity
+           << " entries=" << operand.table_count;
+        break;
+      }
+      case kExprCallIndirect: {
+        CallIndirectOperand operand(&decoder, pc);
+        if (decoder.Validate(pc, operand)) {
+          os << "   // sig #" << operand.index << ": " << *operand.sig;
+        } else {
+          os << " // arity=" << operand.arity << " sig #" << operand.index;
+        }
+        break;
+      }
+      case kExprCallImport: {
+        CallImportOperand operand(&decoder, pc);
+        if (decoder.Validate(pc, operand)) {
+          os << "   // import #" << operand.index << ": " << *operand.sig;
+        } else {
+          os << " // arity=" << operand.arity << " import #" << operand.index;
+        }
+        break;
+      }
+      case kExprCallFunction: {
+        CallFunctionOperand operand(&decoder, pc);
+        if (decoder.Validate(pc, operand)) {
+          os << "   // function #" << operand.index << ": " << *operand.sig;
+        } else {
+          os << " // arity=" << operand.arity << " function #" << operand.index;
+        }
+        break;
+      }
+      case kExprReturn: {
+        ReturnArityOperand operand(&decoder, pc);
+        os << "   // arity=" << operand.arity;
+        break;
+      }
+      default:
+        break;
+      }
 
     pc += length;
-    printf("\n");
-
-    arity_stack.push_back(arity);
-    while (arity_stack.back() == 0) {
-      arity_stack.pop_back();
-      if (arity_stack.empty()) break;
-      arity_stack.back()--;
-    }
+    os << std::endl;
   }
 }
 

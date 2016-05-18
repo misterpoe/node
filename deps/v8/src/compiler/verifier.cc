@@ -417,12 +417,6 @@ void Verifier::Visitor::Check(Node* node) {
       CHECK_EQ(input_count, 1 + effect_count);
       break;
     }
-    case IrOpcode::kEffectSet: {
-      CHECK_EQ(0, value_count);
-      CHECK_EQ(0, control_count);
-      CHECK_LT(1, effect_count);
-      break;
-    }
     case IrOpcode::kGuard:
       // TODO(bmeurer): what are the constraints on these?
       break;
@@ -706,6 +700,12 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 1, Type::Unsigned32());
       CheckUpperIs(node, Type::Unsigned32());
       break;
+    case IrOpcode::kNumberImul:
+      // (Unsigned32, Unsigned32) -> Signed32
+      CheckValueInputIs(node, 0, Type::Unsigned32());
+      CheckValueInputIs(node, 1, Type::Unsigned32());
+      CheckUpperIs(node, Type::Signed32());
+      break;
     case IrOpcode::kNumberClz32:
       // Unsigned32 -> Unsigned32
       CheckValueInputIs(node, 0, Type::Unsigned32());
@@ -803,7 +803,7 @@ void Verifier::Visitor::Check(Node* node) {
       // CheckUpperIs(node, to));
       break;
     }
-    case IrOpcode::kChangeInt31ToTagged: {
+    case IrOpcode::kChangeInt31ToTaggedSigned: {
       // Signed31 /\ UntaggedInt32 -> Signed31 /\ Tagged
       // TODO(neis): Activate once ChangeRepresentation works in typer.
       // Type* from =Type::Intersect(Type::Signed31(), Type::UntaggedInt32());
@@ -839,7 +839,7 @@ void Verifier::Visitor::Check(Node* node) {
       // CheckUpperIs(node, to));
       break;
     }
-    case IrOpcode::kChangeBoolToBit: {
+    case IrOpcode::kChangeTaggedToBit: {
       // Boolean /\ TaggedPtr -> Boolean /\ UntaggedInt1
       // TODO(neis): Activate once ChangeRepresentation works in typer.
       // Type* from = Type::Intersect(Type::Boolean(), Type::TaggedPtr());
@@ -848,7 +848,7 @@ void Verifier::Visitor::Check(Node* node) {
       // CheckUpperIs(node, to));
       break;
     }
-    case IrOpcode::kChangeBitToBool: {
+    case IrOpcode::kChangeBitToTagged: {
       // Boolean /\ UntaggedInt1 -> Boolean /\ TaggedPtr
       // TODO(neis): Activate once ChangeRepresentation works in typer.
       // Type* from = Type::Intersect(Type::Boolean(), Type::UntaggedInt1());
@@ -957,6 +957,7 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kUint64LessThanOrEqual:
     case IrOpcode::kFloat32Add:
     case IrOpcode::kFloat32Sub:
+    case IrOpcode::kFloat32SubPreserveNan:
     case IrOpcode::kFloat32Mul:
     case IrOpcode::kFloat32Div:
     case IrOpcode::kFloat32Max:
@@ -968,6 +969,7 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kFloat32LessThanOrEqual:
     case IrOpcode::kFloat64Add:
     case IrOpcode::kFloat64Sub:
+    case IrOpcode::kFloat64SubPreserveNan:
     case IrOpcode::kFloat64Mul:
     case IrOpcode::kFloat64Div:
     case IrOpcode::kFloat64Mod:
@@ -1032,6 +1034,12 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kCheckedLoad:
     case IrOpcode::kCheckedStore:
     case IrOpcode::kAtomicLoad:
+    case IrOpcode::kAtomicStore:
+
+#define SIMD_MACHINE_OP_CASE(Name) case IrOpcode::k##Name:
+      MACHINE_SIMD_OP_LIST(SIMD_MACHINE_OP_CASE)
+#undef SIMD_MACHINE_OP_CASE
+
       // TODO(rossberg): Check.
       break;
   }
