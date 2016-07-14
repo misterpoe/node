@@ -6,6 +6,8 @@
 
 #include <iomanip>
 
+#include "src/base/bits.h"
+#include "src/code-stubs.h"
 #include "src/frames.h"
 #include "src/interpreter/bytecode-traits.h"
 #include "src/interpreter/interpreter.h"
@@ -14,6 +16,7 @@ namespace v8 {
 namespace internal {
 namespace interpreter {
 
+STATIC_CONST_MEMBER_DEFINITION const int Bytecodes::kMaxOperands;
 
 // static
 const char* Bytecodes::ToString(Bytecode bytecode) {
@@ -100,21 +103,12 @@ const char* Bytecodes::OperandSizeToString(OperandSize operand_size) {
   return "";
 }
 
-
-// static
-uint8_t Bytecodes::ToByte(Bytecode bytecode) {
-  DCHECK(bytecode <= Bytecode::kLast);
-  return static_cast<uint8_t>(bytecode);
-}
-
-
 // static
 Bytecode Bytecodes::FromByte(uint8_t value) {
   Bytecode bytecode = static_cast<Bytecode>(value);
   DCHECK(bytecode <= Bytecode::kLast);
   return bytecode;
 }
-
 
 // static
 Bytecode Bytecodes::GetDebugBreak(Bytecode bytecode) {
@@ -148,6 +142,10 @@ int Bytecodes::Size(Bytecode bytecode, OperandScale operand_scale) {
   return size;
 }
 
+// static
+size_t Bytecodes::ReturnCount(Bytecode bytecode) {
+  return bytecode == Bytecode::kReturn ? 1 : 0;
+}
 
 // static
 int Bytecodes::NumberOfOperands(Bytecode bytecode) {
@@ -162,7 +160,6 @@ int Bytecodes::NumberOfOperands(Bytecode bytecode) {
   UNREACHABLE();
   return 0;
 }
-
 
 // static
 int Bytecodes::NumberOfRegisterOperands(Bytecode bytecode) {
@@ -280,6 +277,34 @@ bool Bytecodes::IsAccumulatorLoadWithoutEffects(Bytecode bytecode) {
 }
 
 // static
+bool Bytecodes::IsJumpWithoutEffects(Bytecode bytecode) {
+  return IsJump(bytecode) && !IsJumpIfToBoolean(bytecode);
+}
+
+// static
+bool Bytecodes::IsRegisterLoadWithoutEffects(Bytecode bytecode) {
+  switch (bytecode) {
+    case Bytecode::kMov:
+    case Bytecode::kPopContext:
+    case Bytecode::kPushContext:
+    case Bytecode::kStar:
+    case Bytecode::kLdrUndefined:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// static
+bool Bytecodes::IsWithoutExternalSideEffects(Bytecode bytecode) {
+  // These bytecodes only manipulate interpreter frame state and will
+  // never throw.
+  return (IsAccumulatorLoadWithoutEffects(bytecode) ||
+          IsRegisterLoadWithoutEffects(bytecode) ||
+          bytecode == Bytecode::kNop || IsJumpWithoutEffects(bytecode));
+}
+
+// static
 OperandType Bytecodes::GetOperandType(Bytecode bytecode, int i) {
   DCHECK_LE(bytecode, Bytecode::kLast);
   DCHECK_LT(i, NumberOfOperands(bytecode));
@@ -302,33 +327,25 @@ const OperandType* Bytecodes::GetOperandTypes(Bytecode bytecode) {
 }
 
 // static
-OperandSize Bytecodes::GetOperandSize(Bytecode bytecode, int i,
-                                      OperandScale operand_scale) {
+const OperandTypeInfo* Bytecodes::GetOperandTypeInfos(Bytecode bytecode) {
   DCHECK(bytecode <= Bytecode::kLast);
   switch (bytecode) {
 #define CASE(Name, ...)   \
   case Bytecode::k##Name: \
-    return BytecodeTraits<__VA_ARGS__>::GetOperandSize(i, operand_scale);
+    return BytecodeTraits<__VA_ARGS__>::GetOperandTypeInfos();
     BYTECODE_LIST(CASE)
 #undef CASE
   }
   UNREACHABLE();
-  return OperandSize::kNone;
+  return nullptr;
 }
 
 // static
-int Bytecodes::GetRegisterOperandBitmap(Bytecode bytecode) {
-  DCHECK(bytecode <= Bytecode::kLast);
-  switch (bytecode) {
-#define CASE(Name, ...)                              \
-  case Bytecode::k##Name:                            \
-    typedef BytecodeTraits<__VA_ARGS__> Name##Trait; \
-    return Name##Trait::kRegisterOperandBitmap;
-    BYTECODE_LIST(CASE)
-#undef CASE
-  }
-  UNREACHABLE();
-  return false;
+OperandSize Bytecodes::GetOperandSize(Bytecode bytecode, int i,
+                                      OperandScale operand_scale) {
+  DCHECK_LT(i, NumberOfOperands(bytecode));
+  OperandType operand_type = GetOperandType(bytecode, i);
+  return SizeOfOperand(operand_type, operand_scale);
 }
 
 // static
@@ -559,7 +576,7 @@ int Bytecodes::GetNumberOfRegistersRepresentedBy(OperandType operand_type) {
     case OperandType::kRegOutTriple:
       return 3;
     default:
-      UNREACHABLE();
+      return 0;
   }
   return 0;
 }
@@ -569,7 +586,7 @@ bool Bytecodes::IsUnsignedOperandType(OperandType operand_type) {
   switch (operand_type) {
 #define CASE(Name, _)        \
   case OperandType::k##Name: \
-    return OperandTraits<OperandType::k##Name>::TypeInfo::kIsUnsigned;
+    return OperandTraits<OperandType::k##Name>::TypeInfoTraits::kIsUnsigned;
     OPERAND_TYPE_LIST(CASE)
 #undef CASE
   }
@@ -579,9 +596,9 @@ bool Bytecodes::IsUnsignedOperandType(OperandType operand_type) {
 
 // static
 OperandSize Bytecodes::SizeForSignedOperand(int value) {
-  if (kMinInt8 <= value && value <= kMaxInt8) {
+  if (value >= kMinInt8 && value <= kMaxInt8) {
     return OperandSize::kByte;
-  } else if (kMinInt16 <= value && value <= kMaxInt16) {
+  } else if (value >= kMinInt16 && value <= kMaxInt16) {
     return OperandSize::kShort;
   } else {
     return OperandSize::kQuad;
@@ -589,8 +606,7 @@ OperandSize Bytecodes::SizeForSignedOperand(int value) {
 }
 
 // static
-OperandSize Bytecodes::SizeForUnsignedOperand(int value) {
-  DCHECK_GE(value, 0);
+OperandSize Bytecodes::SizeForUnsignedOperand(uint32_t value) {
   if (value <= kMaxUInt8) {
     return OperandSize::kByte;
   } else if (value <= kMaxUInt16) {
@@ -598,42 +614,6 @@ OperandSize Bytecodes::SizeForUnsignedOperand(int value) {
   } else {
     return OperandSize::kQuad;
   }
-}
-
-OperandSize Bytecodes::SizeForUnsignedOperand(size_t value) {
-  if (value <= static_cast<size_t>(kMaxUInt8)) {
-    return OperandSize::kByte;
-  } else if (value <= static_cast<size_t>(kMaxUInt16)) {
-    return OperandSize::kShort;
-  } else if (value <= kMaxUInt32) {
-    return OperandSize::kQuad;
-  } else {
-    UNREACHABLE();
-    return OperandSize::kQuad;
-  }
-}
-
-OperandScale Bytecodes::OperandSizesToScale(OperandSize size0,
-                                            OperandSize size1,
-                                            OperandSize size2,
-                                            OperandSize size3) {
-  OperandSize upper = std::max(size0, size1);
-  OperandSize lower = std::max(size2, size3);
-  OperandSize result = std::max(upper, lower);
-  // Operand sizes have been scaled before calling this function.
-  // Currently all scalable operands are byte sized at
-  // OperandScale::kSingle.
-  STATIC_ASSERT(static_cast<int>(OperandSize::kByte) ==
-                    static_cast<int>(OperandScale::kSingle) &&
-                static_cast<int>(OperandSize::kShort) ==
-                    static_cast<int>(OperandScale::kDouble) &&
-                static_cast<int>(OperandSize::kQuad) ==
-                    static_cast<int>(OperandScale::kQuadruple));
-  OperandScale operand_scale = static_cast<OperandScale>(result);
-  DCHECK(operand_scale == OperandScale::kSingle ||
-         operand_scale == OperandScale::kDouble ||
-         operand_scale == OperandScale::kQuadruple);
-  return operand_scale;
 }
 
 // static
@@ -730,6 +710,7 @@ std::ostream& Bytecodes::Decode(std::ostream& os, const uint8_t* bytecode_start,
         break;
       case interpreter::OperandType::kIdx:
       case interpreter::OperandType::kRuntimeId:
+      case interpreter::OperandType::kIntrinsicId:
         os << "["
            << DecodeUnsignedOperand(operand_start, op_type, operand_scale)
            << "]";
@@ -824,6 +805,10 @@ static const int kBytecodeOffsetRegisterIndex =
     (InterpreterFrameConstants::kRegisterFileFromFp -
      InterpreterFrameConstants::kBytecodeOffsetFromFp) /
     kPointerSize;
+static const int kCallerPCOffsetRegisterIndex =
+    (InterpreterFrameConstants::kRegisterFileFromFp -
+     InterpreterFrameConstants::kCallerPCOffsetFromFp) /
+    kPointerSize;
 
 Register Register::FromParameterIndex(int index, int parameter_count) {
   DCHECK_GE(index, 0);
@@ -876,6 +861,11 @@ bool Register::is_bytecode_offset() const {
   return index() == kBytecodeOffsetRegisterIndex;
 }
 
+// static
+Register Register::virtual_accumulator() {
+  return Register(kCallerPCOffsetRegisterIndex);
+}
+
 OperandSize Register::SizeOfOperand() const {
   int32_t operand = ToOperand();
   if (operand >= kMinInt8 && operand <= kMaxInt8) {
@@ -925,6 +915,33 @@ std::string Register::ToString(int parameter_count) {
     s << "r" << index();
     return s.str();
   }
+}
+
+// static
+uint8_t CreateObjectLiteralFlags::Encode(bool fast_clone_supported,
+                                         int properties_count,
+                                         int runtime_flags) {
+  uint8_t result = FlagsBits::encode(runtime_flags);
+  if (fast_clone_supported) {
+    STATIC_ASSERT(
+        FastCloneShallowObjectStub::kMaximumClonedProperties <=
+        1 << CreateObjectLiteralFlags::FastClonePropertiesCountBits::kShift);
+    DCHECK_LE(properties_count,
+              FastCloneShallowObjectStub::kMaximumClonedProperties);
+    result |= CreateObjectLiteralFlags::FastClonePropertiesCountBits::encode(
+        properties_count);
+  }
+  return result;
+}
+
+// static
+uint8_t CreateClosureFlags::Encode(bool pretenure, bool is_function_scope) {
+  uint8_t result = PretenuredBit::encode(pretenure);
+  if (!FLAG_always_opt && !FLAG_prepare_always_opt &&
+      pretenure == NOT_TENURED && is_function_scope) {
+    result |= FastNewClosureBit::encode(true);
+  }
+  return result;
 }
 
 }  // namespace interpreter

@@ -1043,8 +1043,8 @@ void MacroAssembler::Prologue(bool code_pre_aging) {
 
 void MacroAssembler::EmitLoadTypeFeedbackVector(Register vector) {
   mov(vector, Operand(ebp, JavaScriptFrameConstants::kFunctionOffset));
-  mov(vector, FieldOperand(vector, JSFunction::kSharedFunctionInfoOffset));
-  mov(vector, FieldOperand(vector, SharedFunctionInfo::kFeedbackVectorOffset));
+  mov(vector, FieldOperand(vector, JSFunction::kLiteralsOffset));
+  mov(vector, FieldOperand(vector, LiteralsArray::kFeedbackVectorOffset));
 }
 
 
@@ -2302,10 +2302,11 @@ void MacroAssembler::FloodFunctionIfStepping(Register fun, Register new_target,
                                              const ParameterCount& expected,
                                              const ParameterCount& actual) {
   Label skip_flooding;
-  ExternalReference step_in_enabled =
-      ExternalReference::debug_step_in_enabled_address(isolate());
-  cmpb(Operand::StaticVariable(step_in_enabled), Immediate(0));
-  j(equal, &skip_flooding);
+  ExternalReference last_step_action =
+      ExternalReference::debug_last_step_action_address(isolate());
+  STATIC_ASSERT(StepFrame > StepIn);
+  cmpb(Operand::StaticVariable(last_step_action), Immediate(StepIn));
+  j(less, &skip_flooding);
   {
     FrameScope frame(this,
                      has_frame() ? StackFrame::NONE : StackFrame::INTERNAL);
@@ -2533,37 +2534,15 @@ int MacroAssembler::SafepointRegisterStackIndex(int reg_code) {
 
 void MacroAssembler::LoadHeapObject(Register result,
                                     Handle<HeapObject> object) {
-  AllowDeferredHandleDereference embedding_raw_address;
-  if (isolate()->heap()->InNewSpace(*object)) {
-    Handle<Cell> cell = isolate()->factory()->NewCell(object);
-    mov(result, Operand::ForCell(cell));
-  } else {
-    mov(result, object);
-  }
+  mov(result, object);
 }
 
 
 void MacroAssembler::CmpHeapObject(Register reg, Handle<HeapObject> object) {
-  AllowDeferredHandleDereference using_raw_address;
-  if (isolate()->heap()->InNewSpace(*object)) {
-    Handle<Cell> cell = isolate()->factory()->NewCell(object);
-    cmp(reg, Operand::ForCell(cell));
-  } else {
-    cmp(reg, object);
-  }
+  cmp(reg, object);
 }
 
-
-void MacroAssembler::PushHeapObject(Handle<HeapObject> object) {
-  AllowDeferredHandleDereference using_raw_address;
-  if (isolate()->heap()->InNewSpace(*object)) {
-    Handle<Cell> cell = isolate()->factory()->NewCell(object);
-    push(Operand::ForCell(cell));
-  } else {
-    Push(object);
-  }
-}
-
+void MacroAssembler::PushHeapObject(Handle<HeapObject> object) { Push(object); }
 
 void MacroAssembler::CmpWeakValue(Register value, Handle<WeakCell> cell,
                                   Register scratch) {
@@ -2641,7 +2620,7 @@ void MacroAssembler::Move(Register dst, Register src) {
 
 
 void MacroAssembler::Move(Register dst, const Immediate& x) {
-  if (x.is_zero()) {
+  if (x.is_zero() && RelocInfo::IsNone(x.rmode_)) {
     xor_(dst, dst);  // Shorter than mov of 32-bit immediate 0.
   } else {
     mov(dst, x);

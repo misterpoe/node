@@ -24,6 +24,7 @@
 #include "unicode/dtfmtsym.h"
 #include "unicode/dtptngen.h"
 #include "unicode/locid.h"
+#include "unicode/normalizer2.h"
 #include "unicode/numfmt.h"
 #include "unicode/numsys.h"
 #include "unicode/rbbi.h"
@@ -41,6 +42,24 @@
 
 namespace v8 {
 namespace internal {
+namespace {
+
+const UChar* GetUCharBufferFromFlat(const String::FlatContent& flat,
+                                    base::SmartArrayPointer<uc16>* dest,
+                                    int32_t length) {
+  DCHECK(flat.IsFlat());
+  if (flat.IsOneByte()) {
+    if (dest->is_empty()) {
+      dest->Reset(NewArray<uc16>(length));
+      CopyChars(dest->get(), flat.ToOneByteVector().start(), length);
+    }
+    return reinterpret_cast<const UChar*>(dest->get());
+  } else {
+    return reinterpret_cast<const UChar*>(flat.ToUC16Vector().start());
+  }
+}
+
+}  // namespace
 
 RUNTIME_FUNCTION(Runtime_CanonicalizeLanguageTag) {
   HandleScope scope(isolate);
@@ -240,7 +259,7 @@ RUNTIME_FUNCTION(Runtime_IsInitializedIntlObject) {
 
   Handle<Symbol> marker = isolate->factory()->intl_initialized_marker_symbol();
   Handle<Object> tag = JSReceiver::GetDataProperty(obj, marker);
-  return isolate->heap()->ToBoolean(!tag->IsUndefined());
+  return isolate->heap()->ToBoolean(!tag->IsUndefined(isolate));
 }
 
 
@@ -298,7 +317,7 @@ RUNTIME_FUNCTION(Runtime_GetImplFromInitializedIntlObject) {
   Handle<Symbol> marker = isolate->factory()->intl_impl_object_symbol();
 
   Handle<Object> impl = JSReceiver::GetDataProperty(obj, marker);
-  if (impl->IsTheHole()) {
+  if (impl->IsTheHole(isolate)) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate, NewTypeError(MessageTemplate::kNotIntlObject, obj));
   }
@@ -363,13 +382,10 @@ RUNTIME_FUNCTION(Runtime_InternalDateFormat) {
   icu::UnicodeString result;
   date_format->format(value->Number(), result);
 
-  Handle<String> result_str;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result_str,
-      isolate->factory()->NewStringFromTwoByte(Vector<const uint16_t>(
-          reinterpret_cast<const uint16_t*>(result.getBuffer()),
-          result.length())));
-  return *result_str;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromTwoByte(Vector<const uint16_t>(
+                   reinterpret_cast<const uint16_t*>(result.getBuffer()),
+                   result.length())));
 }
 
 
@@ -391,12 +407,9 @@ RUNTIME_FUNCTION(Runtime_InternalDateParse) {
   UDate date = date_format->parse(u_date, status);
   if (U_FAILURE(status)) return isolate->heap()->undefined_value();
 
-  Handle<JSDate> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      JSDate::New(isolate->date_function(), isolate->date_function(),
-                  static_cast<double>(date)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, JSDate::New(isolate->date_function(), isolate->date_function(),
+                           static_cast<double>(date)));
 }
 
 
@@ -457,13 +470,10 @@ RUNTIME_FUNCTION(Runtime_InternalNumberFormat) {
   icu::UnicodeString result;
   number_format->format(value->Number(), result);
 
-  Handle<String> result_str;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result_str,
-      isolate->factory()->NewStringFromTwoByte(Vector<const uint16_t>(
-          reinterpret_cast<const uint16_t*>(result.getBuffer()),
-          result.length())));
-  return *result_str;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromTwoByte(Vector<const uint16_t>(
+                   reinterpret_cast<const uint16_t*>(result.getBuffer()),
+                   result.length())));
 }
 
 
@@ -557,14 +567,20 @@ RUNTIME_FUNCTION(Runtime_InternalCompare) {
   icu::Collator* collator = Collator::UnpackCollator(isolate, collator_holder);
   if (!collator) return isolate->ThrowIllegalOperation();
 
-  v8::String::Value string_value1(v8::Utils::ToLocal(string1));
-  v8::String::Value string_value2(v8::Utils::ToLocal(string2));
-  const UChar* u_string1 = reinterpret_cast<const UChar*>(*string_value1);
-  const UChar* u_string2 = reinterpret_cast<const UChar*>(*string_value2);
+  string1 = String::Flatten(string1);
+  string2 = String::Flatten(string2);
+  DisallowHeapAllocation no_gc;
+  int32_t length1 = string1->length();
+  int32_t length2 = string2->length();
+  String::FlatContent flat1 = string1->GetFlatContent();
+  String::FlatContent flat2 = string2->GetFlatContent();
+  base::SmartArrayPointer<uc16> sap1;
+  base::SmartArrayPointer<uc16> sap2;
+  const UChar* string_val1 = GetUCharBufferFromFlat(flat1, &sap1, length1);
+  const UChar* string_val2 = GetUCharBufferFromFlat(flat2, &sap2, length2);
   UErrorCode status = U_ZERO_ERROR;
   UCollationResult result =
-      collator->compare(u_string1, string_value1.length(), u_string2,
-                        string_value2.length(), status);
+      collator->compare(string_val1, length1, string_val2, length2, status);
   if (U_FAILURE(status)) return isolate->ThrowIllegalOperation();
 
   return *isolate->factory()->NewNumberFromInt(result);
@@ -573,36 +589,59 @@ RUNTIME_FUNCTION(Runtime_InternalCompare) {
 
 RUNTIME_FUNCTION(Runtime_StringNormalize) {
   HandleScope scope(isolate);
-  static const UNormalizationMode normalizationForms[] = {
-      UNORM_NFC, UNORM_NFD, UNORM_NFKC, UNORM_NFKD};
+  static const struct {
+    const char* name;
+    UNormalization2Mode mode;
+  } normalizationForms[] = {
+      {"nfc", UNORM2_COMPOSE},
+      {"nfc", UNORM2_DECOMPOSE},
+      {"nfkc", UNORM2_COMPOSE},
+      {"nfkc", UNORM2_DECOMPOSE},
+  };
 
   DCHECK(args.length() == 2);
 
-  CONVERT_ARG_HANDLE_CHECKED(String, stringValue, 0);
+  CONVERT_ARG_HANDLE_CHECKED(String, s, 0);
   CONVERT_NUMBER_CHECKED(int, form_id, Int32, args[1]);
   RUNTIME_ASSERT(form_id >= 0 &&
                  static_cast<size_t>(form_id) < arraysize(normalizationForms));
 
-  v8::String::Value string_value(v8::Utils::ToLocal(stringValue));
-  const UChar* u_value = reinterpret_cast<const UChar*>(*string_value);
-
-  // TODO(mnita): check Normalizer2 (not available in ICU 46)
-  UErrorCode status = U_ZERO_ERROR;
-  icu::UnicodeString input(false, u_value, string_value.length());
+  int length = s->length();
+  s = String::Flatten(s);
   icu::UnicodeString result;
-  icu::Normalizer::normalize(input, normalizationForms[form_id], 0, result,
-                             status);
+  base::SmartArrayPointer<uc16> sap;
+  UErrorCode status = U_ZERO_ERROR;
+  {
+    DisallowHeapAllocation no_gc;
+    String::FlatContent flat = s->GetFlatContent();
+    const UChar* src = GetUCharBufferFromFlat(flat, &sap, length);
+    icu::UnicodeString input(false, src, length);
+    // Getting a singleton. Should not free it.
+    const icu::Normalizer2* normalizer =
+        icu::Normalizer2::getInstance(nullptr, normalizationForms[form_id].name,
+                                      normalizationForms[form_id].mode, status);
+    DCHECK(U_SUCCESS(status));
+    RUNTIME_ASSERT(normalizer != nullptr);
+    int32_t normalized_prefix_length =
+        normalizer->spanQuickCheckYes(input, status);
+    // Quick return if the input is already normalized.
+    if (length == normalized_prefix_length) return *s;
+    icu::UnicodeString unnormalized =
+        input.tempSubString(normalized_prefix_length);
+    // Read-only alias of the normalized prefix.
+    result.setTo(false, input.getBuffer(), normalized_prefix_length);
+    // copy-on-write; normalize the suffix and append to |result|.
+    normalizer->normalizeSecondAndAppend(result, unnormalized, status);
+  }
+
   if (U_FAILURE(status)) {
     return isolate->heap()->undefined_value();
   }
 
-  Handle<String> result_str;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result_str,
-      isolate->factory()->NewStringFromTwoByte(Vector<const uint16_t>(
-          reinterpret_cast<const uint16_t*>(result.getBuffer()),
-          result.length())));
-  return *result_str;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromTwoByte(Vector<const uint16_t>(
+                   reinterpret_cast<const uint16_t*>(result.getBuffer()),
+                   result.length())));
 }
 
 
@@ -665,9 +704,13 @@ RUNTIME_FUNCTION(Runtime_BreakIteratorAdoptText) {
       break_iterator_holder->GetInternalField(1));
   delete u_text;
 
-  v8::String::Value text_value(v8::Utils::ToLocal(text));
-  u_text = new icu::UnicodeString(reinterpret_cast<const UChar*>(*text_value),
-                                  text_value.length());
+  int length = text->length();
+  text = String::Flatten(text);
+  DisallowHeapAllocation no_gc;
+  String::FlatContent flat = text->GetFlatContent();
+  base::SmartArrayPointer<uc16> sap;
+  const UChar* text_value = GetUCharBufferFromFlat(flat, &sap, length);
+  u_text = new icu::UnicodeString(text_value, length);
   break_iterator_holder->SetInternalField(1, reinterpret_cast<Smi*>(u_text));
 
   break_iterator->setText(*u_text);
@@ -764,21 +807,6 @@ void ConvertCaseWithTransliterator(icu::UnicodeString* input,
   translit->transliterate(*input);
 }
 
-const UChar* GetUCharBufferFromFlat(const String::FlatContent& flat,
-                                    base::SmartArrayPointer<uc16>* dest,
-                                    int32_t length) {
-  DCHECK(flat.IsFlat());
-  if (flat.IsOneByte()) {
-    if (dest->is_empty()) {
-      dest->Reset(NewArray<uc16>(length));
-      CopyChars(dest->get(), flat.ToOneByteVector().start(), length);
-    }
-    return reinterpret_cast<const UChar*>(dest->get());
-  } else {
-    return reinterpret_cast<const UChar*>(flat.ToUC16Vector().start());
-  }
-}
-
 MUST_USE_RESULT Object* LocaleConvertCase(Handle<String> s, Isolate* isolate,
                                           bool is_to_upper, const char* lang) {
   int32_t src_length = s->length();
@@ -808,13 +836,11 @@ MUST_USE_RESULT Object* LocaleConvertCase(Handle<String> s, Isolate* isolate,
       // If no change is made, just return |s|.
       if (converted.getBuffer() == src) return *s;
     }
-    Handle<String> result;
-    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, result,
+    RETURN_RESULT_OR_FAILURE(
+        isolate,
         isolate->factory()->NewStringFromTwoByte(Vector<const uint16_t>(
             reinterpret_cast<const uint16_t*>(converted.getBuffer()),
             converted.length())));
-    return *result;
   }
 
   auto case_converter = is_to_upper ? u_strToUpper : u_strToLower;
@@ -1103,6 +1129,23 @@ RUNTIME_FUNCTION(Runtime_StringLocaleConvertCase) {
   // Greek (el) does not require any adjustment, though.
   return LocaleConvertCase(s, isolate, is_upper,
                            reinterpret_cast<const char*>(lang_str));
+}
+
+RUNTIME_FUNCTION(Runtime_DateCacheVersion) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(0, args.length());
+  if (isolate->serializer_enabled()) return isolate->heap()->undefined_value();
+  if (!isolate->eternal_handles()->Exists(EternalHandles::DATE_CACHE_VERSION)) {
+    Handle<FixedArray> date_cache_version =
+        isolate->factory()->NewFixedArray(1, TENURED);
+    date_cache_version->set(0, Smi::FromInt(0));
+    isolate->eternal_handles()->CreateSingleton(
+        isolate, *date_cache_version, EternalHandles::DATE_CACHE_VERSION);
+  }
+  Handle<FixedArray> date_cache_version =
+      Handle<FixedArray>::cast(isolate->eternal_handles()->GetSingleton(
+          EternalHandles::DATE_CACHE_VERSION));
+  return date_cache_version->get(0);
 }
 
 }  // namespace internal

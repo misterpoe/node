@@ -86,23 +86,6 @@ bool Accessors::IsJSObjectFieldAccessor(Handle<Map> map, Handle<Name> name,
 }
 
 
-bool Accessors::IsJSArrayBufferViewFieldAccessor(Handle<Map> map,
-                                                 Handle<Name> name,
-                                                 int* object_offset) {
-  DCHECK(name->IsUniqueName());
-  Isolate* isolate = name->GetIsolate();
-
-  switch (map->instance_type()) {
-    case JS_DATA_VIEW_TYPE:
-      return CheckForName(name, isolate->factory()->byte_length_string(),
-                          JSDataView::kByteLengthOffset, object_offset) ||
-             CheckForName(name, isolate->factory()->byte_offset_string(),
-                          JSDataView::kByteOffsetOffset, object_offset);
-    default:
-      return false;
-  }
-}
-
 namespace {
 
 MUST_USE_RESULT MaybeHandle<Object> ReplaceAccessorWithDataProperty(
@@ -588,7 +571,7 @@ void Accessors::ScriptEvalFromScriptGetter(
   Handle<Script> script(
       Script::cast(Handle<JSValue>::cast(object)->value()), isolate);
   Handle<Object> result = isolate->factory()->undefined_value();
-  if (!script->eval_from_shared()->IsUndefined()) {
+  if (!script->eval_from_shared()->IsUndefined(isolate)) {
     Handle<SharedFunctionInfo> eval_from_shared(
         SharedFunctionInfo::cast(script->eval_from_shared()));
     if (eval_from_shared->script()->IsScript()) {
@@ -654,11 +637,11 @@ void Accessors::ScriptEvalFromFunctionNameGetter(
   Handle<Script> script(
       Script::cast(Handle<JSValue>::cast(object)->value()), isolate);
   Handle<Object> result = isolate->factory()->undefined_value();
-  if (!script->eval_from_shared()->IsUndefined()) {
+  if (!script->eval_from_shared()->IsUndefined(isolate)) {
     Handle<SharedFunctionInfo> shared(
         SharedFunctionInfo::cast(script->eval_from_shared()));
     // Find the name of the function calling eval.
-    if (!shared->name()->IsUndefined()) {
+    if (!shared->name()->IsUndefined(isolate)) {
       result = Handle<Object>(shared->name(), isolate);
     } else {
       result = Handle<Object>(shared->inferred_name(), isolate);
@@ -1125,63 +1108,6 @@ Handle<AccessorInfo> Accessors::BoundFunctionNameInfo(
   return MakeAccessor(isolate, isolate->factory()->name_string(),
                       &BoundFunctionNameGetter, &ReconfigureToDataProperty,
                       attributes);
-}
-
-//
-// Accessors::MakeModuleExport
-//
-
-static void ModuleGetExport(v8::Local<v8::Name> property,
-                            const v8::PropertyCallbackInfo<v8::Value>& info) {
-  JSModule* instance = JSModule::cast(*v8::Utils::OpenHandle(*info.Holder()));
-  Context* context = Context::cast(instance->context());
-  DCHECK(context->IsModuleContext());
-  Isolate* isolate = instance->GetIsolate();
-  int slot = info.Data()
-                 ->Int32Value(info.GetIsolate()->GetCurrentContext())
-                 .FromMaybe(-1);
-  if (slot < 0 || slot >= context->length()) {
-    Handle<Name> name = v8::Utils::OpenHandle(*property);
-
-    Handle<Object> exception = isolate->factory()->NewReferenceError(
-        MessageTemplate::kNotDefined, name);
-    isolate->ScheduleThrow(*exception);
-    return;
-  }
-  Object* value = context->get(slot);
-  if (value->IsTheHole()) {
-    Handle<Name> name = v8::Utils::OpenHandle(*property);
-
-    Handle<Object> exception = isolate->factory()->NewReferenceError(
-        MessageTemplate::kNotDefined, name);
-    isolate->ScheduleThrow(*exception);
-    return;
-  }
-  info.GetReturnValue().Set(v8::Utils::ToLocal(Handle<Object>(value, isolate)));
-}
-
-
-static void ModuleSetExport(v8::Local<v8::Name> property,
-                            v8::Local<v8::Value> value,
-                            const v8::PropertyCallbackInfo<void>& info) {
-  if (!info.ShouldThrowOnError()) return;
-  Handle<Name> name = v8::Utils::OpenHandle(*property);
-  Isolate* isolate = name->GetIsolate();
-  Handle<Object> exception =
-      isolate->factory()->NewTypeError(MessageTemplate::kNotDefined, name);
-  isolate->ScheduleThrow(*exception);
-}
-
-
-Handle<AccessorInfo> Accessors::MakeModuleExport(
-    Handle<String> name,
-    int index,
-    PropertyAttributes attributes) {
-  Isolate* isolate = name->GetIsolate();
-  Handle<AccessorInfo> info = MakeAccessor(isolate, name, &ModuleGetExport,
-                                           &ModuleSetExport, attributes);
-  info->set_data(Smi::FromInt(index));
-  return info;
 }
 
 

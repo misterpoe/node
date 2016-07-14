@@ -6,7 +6,8 @@
 #define V8_AST_SCOPES_H_
 
 #include "src/ast/ast.h"
-#include "src/hashmap.h"
+#include "src/base/hashmap.h"
+#include "src/globals.h"
 #include "src/pending-compilation-error-handler.h"
 #include "src/zone.h"
 
@@ -174,8 +175,8 @@ class Scope: public ZoneObject {
   VariableProxy* NewUnresolved(AstNodeFactory* factory,
                                const AstRawString* name,
                                Variable::Kind kind = Variable::NORMAL,
-                               int start_position = RelocInfo::kNoPosition,
-                               int end_position = RelocInfo::kNoPosition) {
+                               int start_position = kNoSourcePosition,
+                               int end_position = kNoSourcePosition) {
     // Note that we must not share the unresolved variables with
     // the same name because they may be removed selectively via
     // RemoveUnresolved().
@@ -216,7 +217,11 @@ class Scope: public ZoneObject {
   // Adds a temporary variable in this scope's TemporaryScope. This is for
   // adjusting the scope of temporaries used when desugaring parameter
   // initializers.
-  void AddTemporary(Variable* var) { temps_.Add(var, zone()); }
+  void AddTemporary(Variable* var) {
+    // Temporaries are only placed in ClosureScopes.
+    DCHECK_EQ(ClosureScope(), this);
+    temps_.Add(var, zone());
+  }
 
   // Adds the specific declaration node to the list of declarations in
   // this scope. The declarations are processed as part of entering
@@ -570,11 +575,6 @@ class Scope: public ZoneObject {
   SloppyBlockFunctionMap* sloppy_block_function_map() {
     return &sloppy_block_function_map_;
   }
-
-  // Error handling.
-  void ReportMessage(int start_position, int end_position,
-                     MessageTemplate::Template message,
-                     const AstRawString* arg);
 
   // ---------------------------------------------------------------------------
   // Debugging.

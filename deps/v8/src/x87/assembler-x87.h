@@ -75,6 +75,7 @@ namespace internal {
   V(stX_7)
 
 #define FLOAT_REGISTERS DOUBLE_REGISTERS
+#define SIMD128_REGISTERS DOUBLE_REGISTERS
 
 #define ALLOCATABLE_DOUBLE_REGISTERS(V) \
   V(stX_0)                              \
@@ -122,8 +123,6 @@ struct Register {
     Register r = {code};
     return r;
   }
-  const char* ToString();
-  bool IsAllocatable() const;
   bool is_valid() const { return 0 <= reg_code && reg_code < kNumRegisters; }
   bool is(Register reg) const { return reg_code == reg.reg_code; }
   int code() const {
@@ -147,6 +146,8 @@ GENERAL_REGISTERS(DECLARE_REGISTER)
 #undef DECLARE_REGISTER
 const Register no_reg = {Register::kCode_no_reg};
 
+static const bool kSimpleFPAliasing = true;
+
 struct X87Register {
   enum Code {
 #define REGISTER_CODE(R) kCode_##R,
@@ -164,7 +165,6 @@ struct X87Register {
     return result;
   }
 
-  bool IsAllocatable() const;
   bool is_valid() const { return 0 <= reg_code && reg_code < kMaxNumRegisters; }
 
   int code() const {
@@ -173,8 +173,6 @@ struct X87Register {
   }
 
   bool is(X87Register reg) const { return reg_code == reg.reg_code; }
-
-  const char* ToString();
 
   int reg_code;
 };
@@ -654,6 +652,14 @@ class Assembler : public AssemblerBase {
   void xchg_b(Register reg, const Operand& op);
   void xchg_w(Register reg, const Operand& op);
 
+  // Lock prefix
+  void lock();
+
+  // CompareExchange
+  void cmpxchg(const Operand& dst, Register src);
+  void cmpxchg_b(const Operand& dst, Register src);
+  void cmpxchg_w(const Operand& dst, Register src);
+
   // Arithmetics
   void adc(Register dst, int32_t imm32);
   void adc(Register dst, const Operand& src);
@@ -985,10 +991,6 @@ class Assembler : public AssemblerBase {
 
   static bool IsNop(Address addr);
 
-  AssemblerPositionsRecorder* positions_recorder() {
-    return &positions_recorder_;
-  }
-
   int relocation_writer_size() {
     return (buffer_ + buffer_size_) - reloc_info_writer.pos();
   }
@@ -1074,9 +1076,6 @@ class Assembler : public AssemblerBase {
 
   // code generation
   RelocInfoWriter reloc_info_writer;
-
-  AssemblerPositionsRecorder positions_recorder_;
-  friend class AssemblerPositionsRecorder;
 };
 
 

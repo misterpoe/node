@@ -5,6 +5,7 @@
 #ifndef V8_ISOLATE_H_
 #define V8_ISOLATE_H_
 
+#include <memory>
 #include <queue>
 #include <set>
 
@@ -13,6 +14,7 @@
 #include "src/assert-scope.h"
 #include "src/base/accounting-allocator.h"
 #include "src/base/atomicops.h"
+#include "src/base/hashmap.h"
 #include "src/builtins.h"
 #include "src/cancelable-task.h"
 #include "src/contexts.h"
@@ -22,7 +24,6 @@
 #include "src/futex-emulation.h"
 #include "src/global-handles.h"
 #include "src/handles.h"
-#include "src/hashmap.h"
 #include "src/heap/heap.h"
 #include "src/messages.h"
 #include "src/optimizing-compile-dispatcher.h"
@@ -42,6 +43,8 @@ namespace internal {
 class BasicBlockProfiler;
 class Bootstrapper;
 class CallInterfaceDescriptorData;
+class CodeAgingHelper;
+class CodeEventDispatcher;
 class CodeGenerator;
 class CodeRange;
 class CodeStubDescriptor;
@@ -58,7 +61,6 @@ class EmptyStatement;
 class ExternalCallbackScope;
 class ExternalReferenceTable;
 class Factory;
-class FunctionInfoListener;
 class HandleScopeImplementer;
 class HeapProfiler;
 class HStatistics;
@@ -67,7 +69,6 @@ class InlineRuntimeFunctionsTable;
 class InnerPointerToCodeCache;
 class Logger;
 class MaterializedObjectStore;
-class CodeAgingHelper;
 class RegExpStack;
 class SaveContext;
 class StatsTable;
@@ -125,6 +126,17 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
 #define RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, T) \
   RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, MaybeHandle<T>())
 
+#define RETURN_RESULT_OR_FAILURE(isolate, call)     \
+  do {                                              \
+    Handle<Object> __result__;                      \
+    Isolate* __isolate__ = (isolate);               \
+    if (!(call).ToHandle(&__result__)) {            \
+      DCHECK(__isolate__->has_pending_exception()); \
+      return __isolate__->heap()->exception();      \
+    }                                               \
+    return *__result__;                             \
+  } while (false)
+
 #define ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, dst, call, value)  \
   do {                                                               \
     if (!(call).ToHandle(&dst)) {                                    \
@@ -133,21 +145,26 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
     }                                                                \
   } while (false)
 
-#define ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, dst, call)  \
-  ASSIGN_RETURN_ON_EXCEPTION_VALUE(                             \
-      isolate, dst, call, isolate->heap()->exception())
+#define ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, dst, call)          \
+  do {                                                                  \
+    Isolate* __isolate__ = (isolate);                                   \
+    ASSIGN_RETURN_ON_EXCEPTION_VALUE(__isolate__, dst, call,            \
+                                     __isolate__->heap()->exception()); \
+  } while (false)
 
 #define ASSIGN_RETURN_ON_EXCEPTION(isolate, dst, call, T)  \
   ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, dst, call, MaybeHandle<T>())
 
-#define THROW_NEW_ERROR(isolate, call, T)               \
-  do {                                                  \
-    return isolate->Throw<T>(isolate->factory()->call); \
+#define THROW_NEW_ERROR(isolate, call, T)                       \
+  do {                                                          \
+    Isolate* __isolate__ = (isolate);                           \
+    return __isolate__->Throw<T>(__isolate__->factory()->call); \
   } while (false)
 
-#define THROW_NEW_ERROR_RETURN_FAILURE(isolate, call) \
-  do {                                                \
-    return isolate->Throw(*isolate->factory()->call); \
+#define THROW_NEW_ERROR_RETURN_FAILURE(isolate, call)         \
+  do {                                                        \
+    Isolate* __isolate__ = (isolate);                         \
+    return __isolate__->Throw(*__isolate__->factory()->call); \
   } while (false)
 
 #define RETURN_ON_EXCEPTION_VALUE(isolate, call, value)            \
@@ -158,8 +175,12 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
     }                                                              \
   } while (false)
 
-#define RETURN_FAILURE_ON_EXCEPTION(isolate, call)  \
-  RETURN_ON_EXCEPTION_VALUE(isolate, call, isolate->heap()->exception())
+#define RETURN_FAILURE_ON_EXCEPTION(isolate, call)               \
+  do {                                                           \
+    Isolate* __isolate__ = (isolate);                            \
+    RETURN_ON_EXCEPTION_VALUE(__isolate__, call,                 \
+                              __isolate__->heap()->exception()); \
+  } while (false);
 
 #define RETURN_ON_EXCEPTION(isolate, call, T)  \
   RETURN_ON_EXCEPTION_VALUE(isolate, call, MaybeHandle<T>())
@@ -340,9 +361,9 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 #if USE_SIMULATOR
 
-#define ISOLATE_INIT_SIMULATOR_LIST(V)                                         \
-  V(bool, simulator_initialized, false)                                        \
-  V(HashMap*, simulator_i_cache, NULL)                                         \
+#define ISOLATE_INIT_SIMULATOR_LIST(V)       \
+  V(bool, simulator_initialized, false)      \
+  V(base::HashMap*, simulator_i_cache, NULL) \
   V(Redirection*, simulator_redirection, NULL)
 #else
 
@@ -353,10 +374,10 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 #ifdef DEBUG
 
-#define ISOLATE_INIT_DEBUG_ARRAY_LIST(V)                                       \
-  V(CommentStatistic, paged_space_comments_statistics,                         \
-      CommentStatistic::kMaxComments + 1)                                      \
-  V(int, code_kind_statistics, Code::NUMBER_OF_KINDS)
+#define ISOLATE_INIT_DEBUG_ARRAY_LIST(V)               \
+  V(CommentStatistic, paged_space_comments_statistics, \
+    CommentStatistic::kMaxComments + 1)                \
+  V(int, code_kind_statistics, AbstractCode::NUMBER_OF_KINDS)
 #else
 
 #define ISOLATE_INIT_DEBUG_ARRAY_LIST(V)
@@ -374,33 +395,34 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 typedef List<HeapObject*> DebugObjectCache;
 
-#define ISOLATE_INIT_LIST(V)                                                   \
-  /* Assembler state. */                                                       \
-  V(FatalErrorCallback, exception_behavior, NULL)                              \
-  V(LogEventCallback, event_logger, NULL)                                      \
-  V(AllowCodeGenerationFromStringsCallback, allow_code_gen_callback, NULL)     \
-  /* To distinguish the function templates, so that we can find them in the */ \
-  /* function cache of the native context. */                                  \
-  V(int, next_serial_number, 0)                                                \
-  V(ExternalReferenceRedirectorPointer*, external_reference_redirector, NULL)  \
-  /* Part of the state of liveedit. */                                         \
-  V(FunctionInfoListener*, active_function_info_listener, NULL)                \
-  /* State for Relocatable. */                                                 \
-  V(Relocatable*, relocatable_top, NULL)                                       \
-  V(DebugObjectCache*, string_stream_debug_object_cache, NULL)                 \
-  V(Object*, string_stream_current_security_token, NULL)                       \
-  V(ExternalReferenceTable*, external_reference_table, NULL)                   \
-  V(HashMap*, external_reference_map, NULL)                                    \
-  V(HashMap*, root_index_map, NULL)                                            \
-  V(int, pending_microtask_count, 0)                                           \
-  V(HStatistics*, hstatistics, NULL)                                           \
-  V(CompilationStatistics*, turbo_statistics, NULL)                            \
-  V(HTracer*, htracer, NULL)                                                   \
-  V(CodeTracer*, code_tracer, NULL)                                            \
-  V(bool, fp_stubs_generated, false)                                           \
-  V(uint32_t, per_isolate_assert_data, 0xFFFFFFFFu)                            \
-  V(PromiseRejectCallback, promise_reject_callback, NULL)                      \
-  V(const v8::StartupData*, snapshot_blob, NULL)                               \
+#define ISOLATE_INIT_LIST(V)                                                  \
+  /* Assembler state. */                                                      \
+  V(FatalErrorCallback, exception_behavior, nullptr)                          \
+  V(LogEventCallback, event_logger, nullptr)                                  \
+  V(AllowCodeGenerationFromStringsCallback, allow_code_gen_callback, nullptr) \
+  V(ExternalReferenceRedirectorPointer*, external_reference_redirector,       \
+    nullptr)                                                                  \
+  /* State for Relocatable. */                                                \
+  V(Relocatable*, relocatable_top, nullptr)                                   \
+  V(DebugObjectCache*, string_stream_debug_object_cache, nullptr)             \
+  V(Object*, string_stream_current_security_token, nullptr)                   \
+  V(ExternalReferenceTable*, external_reference_table, nullptr)               \
+  V(intptr_t*, api_external_references, nullptr)                              \
+  V(base::HashMap*, external_reference_map, nullptr)                          \
+  V(base::HashMap*, root_index_map, nullptr)                                  \
+  V(int, pending_microtask_count, 0)                                          \
+  V(HStatistics*, hstatistics, nullptr)                                       \
+  V(CompilationStatistics*, turbo_statistics, nullptr)                        \
+  V(HTracer*, htracer, nullptr)                                               \
+  V(CodeTracer*, code_tracer, nullptr)                                        \
+  V(bool, fp_stubs_generated, false)                                          \
+  V(uint32_t, per_isolate_assert_data, 0xFFFFFFFFu)                           \
+  V(PromiseRejectCallback, promise_reject_callback, nullptr)                  \
+  V(const v8::StartupData*, snapshot_blob, nullptr)                           \
+  V(int, code_and_metadata_size, 0)                                           \
+  V(int, bytecode_and_metadata_size, 0)                                       \
+  /* true if being profiled. Causes collection of extra compile info. */      \
+  V(bool, is_profiling, false)                                                \
   ISOLATE_INIT_SIMULATOR_LIST(V)
 
 #define THREAD_LOCAL_TOP_ACCESSOR(type, name)                        \
@@ -768,8 +790,6 @@ class Isolate {
   char* ArchiveThread(char* to);
   char* RestoreThread(char* from);
 
-  static const char* const kStackOverflowMessage;
-
   static const int kUC16AlphabetSize = 256;  // See StringSearchBase.
   static const int kBMMaxShift = 250;        // See StringSearchBase.
 
@@ -897,6 +917,10 @@ class Isolate {
 
   Debug* debug() { return debug_; }
 
+  bool* is_profiling_address() { return &is_profiling_; }
+  CodeEventDispatcher* code_event_dispatcher() const {
+    return code_event_dispatcher_.get();
+  }
   CpuProfiler* cpu_profiler() const { return cpu_profiler_; }
   HeapProfiler* heap_profiler() const { return heap_profiler_; }
 
@@ -1113,6 +1137,8 @@ class Isolate {
 
   bool IsInAnyContext(Object* object, uint32_t index);
 
+  void SetRAILMode(RAILMode rail_mode);
+
  protected:
   explicit Isolate(bool enable_serializer);
   bool IsArrayOrObjectPrototype(Object* object);
@@ -1224,6 +1250,20 @@ class Isolate {
 
   void RunMicrotasksInternal();
 
+  const char* RAILModeName(RAILMode rail_mode) const {
+    switch (rail_mode) {
+      case PERFORMANCE_RESPONSE:
+        return "RESPONSE";
+      case PERFORMANCE_ANIMATION:
+        return "ANIMATION";
+      case PERFORMANCE_IDLE:
+        return "IDLE";
+      case PERFORMANCE_LOAD:
+        return "LOAD";
+    }
+    return "";
+  }
+
   base::Atomic32 id_;
   EntryStackItem* entry_stack_;
   int stack_trace_nesting_level_;
@@ -1270,6 +1310,7 @@ class Isolate {
   DateCache* date_cache_;
   CallInterfaceDescriptorData* call_descriptor_data_;
   base::RandomNumberGenerator* random_number_generator_;
+  base::AtomicValue<RAILMode> rail_mode_;
 
   // Whether the isolate has been created for snapshotting.
   bool serializer_enabled_;
@@ -1295,6 +1336,7 @@ class Isolate {
   Debug* debug_;
   CpuProfiler* cpu_profiler_;
   HeapProfiler* heap_profiler_;
+  std::unique_ptr<CodeEventDispatcher> code_event_dispatcher_;
   FunctionEntryHook function_entry_hook_;
 
   interpreter::Interpreter* interpreter_;
@@ -1376,6 +1418,7 @@ class Isolate {
   friend class v8::Isolate;
   friend class v8::Locker;
   friend class v8::Unlocker;
+  friend class v8::SnapshotCreator;
   friend v8::StartupData v8::V8::CreateSnapshotDataBlob(const char*);
   friend v8::StartupData v8::V8::WarmUpSnapshotDataBlob(v8::StartupData,
                                                         const char*);
@@ -1416,7 +1459,7 @@ class SaveContext BASE_EMBEDDED {
   SaveContext* prev() { return prev_; }
 
   // Returns true if this save context is below a given JavaScript frame.
-  bool IsBelowFrame(JavaScriptFrame* frame) {
+  bool IsBelowFrame(StandardFrame* frame) {
     return (c_entry_fp_ == 0) || (c_entry_fp_ > frame->sp());
   }
 

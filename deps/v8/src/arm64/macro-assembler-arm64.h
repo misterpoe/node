@@ -68,6 +68,21 @@ namespace internal {
   V(Stp, CPURegister&, rt, rt2, StorePairOpFor(rt, rt2)) \
   V(Ldpsw, CPURegister&, rt, rt2, LDPSW_x)
 
+#define LDA_STL_MACRO_LIST(V) \
+  V(Ldarb, ldarb)             \
+  V(Ldarh, ldarh)             \
+  V(Ldar, ldar)               \
+  V(Ldaxrb, ldaxrb)           \
+  V(Ldaxrh, ldaxrh)           \
+  V(Ldaxr, ldaxr)             \
+  V(Stlrb, stlrb)             \
+  V(Stlrh, stlrh)             \
+  V(Stlr, stlr)
+
+#define STLX_MACRO_LIST(V) \
+  V(Stlxrb, stlxrb)        \
+  V(Stlxrh, stlxrh)        \
+  V(Stlxr, stlxr)
 
 // ----------------------------------------------------------------------------
 // Static helper functions
@@ -294,6 +309,17 @@ class MacroAssembler : public Assembler {
 
   void LoadStorePairMacro(const CPURegister& rt, const CPURegister& rt2,
                           const MemOperand& addr, LoadStorePairOp op);
+
+// Load-acquire/store-release macros.
+#define DECLARE_FUNCTION(FN, OP) \
+  inline void FN(const Register& rt, const Register& rn);
+  LDA_STL_MACRO_LIST(DECLARE_FUNCTION)
+#undef DECLARE_FUNCTION
+
+#define DECLARE_FUNCTION(FN, OP) \
+  inline void FN(const Register& rs, const Register& rt, const Register& rn);
+  STLX_MACRO_LIST(DECLARE_FUNCTION)
+#undef DECLARE_FUNCTION
 
   // V8-specific load/store helpers.
   void Load(const Register& rt, const MemOperand& addr, Representation r);
@@ -1148,7 +1174,8 @@ class MacroAssembler : public Assembler {
                      int num_double_arguments);
 
   // Jump to a runtime routine.
-  void JumpToExternalReference(const ExternalReference& builtin);
+  void JumpToExternalReference(const ExternalReference& builtin,
+                               bool builtin_exit_frame = false);
 
   // Convenience function: call an external reference.
   void CallExternalReference(const ExternalReference& ext,
@@ -1676,9 +1703,9 @@ class MacroAssembler : public Assembler {
   //
   // This function also stores the new frame information in the top frame, so
   // that the new frame becomes the current frame.
-  void EnterExitFrame(bool save_doubles,
-                      const Register& scratch,
-                      int extra_space = 0);
+  void EnterExitFrame(bool save_doubles, const Register& scratch,
+                      int extra_space = 0,
+                      StackFrame::Type frame_type = StackFrame::EXIT);
 
   // Leave the current exit frame, after a C function has returned to generated
   // (JavaScript) code.

@@ -145,7 +145,7 @@ function TestWhileSimple() {
 
   function caller() {
     var x = 0;
-    while(x < 5) {
+    while((x|0) < 5) {
       x = (x + 1)|0;
     }
     return x|0;
@@ -162,7 +162,7 @@ function TestWhileWithoutBraces() {
 
   function caller() {
     var x = 0;
-    while(x <= 3)
+    while((x|0) <= 3)
       x = (x + 1)|0;
     return x|0;
   }
@@ -178,7 +178,7 @@ function TestReturnInWhile() {
 
   function caller() {
     var x = 0;
-    while(x < 10) {
+    while((x|0) < 10) {
       x = (x + 6)|0;
       return x|0;
     }
@@ -196,7 +196,7 @@ function TestReturnInWhileWithoutBraces() {
 
   function caller() {
     var x = 0;
-    while(x < 5)
+    while((x|0) < 5)
       return 7;
     return x|0;
   }
@@ -318,7 +318,7 @@ function TestBreakInBlock() {
     var x = 0;
     abc: {
       x = 10;
-      if (x == 10) {
+      if ((x|0) == 10) {
         break abc;
       }
       x = 20;
@@ -339,7 +339,7 @@ function TestBreakInNamedWhile() {
     var x = 0;
     outer: while (1) {
       x = (x + 1)|0;
-      while (x == 11) {
+      while ((x|0) == 11) {
         break outer;
       }
     }
@@ -358,9 +358,9 @@ function TestContinue() {
   function caller() {
     var x = 5;
     var ret = 0;
-    while (x >= 0) {
+    while ((x|0) >= 0) {
       x = (x - 1)|0;
-      if (x == 2) {
+      if ((x|0) == 2) {
         continue;
       }
       ret = (ret - 1)|0;
@@ -381,11 +381,11 @@ function TestContinueInNamedWhile() {
     var x = 5;
     var y = 0;
     var ret = 0;
-    outer: while (x > 0) {
+    outer: while ((x|0) > 0) {
       x = (x - 1)|0;
       y = 0;
-      while (y < 5) {
-        if (x == 3) {
+      while ((y|0) < 5) {
+        if ((x|0) == 3) {
           continue outer;
         }
         ret = (ret + 1)|0;
@@ -420,7 +420,7 @@ function TestNotEquals() {
 
   function caller() {
     var a = 3;
-    if (a != 2) {
+    if ((a|0) != 2) {
       return 21;
     }
     return 0;
@@ -458,7 +458,7 @@ function TestMixedAdd() {
     var c = 0;
     c = ((a>>>0) + b)|0;
     if ((c >>> 0) > (0>>>0)) {
-      if (c < 0) {
+      if ((c|0) < 0) {
         return 23;
       }
     }
@@ -682,6 +682,7 @@ function TestModDoubleNegative() {
 
 assertWasm(28, TestModDoubleNegative);
 
+
 (function () {
 function TestNamedFunctions() {
   "use asm";
@@ -707,6 +708,7 @@ module.init();
 assertEquals(77.5, module.add());
 })();
 
+
 (function () {
 function TestGlobalsWithInit() {
   "use asm";
@@ -731,7 +733,7 @@ function TestForLoop() {
   function caller() {
     var ret = 0;
     var i = 0;
-    for (i = 2; i <= 10; i = (i+1)|0) {
+    for (i = 2; (i|0) <= 10; i = (i+1)|0) {
       ret = (ret + i) | 0;
     }
     return ret|0;
@@ -749,7 +751,7 @@ function TestForLoopWithoutInit() {
   function caller() {
     var ret = 0;
     var i = 0;
-    for (; i < 10; i = (i+1)|0) {
+    for (; (i|0) < 10; i = (i+1)|0) {
       ret = (ret + 10) | 0;
     }
     return ret|0;
@@ -769,7 +771,7 @@ function TestForLoopWithoutCondition() {
     var i = 0;
     for (i=1;; i = (i+1)|0) {
       ret = (ret + i) | 0;
-      if (i == 11) {
+      if ((i|0) == 11) {
         break;
       }
     }
@@ -787,7 +789,7 @@ function TestForLoopWithoutNext() {
 
   function caller() {
     var i = 0;
-    for (i=1; i < 41;) {
+    for (i=1; (i|0) < 41;) {
       i = (i + 1) | 0;
     }
     return i|0;
@@ -804,7 +806,7 @@ function TestForLoopWithoutBody() {
 
   function caller() {
     var i = 0;
-    for (i=1; i < 45 ; i = (i+1)|0) {
+    for (i=1; (i|0) < 45 ; i = (i+1)|0) {
     }
     return i|0;
   }
@@ -824,7 +826,7 @@ function TestDoWhile() {
     do {
       ret = (ret + ret)|0;
       i = (i + 1)|0;
-    } while (i < 2);
+    } while ((i|0) < 2);
     return ret|0;
   }
 
@@ -839,7 +841,7 @@ function TestConditional() {
 
   function caller() {
     var x = 1;
-    return ((x > 0) ? 41 : 71)|0;
+    return (((x|0) > 0) ? 41 : 71)|0;
   }
 
   return {caller:caller};
@@ -909,8 +911,8 @@ function TestFunctionTableMultipleFunctions() {
   }
 
   function caller() {
-    if (function_table[0&1](50) == 51) {
-      if (function_table[1&1](60) == 62) {
+    if ((function_table[0&1](50)|0) == 51) {
+      if ((function_table[1&1](60)|0) == 62) {
         return 73;
       }
     }
@@ -951,9 +953,9 @@ function TestFunctionTable() {
     fun_id = fun_id|0;
     arg1 = arg1|0;
     arg2 = arg2|0;
-    if (table_id == 0) {
+    if ((table_id|0) == 0) {
       return funBin[fun_id&3](arg1, arg2)|0;
-    } else if (table_id == 1) {
+    } else if ((table_id|0) == 1) {
       return fun[fun_id&0](arg1)|0;
     }
     return 0;
@@ -1358,6 +1360,38 @@ assertWasm(1, TestXor);
 })();
 
 
+(function TestBadAssignDoubleFromIntish() {
+  function Module(stdlib, foreign, heap) {
+    "use asm";
+    function func() {
+      var a = 1;
+      var b = 3.0;
+      b = a;
+    }
+    return {func: func};
+  }
+  assertThrows(function() {
+    Wasm.instantiateModuleFromAsm(Module.toString());
+  });
+})();
+
+
+(function TestBadAssignIntFromDouble() {
+  function Module(stdlib, foreign, heap) {
+    "use asm";
+    function func() {
+      var a = 1;
+      var b = 3.0;
+      a = b;
+    }
+    return {func: func};
+  }
+  assertThrows(function() {
+    Wasm.instantiateModuleFromAsm(Module.toString());
+  });
+})();
+
+
 (function TestBadMultiplyIntish() {
   function Module(stdlib, foreign, heap) {
     "use asm";
@@ -1495,4 +1529,67 @@ assertWasm(1, TestXor);
   assertEquals(0xffffffff, wasm.u0xffffffff());
   assertEquals(0x80000000, wasm.u0x80000000());
   assertEquals(0x87654321, wasm.u0x87654321());
+})();
+
+(function TestBadNoDeclaration() {
+  assertThrows(function() {
+    Wasm.instantiateModuleFromAsm('33;');
+  });
+})();
+
+(function TestBadVarDeclaration() {
+  assertThrows(function() {
+    Wasm.instantiateModuleFromAsm('var x = 3;');
+  });
+})();
+
+(function TestIfWithUnsigned() {
+  function asmModule() {
+    "use asm";
+    function main() {
+      if (2147483658) { // 2^31 + 10
+        return 231;
+      }
+      return 0;
+    }
+    return {main:main};
+  }
+  var wasm = Wasm.instantiateModuleFromAsm(asmModule.toString());
+  assertEquals(231, wasm.main());
+})();
+
+(function TestLoopsWithUnsigned() {
+  function asmModule() {
+    "use asm";
+    function main() {
+      var val = 1;
+      var count = 0;
+      for (val = 2147483648; 2147483648;) {
+        val = 2147483649;
+        break;
+      }
+      while (val>>>0) {
+        val = (val + 1) | 0;
+        count = (count + 1)|0;
+        if ((count|0) == 9) {
+          break;
+        }
+      }
+      count = 0;
+      do {
+        val = (val + 2) | 0;
+        count = (count + 1)|0;
+        if ((count|0) == 5) {
+          break;
+        }
+      } while (0xffffffff);
+      if ((val>>>0) == 2147483668) {
+        return 323;
+      }
+      return 0;
+    }
+    return {main:main};
+  }
+  var wasm = Wasm.instantiateModuleFromAsm(asmModule.toString());
+  assertEquals(323, wasm.main());
 })();

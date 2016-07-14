@@ -9,15 +9,15 @@
 #include "src/arguments.h"
 #include "src/assembler.h"
 #include "src/base/atomicops.h"
+#include "src/base/hashmap.h"
 #include "src/base/platform/platform.h"
 #include "src/debug/liveedit.h"
 #include "src/execution.h"
 #include "src/factory.h"
 #include "src/flags.h"
 #include "src/frames.h"
-#include "src/hashmap.h"
-#include "src/interpreter/source-position-table.h"
 #include "src/runtime/runtime.h"
+#include "src/source-position-table.h"
 #include "src/string-stream.h"
 #include "src/v8threads.h"
 
@@ -38,9 +38,10 @@ enum StepAction : int8_t {
   StepNext = 1,   // Step to the next statement in the current function.
   StepIn = 2,     // Step into new functions invoked or the next statement
                   // in the current function.
-  StepFrame = 3   // Step into a new frame or return to previous frame.
-};
+  StepFrame = 3,  // Step into a new frame or return to previous frame.
 
+  LastStepAction = StepFrame
+};
 
 // Type of exception break. NOTE: These values are in macros.py as well.
 enum ExceptionBreakType {
@@ -142,7 +143,6 @@ class BreakLocation {
 
    protected:
     explicit Iterator(Handle<DebugInfo> debug_info);
-    int ReturnPosition();
 
     Isolate* isolate() { return debug_info_->GetIsolate(); }
 
@@ -177,6 +177,8 @@ class BreakLocation {
     RelocInfo* rinfo() { return reloc_iterator_.rinfo(); }
 
     RelocIterator reloc_iterator_;
+    SourcePositionTableIterator source_position_iterator_;
+    int start_position_;
     DISALLOW_COPY_AND_ASSIGN(CodeIterator);
   };
 
@@ -190,13 +192,13 @@ class BreakLocation {
     void Next() override;
 
     int code_offset() override {
-      return source_position_iterator_.bytecode_offset();
+      return source_position_iterator_.code_offset();
     }
 
    private:
     DebugBreakType GetDebugBreakType();
 
-    interpreter::SourcePositionTableIterator source_position_iterator_;
+    SourcePositionTableIterator source_position_iterator_;
     BreakLocatorType break_locator_type_;
     int start_position_;
     DISALLOW_COPY_AND_ASSIGN(BytecodeArrayIterator);
@@ -305,6 +307,8 @@ class EventDetailsImpl : public v8::Debug::EventDetails {
   virtual v8::Local<v8::Context> GetEventContext() const;
   virtual v8::Local<v8::Value> GetCallbackData() const;
   virtual v8::Debug::ClientData* GetClientData() const;
+  virtual v8::Isolate* GetIsolate() const;
+
  private:
   DebugEvent event_;  // Debug event causing the break.
   Handle<JSObject> exec_state_;         // Current execution state.
@@ -456,12 +460,14 @@ class Debug {
   // Stepping handling.
   void PrepareStep(StepAction step_action);
   void PrepareStepIn(Handle<JSFunction> function);
+  void PrepareStepInSuspendedGenerator();
   void PrepareStepOnThrow();
   void ClearStepping();
   void ClearStepOut();
-  void EnableStepIn();
 
   bool PrepareFunctionForBreakPoints(Handle<SharedFunctionInfo> shared);
+
+  void RecordAsyncFunction(Handle<JSGeneratorObject> generator_object);
 
   // Returns whether the operation succeeded. Compilation can only be triggered
   // if a valid closure is passed as the second argument, otherwise the shared
@@ -497,6 +503,7 @@ class Debug {
   char* RestoreDebug(char* from);
   static int ArchiveSpacePerThread();
   void FreeThreadResources() { }
+  void Iterate(ObjectVisitor* v);
 
   bool CheckExecutionState(int id) {
     return is_active() && !debug_context().is_null() && break_id() != 0 &&
@@ -540,8 +547,12 @@ class Debug {
     return reinterpret_cast<Address>(&after_break_target_);
   }
 
-  Address step_in_enabled_address() {
-    return reinterpret_cast<Address>(&thread_local_.step_in_enabled_);
+  Address last_step_action_address() {
+    return reinterpret_cast<Address>(&thread_local_.last_step_action_);
+  }
+
+  Address suspended_generator_address() {
+    return reinterpret_cast<Address>(&thread_local_.suspended_generator_);
   }
 
   StepAction last_step_action() { return thread_local_.last_step_action_; }
@@ -562,6 +573,14 @@ class Debug {
   inline bool ignore_events() const { return is_suppressed_ || !is_active_; }
   inline bool break_disabled() const {
     return break_disabled_ || in_debug_event_listener_;
+  }
+
+  void clear_suspended_generator() {
+    thread_local_.suspended_generator_ = Smi::FromInt(0);
+  }
+
+  bool has_suspended_generator() const {
+    return thread_local_.suspended_generator_ != Smi::FromInt(0);
   }
 
   void OnException(Handle<Object> exception, Handle<Object> promise);
@@ -675,11 +694,6 @@ class Debug {
     // Frame pointer of the target frame we want to arrive at.
     Address target_fp_;
 
-    // Whether functions are flooded on entry for step-in and step-frame.
-    // If we stepped out to the embedder, disable flooding to spill stepping
-    // to the next call that the embedder makes.
-    bool step_in_enabled_;
-
     // Stores the way how LiveEdit has patched the stack. It is used when
     // debugger returns control back to user script.
     LiveEdit::FrameDropMode frame_drop_mode_;
@@ -687,6 +701,8 @@ class Debug {
     // Value of accumulator in interpreter frames. In non-interpreter frames
     // this value will be the hole.
     Handle<Object> return_value_;
+
+    Object* suspended_generator_;
   };
 
   // Storage location for registers when handling debug break calls

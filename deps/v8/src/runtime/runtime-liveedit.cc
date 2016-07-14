@@ -70,10 +70,8 @@ RUNTIME_FUNCTION(Runtime_LiveEditGatherCompileInfo) {
   RUNTIME_ASSERT(script->value()->IsScript());
   Handle<Script> script_handle = Handle<Script>(Script::cast(script->value()));
 
-  Handle<JSArray> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, LiveEdit::GatherCompileInfo(script_handle, source));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           LiveEdit::GatherCompileInfo(script_handle, source));
 }
 
 
@@ -223,7 +221,7 @@ RUNTIME_FUNCTION(Runtime_LiveEditCheckAndDropActivations) {
         isolate, new_element,
         JSReceiver::GetElement(isolate, new_shared_array, i));
     RUNTIME_ASSERT(
-        new_element->IsUndefined() ||
+        new_element->IsUndefined(isolate) ||
         (new_element->IsJSValue() &&
          Handle<JSValue>::cast(new_element)->value()->IsSharedFunctionInfo()));
   }
@@ -273,13 +271,16 @@ RUNTIME_FUNCTION(Runtime_LiveEditRestartFrame) {
     return heap->undefined_value();
   }
 
-  JavaScriptFrameIterator it(isolate, id);
+  StackTraceFrameIterator it(isolate, id);
   int inlined_jsframe_index =
       DebugFrameHelper::FindIndexedNonNativeFrame(&it, index);
-  if (inlined_jsframe_index == -1) return heap->undefined_value();
+  // Liveedit is not supported on Wasm.
+  if (inlined_jsframe_index == -1 || it.is_wasm()) {
+    return heap->undefined_value();
+  }
   // We don't really care what the inlined frame index is, since we are
   // throwing away the entire frame anyways.
-  const char* error_message = LiveEdit::RestartFrame(it.frame());
+  const char* error_message = LiveEdit::RestartFrame(it.javascript_frame());
   if (error_message) {
     return *(isolate->factory()->InternalizeUtf8String(error_message));
   }

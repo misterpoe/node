@@ -72,7 +72,6 @@ namespace internal {
   V(kExpectedNewSpaceObject, "Expected new space object")                      \
   V(kExpectedUndefinedOrCell, "Expected undefined or cell in register")        \
   V(kExpectingAlignmentForCopyBytes, "Expecting alignment for CopyBytes")      \
-  V(kExportDeclaration, "Export declaration")                                  \
   V(kExternalStringExpectedButNotFound,                                        \
     "External string expected, but not found")                                 \
   V(kForInStatementWithNonLocalEachVariable,                                   \
@@ -254,8 +253,6 @@ namespace internal {
   V(kUnsupportedPhiUseOfArguments, "Unsupported phi use of arguments")         \
   V(kUnsupportedPhiUseOfConstVariable,                                         \
     "Unsupported phi use of const or let variable")                            \
-  V(kUnexpectedReturnFromBytecodeHandler,                                      \
-    "Unexpectedly returned from a bytecode handler")                           \
   V(kUnexpectedReturnFromThrow, "Unexpectedly returned from a throw")          \
   V(kUnsupportedSwitchStatement, "Unsupported switch statement")               \
   V(kUnsupportedTaggedImmediate, "Unsupported tagged immediate")               \
@@ -269,8 +266,7 @@ namespace internal {
   V(kWrongArgumentCountForInvokeIntrinsic,                                     \
     "Wrong number of arguments for intrinsic")                                 \
   V(kShouldNotDirectlyEnterOsrFunction,                                        \
-    "Should not directly enter OSR-compiled function")                         \
-  V(kYield, "Yield")
+    "Should not directly enter OSR-compiled function")
 
 #define ERROR_MESSAGES_CONSTANTS(C, T) C,
 enum BailoutReason {

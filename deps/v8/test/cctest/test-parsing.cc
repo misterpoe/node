@@ -1509,7 +1509,9 @@ enum ParserFlag {
   kAllowHarmonyRestrictiveDeclarations,
   kAllowHarmonyExponentiationOperator,
   kAllowHarmonyForIn,
-  kAllowHarmonyAsyncAwait
+  kAllowHarmonyAsyncAwait,
+  kAllowHarmonyRestrictiveGenerators,
+  kAllowHarmonyTrailingCommas,
 };
 
 enum ParserSyncTestResult {
@@ -1532,6 +1534,10 @@ void SetParserFlags(i::ParserBase<Traits>* parser,
   parser->set_allow_harmony_for_in(flags.Contains(kAllowHarmonyForIn));
   parser->set_allow_harmony_async_await(
       flags.Contains(kAllowHarmonyAsyncAwait));
+  parser->set_allow_harmony_restrictive_generators(
+      flags.Contains(kAllowHarmonyRestrictiveGenerators));
+  parser->set_allow_harmony_trailing_commas(
+      flags.Contains(kAllowHarmonyTrailingCommas));
 }
 
 
@@ -3566,10 +3572,8 @@ TEST(UseAsmUseCount) {
   CcTest::isolate()->SetUseCounterCallback(MockUseCounterCallback);
   CompileRun("\"use asm\";\n"
              "var foo = 1;\n"
-             "\"use asm\";\n"  // Only the first one counts.
              "function bar() { \"use asm\"; var baz = 1; }");
-  // Optimizing will double-count because the source is parsed twice.
-  CHECK_EQ(i::FLAG_always_opt ? 4 : 2, use_counts[v8::Isolate::kUseAsm]);
+  CHECK_LT(0, use_counts[v8::Isolate::kUseAsm]);
 }
 
 
@@ -5506,8 +5510,8 @@ TEST(BasicImportExportParsing) {
       "export default function() {}",
       "export default function*() {}",
       "export default class C {}",
-      "export default class {}"
-      "export default class extends C {}"
+      "export default class {}",
+      "export default class extends C {}",
       "export default 42",
       "var x; export default x = 7",
       "export { Q } from 'somemodule.js';",
@@ -7503,6 +7507,9 @@ TEST(AsyncAwait) {
     "var O = { async 'method'() { await 1; } }",
     "var O = { async 0() { await 1; } }",
     "async function await() {}",
+
+    "var asyncFn = async({ foo = 1 }) => foo;",
+    "var asyncFn = async({ foo = 1 } = {}) => foo;",
     NULL
   };
   // clang-format on
@@ -7639,6 +7646,35 @@ TEST(AsyncAwaitErrors) {
     "var O = { async method() { function await() {} } }",
     "async function foo() { function await() {} }",
 
+    // Henrique Ferreiro's bug (tm)
+    "(async function foo() { } foo => 1)",
+    "(async function foo() { } () => 1)",
+    "(async function foo() { } => 1)",
+    "(async function() { } foo => 1)",
+    "(async function() { } () => 1)",
+    "(async function() { } => 1)",
+    "(async.foo => 1)",
+    "(async.foo foo => 1)",
+    "(async.foo () => 1)",
+    "(async().foo => 1)",
+    "(async().foo foo => 1)",
+    "(async().foo () => 1)",
+    "(async['foo'] => 1)",
+    "(async['foo'] foo => 1)",
+    "(async['foo'] () => 1)",
+    "(async()['foo'] => 1)",
+    "(async()['foo'] foo => 1)",
+    "(async()['foo'] () => 1)",
+    "(async`foo` => 1)",
+    "(async`foo` foo => 1)",
+    "(async`foo` () => 1)",
+    "(async`foo`.bar => 1)",
+    "(async`foo`.bar foo => 1)",
+    "(async`foo`.bar () => 1)",
+
+    // v8:5148 assert that errors are still thrown for calls that may have been
+    // async functions
+    "async({ foo = 1 })",
     NULL
   };
 
@@ -7660,12 +7696,31 @@ TEST(AsyncAwaitErrors) {
 
     NULL
   };
+
+  const char* formal_parameters_data[] = {
+    "var f = async({ await }) => 1;",
+    "var f = async({ await = 1 }) => 1;",
+    "var f = async({ await } = {}) => 1;",
+    "var f = async({ await = 1 } = {}) => 1;",
+    "var f = async([await]) => 1;",
+    "var f = async([await] = []) => 1;",
+    "var f = async([await = 1]) => 1;",
+    "var f = async([await = 1] = []) => 1;",
+    "var f = async(...await) => 1;",
+    "var f = async(await) => 1;",
+    "var f = async(await = 1) => 1;",
+    "var f = async(...[await]) => 1;",
+    NULL
+  };
   // clang-format on
 
   static const ParserFlag always_flags[] = {kAllowHarmonyAsyncAwait};
   RunParserSyncTest(context_data, error_data, kError, NULL, 0, always_flags,
                     arraysize(always_flags));
   RunParserSyncTest(strict_context_data, strict_error_data, kError, NULL, 0,
+                    always_flags, arraysize(always_flags));
+
+  RunParserSyncTest(context_data, formal_parameters_data, kError, NULL, 0,
                     always_flags, arraysize(always_flags));
 }
 
@@ -7729,5 +7784,166 @@ TEST(RestrictiveForInErrors) {
 
   static const ParserFlag always_flags[] = {kAllowHarmonyForIn};
   RunParserSyncTest(context_data, error_data, kError, nullptr, 0, always_flags,
+                    arraysize(always_flags));
+}
+
+TEST(NoDuplicateGeneratorsInBlock) {
+  const char* block_context_data[][2] = {
+      {"'use strict'; {", "}"},
+      {"{", "}"},
+      {"(function() { {", "} })()"},
+      {"(function() {'use strict'; {", "} })()"},
+      {NULL, NULL}};
+  const char* top_level_context_data[][2] = {
+      {"'use strict';", ""},
+      {"", ""},
+      {"(function() {", "})()"},
+      {"(function() {'use strict';", "})()"},
+      {NULL, NULL}};
+  const char* error_data[] = {"function* x() {} function* x() {}",
+                              "function x() {} function* x() {}",
+                              "function* x() {} function x() {}", NULL};
+  static const ParserFlag always_flags[] = {kAllowHarmonyRestrictiveGenerators};
+  // The preparser doesn't enforce the restriction, so turn it off.
+  bool test_preparser = false;
+  RunParserSyncTest(block_context_data, error_data, kError, NULL, 0,
+                    always_flags, arraysize(always_flags), NULL, 0, false,
+                    test_preparser);
+  RunParserSyncTest(top_level_context_data, error_data, kSuccess, NULL, 0,
+                    always_flags, arraysize(always_flags));
+}
+
+TEST(NoDuplicateAsyncFunctionInBlock) {
+  const char* block_context_data[][2] = {
+      {"'use strict'; {", "}"},
+      {"{", "}"},
+      {"(function() { {", "} })()"},
+      {"(function() {'use strict'; {", "} })()"},
+      {NULL, NULL}};
+  const char* top_level_context_data[][2] = {
+      {"'use strict';", ""},
+      {"", ""},
+      {"(function() {", "})()"},
+      {"(function() {'use strict';", "})()"},
+      {NULL, NULL}};
+  const char* error_data[] = {"async function x() {} async function x() {}",
+                              "function x() {} async function x() {}",
+                              "async function x() {} function x() {}",
+                              "function* x() {} async function x() {}",
+                              "function* x() {} async function x() {}",
+                              "async function x() {} function* x() {}",
+                              "function* x() {} async function x() {}",
+                              NULL};
+  static const ParserFlag always_flags[] = {kAllowHarmonyAsyncAwait};
+  // The preparser doesn't enforce the restriction, so turn it off.
+  bool test_preparser = false;
+  RunParserSyncTest(block_context_data, error_data, kError, NULL, 0,
+                    always_flags, arraysize(always_flags), NULL, 0, false,
+                    test_preparser);
+  RunParserSyncTest(top_level_context_data, error_data, kSuccess, NULL, 0,
+                    always_flags, arraysize(always_flags));
+}
+
+TEST(TrailingCommasInParameters) {
+  // clang-format off
+  const char* context_data[][2] = {
+    { "", "" },
+    { "'use strict';", "" },
+    { "function foo() {", "}" },
+    { "function foo() {'use strict';", "}" },
+    { NULL, NULL }
+  };
+
+  const char* data[] = {
+    " function  a(b,) {}",
+    " function* a(b,) {}",
+    "(function  a(b,) {});",
+    "(function* a(b,) {});",
+    "(function   (b,) {});",
+    "(function*  (b,) {});",
+    " function  a(b,c,d,) {}",
+    " function* a(b,c,d,) {}",
+    "(function  a(b,c,d,) {});",
+    "(function* a(b,c,d,) {});",
+    "(function   (b,c,d,) {});",
+    "(function*  (b,c,d,) {});",
+    "(b,) => {};",
+    "(b,c,d,) => {};",
+    "a(1,);",
+    "a(1,2,3,);",
+    "a(...[],);",
+    "a(1, 2, ...[],);",
+    "a(...[], 2, ...[],);",
+    NULL
+  };
+  // clang-format on
+
+  static const ParserFlag always_flags[] = {kAllowHarmonyTrailingCommas};
+  RunParserSyncTest(context_data, data, kSuccess, NULL, 0, always_flags,
+                    arraysize(always_flags));
+}
+
+TEST(TrailingCommasInParametersErrors) {
+  // clang-format off
+  const char* context_data[][2] = {
+    { "", "" },
+    { "'use strict';", "" },
+    { "function foo() {", "}" },
+    { "function foo() {'use strict';", "}" },
+    { NULL, NULL }
+  };
+
+  const char* data[] = {
+    // too many trailing commas
+    " function  a(b,,) {}",
+    " function* a(b,,) {}",
+    "(function  a(b,,) {});",
+    "(function* a(b,,) {});",
+    "(function   (b,,) {});",
+    "(function*  (b,,) {});",
+    " function  a(b,c,d,,) {}",
+    " function* a(b,c,d,,) {}",
+    "(function  a(b,c,d,,) {});",
+    "(function* a(b,c,d,,) {});",
+    "(function   (b,c,d,,) {});",
+    "(function*  (b,c,d,,) {});",
+    "(b,,) => {};",
+    "(b,c,d,,) => {};",
+    "a(1,,);",
+    "a(1,2,3,,);",
+    // only a trailing comma and no parameters
+    " function  a1(,) {}",
+    " function* a2(,) {}",
+    "(function  a3(,) {});",
+    "(function* a4(,) {});",
+    "(function    (,) {});",
+    "(function*   (,) {});",
+    "(,) => {};",
+    "a1(,);",
+    // no trailing commas after rest parameter declaration
+    " function  a(...b,) {}",
+    " function* a(...b,) {}",
+    "(function  a(...b,) {});",
+    "(function* a(...b,) {});",
+    "(function   (...b,) {});",
+    "(function*  (...b,) {});",
+    " function  a(b, c, ...d,) {}",
+    " function* a(b, c, ...d,) {}",
+    "(function  a(b, c, ...d,) {});",
+    "(function* a(b, c, ...d,) {});",
+    "(function   (b, c, ...d,) {});",
+    "(function*  (b, c, ...d,) {});",
+    "(...b,) => {};",
+    "(b, c, ...d,) => {};",
+    // parenthesized trailing comma without arrow is still an error
+    "(,);",
+    "(a,);",
+    "(a,b,c,);",
+    NULL
+  };
+  // clang-format on
+
+  static const ParserFlag always_flags[] = {kAllowHarmonyTrailingCommas};
+  RunParserSyncTest(context_data, data, kError, NULL, 0, always_flags,
                     arraysize(always_flags));
 }

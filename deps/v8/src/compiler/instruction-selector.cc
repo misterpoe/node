@@ -241,6 +241,20 @@ bool InstructionSelector::CanCover(Node* user, Node* node) const {
   return true;
 }
 
+bool InstructionSelector::IsOnlyUserOfNodeInSameBlock(Node* user,
+                                                      Node* node) const {
+  BasicBlock* bb_user = schedule()->block(user);
+  BasicBlock* bb_node = schedule()->block(node);
+  if (bb_user != bb_node) return false;
+  for (Edge const edge : node->use_edges()) {
+    Node* from = edge.from();
+    if ((from != user) && (schedule()->block(from) == bb_user)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int InstructionSelector::GetVirtualRegister(const Node* node) {
   DCHECK_NOT_NULL(node);
   size_t const id = node->id();
@@ -713,6 +727,12 @@ void InstructionSelector::VisitBlock(BasicBlock* block) {
     SetEffectLevel(node, effect_level);
   }
 
+  // We visit the control first, then the nodes in the block, so the block's
+  // control input should be on the same effect level as the last node.
+  if (block->control_input() != nullptr) {
+    SetEffectLevel(block->control_input(), effect_level);
+  }
+
   // Generate code for the block control "top down", but schedule the code
   // "bottom up".
   VisitControl(block);
@@ -858,8 +878,6 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsReference(node), VisitIfException(node);
     case IrOpcode::kFinishRegion:
       return MarkAsReference(node), VisitFinishRegion(node);
-    case IrOpcode::kGuard:
-      return MarkAsReference(node), VisitGuard(node);
     case IrOpcode::kParameter: {
       MachineType type =
           linkage()->GetParameterType(ParameterIndexOf(node->op()));
@@ -901,6 +919,12 @@ void InstructionSelector::VisitNode(Node* node) {
     case IrOpcode::kFrameState:
     case IrOpcode::kStateValues:
     case IrOpcode::kObjectState:
+      return;
+    case IrOpcode::kDebugBreak:
+      VisitDebugBreak(node);
+      return;
+    case IrOpcode::kComment:
+      VisitComment(node);
       return;
     case IrOpcode::kLoad: {
       LoadRepresentation type = LoadRepresentationOf(node->op());
@@ -1025,6 +1049,13 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsWord32(node), VisitChangeFloat64ToInt32(node);
     case IrOpcode::kChangeFloat64ToUint32:
       return MarkAsWord32(node), VisitChangeFloat64ToUint32(node);
+    case IrOpcode::kFloat64SilenceNaN:
+      MarkAsFloat64(node);
+      if (CanProduceSignalingNaN(node->InputAt(0))) {
+        return VisitFloat64SilenceNaN(node);
+      } else {
+        return EmitIdentity(node);
+      }
     case IrOpcode::kTruncateFloat64ToUint32:
       return MarkAsWord32(node), VisitTruncateFloat64ToUint32(node);
     case IrOpcode::kTruncateFloat32ToInt32:
@@ -1077,6 +1108,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsFloat32(node), VisitFloat32Sub(node);
     case IrOpcode::kFloat32SubPreserveNan:
       return MarkAsFloat32(node), VisitFloat32SubPreserveNan(node);
+    case IrOpcode::kFloat32Neg:
+      return MarkAsFloat32(node), VisitFloat32Neg(node);
     case IrOpcode::kFloat32Mul:
       return MarkAsFloat32(node), VisitFloat32Mul(node);
     case IrOpcode::kFloat32Div:
@@ -1101,6 +1134,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsFloat64(node), VisitFloat64Sub(node);
     case IrOpcode::kFloat64SubPreserveNan:
       return MarkAsFloat64(node), VisitFloat64SubPreserveNan(node);
+    case IrOpcode::kFloat64Neg:
+      return MarkAsFloat64(node), VisitFloat64Neg(node);
     case IrOpcode::kFloat64Mul:
       return MarkAsFloat64(node), VisitFloat64Mul(node);
     case IrOpcode::kFloat64Div:
@@ -1113,8 +1148,50 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsFloat64(node), VisitFloat64Max(node);
     case IrOpcode::kFloat64Abs:
       return MarkAsFloat64(node), VisitFloat64Abs(node);
+    case IrOpcode::kFloat64Acos:
+      return MarkAsFloat64(node), VisitFloat64Acos(node);
+    case IrOpcode::kFloat64Acosh:
+      return MarkAsFloat64(node), VisitFloat64Acosh(node);
+    case IrOpcode::kFloat64Asin:
+      return MarkAsFloat64(node), VisitFloat64Asin(node);
+    case IrOpcode::kFloat64Asinh:
+      return MarkAsFloat64(node), VisitFloat64Asinh(node);
+    case IrOpcode::kFloat64Atan:
+      return MarkAsFloat64(node), VisitFloat64Atan(node);
+    case IrOpcode::kFloat64Atanh:
+      return MarkAsFloat64(node), VisitFloat64Atanh(node);
+    case IrOpcode::kFloat64Atan2:
+      return MarkAsFloat64(node), VisitFloat64Atan2(node);
+    case IrOpcode::kFloat64Cbrt:
+      return MarkAsFloat64(node), VisitFloat64Cbrt(node);
+    case IrOpcode::kFloat64Cos:
+      return MarkAsFloat64(node), VisitFloat64Cos(node);
+    case IrOpcode::kFloat64Cosh:
+      return MarkAsFloat64(node), VisitFloat64Cosh(node);
+    case IrOpcode::kFloat64Exp:
+      return MarkAsFloat64(node), VisitFloat64Exp(node);
+    case IrOpcode::kFloat64Expm1:
+      return MarkAsFloat64(node), VisitFloat64Expm1(node);
+    case IrOpcode::kFloat64Log:
+      return MarkAsFloat64(node), VisitFloat64Log(node);
+    case IrOpcode::kFloat64Log1p:
+      return MarkAsFloat64(node), VisitFloat64Log1p(node);
+    case IrOpcode::kFloat64Log10:
+      return MarkAsFloat64(node), VisitFloat64Log10(node);
+    case IrOpcode::kFloat64Log2:
+      return MarkAsFloat64(node), VisitFloat64Log2(node);
+    case IrOpcode::kFloat64Pow:
+      return MarkAsFloat64(node), VisitFloat64Pow(node);
+    case IrOpcode::kFloat64Sin:
+      return MarkAsFloat64(node), VisitFloat64Sin(node);
+    case IrOpcode::kFloat64Sinh:
+      return MarkAsFloat64(node), VisitFloat64Sinh(node);
     case IrOpcode::kFloat64Sqrt:
       return MarkAsFloat64(node), VisitFloat64Sqrt(node);
+    case IrOpcode::kFloat64Tan:
+      return MarkAsFloat64(node), VisitFloat64Tan(node);
+    case IrOpcode::kFloat64Tanh:
+      return MarkAsFloat64(node), VisitFloat64Tanh(node);
     case IrOpcode::kFloat64Equal:
       return VisitFloat64Equal(node);
     case IrOpcode::kFloat64LessThan:
@@ -1218,6 +1295,90 @@ void InstructionSelector::VisitLoadParentFramePointer(Node* node) {
   Emit(kArchParentFramePointer, g.DefineAsRegister(node));
 }
 
+void InstructionSelector::VisitFloat64Acos(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Acos);
+}
+
+void InstructionSelector::VisitFloat64Acosh(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Acosh);
+}
+
+void InstructionSelector::VisitFloat64Asin(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Asin);
+}
+
+void InstructionSelector::VisitFloat64Asinh(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Asinh);
+}
+
+void InstructionSelector::VisitFloat64Atan(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Atan);
+}
+
+void InstructionSelector::VisitFloat64Atanh(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Atanh);
+}
+
+void InstructionSelector::VisitFloat64Atan2(Node* node) {
+  VisitFloat64Ieee754Binop(node, kIeee754Float64Atan2);
+}
+
+void InstructionSelector::VisitFloat64Cbrt(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Cbrt);
+}
+
+void InstructionSelector::VisitFloat64Cos(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Cos);
+}
+
+void InstructionSelector::VisitFloat64Cosh(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Cosh);
+}
+
+void InstructionSelector::VisitFloat64Exp(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Exp);
+}
+
+void InstructionSelector::VisitFloat64Expm1(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Expm1);
+}
+
+void InstructionSelector::VisitFloat64Log(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Log);
+}
+
+void InstructionSelector::VisitFloat64Log1p(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Log1p);
+}
+
+void InstructionSelector::VisitFloat64Log2(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Log2);
+}
+
+void InstructionSelector::VisitFloat64Log10(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Log10);
+}
+
+void InstructionSelector::VisitFloat64Pow(Node* node) {
+  VisitFloat64Ieee754Binop(node, kIeee754Float64Pow);
+}
+
+void InstructionSelector::VisitFloat64Sin(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Sin);
+}
+
+void InstructionSelector::VisitFloat64Sinh(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Sinh);
+}
+
+void InstructionSelector::VisitFloat64Tan(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Tan);
+}
+
+void InstructionSelector::VisitFloat64Tanh(Node* node) {
+  VisitFloat64Ieee754Unop(node, kIeee754Float64Tanh);
+}
+
 void InstructionSelector::EmitTableSwitch(const SwitchInfo& sw,
                                           InstructionOperand& index_operand) {
   OperandGenerator g(this);
@@ -1263,9 +1424,7 @@ void InstructionSelector::VisitStackSlot(Node* node) {
 }
 
 void InstructionSelector::VisitBitcastWordToTagged(Node* node) {
-  OperandGenerator g(this);
-  Node* value = node->InputAt(0);
-  Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
+  EmitIdentity(node);
 }
 
 // 32 bit targets do not implement the following instructions.
@@ -1437,19 +1596,7 @@ void InstructionSelector::VisitWord32PairShr(Node* node) { UNIMPLEMENTED(); }
 void InstructionSelector::VisitWord32PairSar(Node* node) { UNIMPLEMENTED(); }
 #endif  // V8_TARGET_ARCH_64_BIT
 
-void InstructionSelector::VisitFinishRegion(Node* node) {
-  OperandGenerator g(this);
-  Node* value = node->InputAt(0);
-  Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
-}
-
-
-void InstructionSelector::VisitGuard(Node* node) {
-  OperandGenerator g(this);
-  Node* value = node->InputAt(0);
-  Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
-}
-
+void InstructionSelector::VisitFinishRegion(Node* node) { EmitIdentity(node); }
 
 void InstructionSelector::VisitParameter(Node* node) {
   OperandGenerator g(this);
@@ -1665,10 +1812,12 @@ void InstructionSelector::VisitTailCall(Node* node) {
     }
     opcode |= MiscField::encode(descriptor->flags());
 
-    buffer.instruction_args.push_back(g.TempImmediate(stack_param_delta));
+    Emit(kArchPrepareTailCall, g.NoOutput());
 
-    Emit(kArchPrepareTailCall, g.NoOutput(),
-         g.TempImmediate(stack_param_delta));
+    int first_unused_stack_slot =
+        (V8_TARGET_ARCH_STORES_RETURN_ADDRESS_ON_STACK ? 1 : 0) +
+        stack_param_delta;
+    buffer.instruction_args.push_back(g.TempImmediate(first_unused_stack_slot));
 
     // Emit the tailcall instruction.
     Emit(opcode, 0, nullptr, buffer.instruction_args.size(),
@@ -1775,6 +1924,12 @@ Instruction* InstructionSelector::EmitDeoptimize(
               nullptr);
 }
 
+void InstructionSelector::EmitIdentity(Node* node) {
+  OperandGenerator g(this);
+  Node* value = node->InputAt(0);
+  Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
+}
+
 void InstructionSelector::VisitDeoptimize(DeoptimizeKind kind, Node* value) {
   InstructionCode opcode = kArchDeoptimize;
   switch (kind) {
@@ -1794,6 +1949,26 @@ void InstructionSelector::VisitThrow(Node* value) {
   Emit(kArchThrowTerminator, g.NoOutput());
 }
 
+void InstructionSelector::VisitDebugBreak(Node* node) {
+  OperandGenerator g(this);
+  Emit(kArchDebugBreak, g.NoOutput());
+}
+
+void InstructionSelector::VisitComment(Node* node) {
+  OperandGenerator g(this);
+  InstructionOperand operand(g.UseImmediate(node));
+  Emit(kArchComment, 0, nullptr, 1, &operand);
+}
+
+bool InstructionSelector::CanProduceSignalingNaN(Node* node) {
+  // TODO(jarin) Improve the heuristic here.
+  if (node->opcode() == IrOpcode::kFloat64Add ||
+      node->opcode() == IrOpcode::kFloat64Sub ||
+      node->opcode() == IrOpcode::kFloat64Mul) {
+    return false;
+  }
+  return true;
+}
 
 FrameStateDescriptor* InstructionSelector::GetFrameStateDescriptor(
     Node* state) {

@@ -393,12 +393,28 @@ bool Heap::OldGenerationAllocationLimitReached() {
   return OldGenerationSpaceAvailable() < 0;
 }
 
-
+template <PromotionMode promotion_mode>
 bool Heap::ShouldBePromoted(Address old_address, int object_size) {
   Page* page = Page::FromAddress(old_address);
   Address age_mark = new_space_.age_mark();
+
+  if (promotion_mode == PROMOTE_MARKED) {
+    MarkBit mark_bit = Marking::MarkBitFrom(old_address);
+    if (!Marking::IsWhite(mark_bit)) {
+      return true;
+    }
+  }
+
   return page->IsFlagSet(MemoryChunk::NEW_SPACE_BELOW_AGE_MARK) &&
          (!page->ContainsLimit(age_mark) || old_address < age_mark);
+}
+
+PromotionMode Heap::CurrentPromotionMode() {
+  if (incremental_marking()->IsMarking()) {
+    return PROMOTE_MARKED;
+  } else {
+    return DEFAULT_PROMOTION;
+  }
 }
 
 void Heap::RecordWrite(Object* object, int offset, Object* o) {
@@ -408,6 +424,12 @@ void Heap::RecordWrite(Object* object, int offset, Object* o) {
   RememberedSet<OLD_TO_NEW>::Insert(
       Page::FromAddress(reinterpret_cast<Address>(object)),
       HeapObject::cast(object)->address() + offset);
+}
+
+void Heap::RecordWriteIntoCode(Code* host, RelocInfo* rinfo, Object* value) {
+  if (InNewSpace(value)) {
+    RecordWriteIntoCodeSlow(host, rinfo, value);
+  }
 }
 
 void Heap::RecordFixedArrayElements(FixedArray* array, int offset, int length) {
@@ -510,7 +532,7 @@ AllocationMemento* Heap::FindAllocationMemento(HeapObject* object) {
 
 template <Heap::UpdateAllocationSiteMode mode>
 void Heap::UpdateAllocationSite(HeapObject* object,
-                                HashMap* pretenuring_feedback) {
+                                base::HashMap* pretenuring_feedback) {
   DCHECK(InFromSpace(object));
   if (!FLAG_allocation_site_pretenuring ||
       !AllocationSite::CanTrack(object->map()->instance_type()))
@@ -538,7 +560,7 @@ void Heap::UpdateAllocationSite(HeapObject* object,
     // to dereference the allocation site and rather have to postpone all checks
     // till actually merging the data.
     Address key = memento_candidate->GetAllocationSiteUnchecked();
-    HashMap::Entry* e =
+    base::HashMap::Entry* e =
         pretenuring_feedback->LookupOrInsert(key, ObjectHash(key));
     DCHECK(e != nullptr);
     (*bit_cast<intptr_t*>(&e->value))++;
@@ -596,12 +618,12 @@ void Heap::ExternalStringTable::Verify() {
   for (int i = 0; i < new_space_strings_.length(); ++i) {
     Object* obj = Object::cast(new_space_strings_[i]);
     DCHECK(heap_->InNewSpace(obj));
-    DCHECK(obj != heap_->the_hole_value());
+    DCHECK(!obj->IsTheHole(heap_->isolate()));
   }
   for (int i = 0; i < old_space_strings_.length(); ++i) {
     Object* obj = Object::cast(old_space_strings_[i]);
     DCHECK(!heap_->InNewSpace(obj));
-    DCHECK(obj != heap_->the_hole_value());
+    DCHECK(!obj->IsTheHole(heap_->isolate()));
   }
 #endif
 }
@@ -685,30 +707,41 @@ int Heap::NextScriptId() {
   return last_id;
 }
 
-
 void Heap::SetArgumentsAdaptorDeoptPCOffset(int pc_offset) {
   DCHECK(arguments_adaptor_deopt_pc_offset() == Smi::FromInt(0));
   set_arguments_adaptor_deopt_pc_offset(Smi::FromInt(pc_offset));
 }
-
 
 void Heap::SetConstructStubDeoptPCOffset(int pc_offset) {
   DCHECK(construct_stub_deopt_pc_offset() == Smi::FromInt(0));
   set_construct_stub_deopt_pc_offset(Smi::FromInt(pc_offset));
 }
 
-
 void Heap::SetGetterStubDeoptPCOffset(int pc_offset) {
   DCHECK(getter_stub_deopt_pc_offset() == Smi::FromInt(0));
   set_getter_stub_deopt_pc_offset(Smi::FromInt(pc_offset));
 }
-
 
 void Heap::SetSetterStubDeoptPCOffset(int pc_offset) {
   DCHECK(setter_stub_deopt_pc_offset() == Smi::FromInt(0));
   set_setter_stub_deopt_pc_offset(Smi::FromInt(pc_offset));
 }
 
+void Heap::SetInterpreterEntryReturnPCOffset(int pc_offset) {
+  DCHECK(interpreter_entry_return_pc_offset() == Smi::FromInt(0));
+  set_interpreter_entry_return_pc_offset(Smi::FromInt(pc_offset));
+}
+
+int Heap::GetNextTemplateSerialNumber() {
+  int next_serial_number = next_template_serial_number()->value() + 1;
+  set_next_template_serial_number(Smi::FromInt(next_serial_number));
+  return next_serial_number;
+}
+
+void Heap::SetSerializedTemplates(FixedArray* templates) {
+  DCHECK_EQ(empty_fixed_array(), serialized_templates());
+  set_serialized_templates(templates);
+}
 
 AlwaysAllocateScope::AlwaysAllocateScope(Isolate* isolate)
     : heap_(isolate->heap()) {

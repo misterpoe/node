@@ -20,15 +20,21 @@ class Operator;
 // For operators that are not supported on all platforms.
 class OptionalOperator final {
  public:
-  explicit OptionalOperator(const Operator* op) : op_(op) {}
+  OptionalOperator(bool supported, const Operator* op)
+      : supported_(supported), op_(op) {}
 
-  bool IsSupported() const { return op_ != nullptr; }
+  bool IsSupported() const { return supported_; }
+  // Gets the operator only if it is supported.
   const Operator* op() const {
-    DCHECK_NOT_NULL(op_);
+    DCHECK(supported_);
     return op_;
   }
+  // Always gets the operator, even for unsupported operators. This is useful to
+  // use the operator as a placeholder in a graph, for instance.
+  const Operator* placeholder() const { return op_; }
 
  private:
+  bool supported_;
   const Operator* const op_;
 };
 
@@ -113,20 +119,89 @@ class MachineOperatorBuilder final : public ZoneObject {
     kWord64Popcnt = 1u << 19,
     kWord32ReverseBits = 1u << 20,
     kWord64ReverseBits = 1u << 21,
-    kAllOptionalOps = kFloat32Max | kFloat32Min | kFloat64Max | kFloat64Min |
-                      kFloat32RoundDown | kFloat64RoundDown | kFloat32RoundUp |
-                      kFloat64RoundUp | kFloat32RoundTruncate |
-                      kFloat64RoundTruncate | kFloat64RoundTiesAway |
-                      kFloat32RoundTiesEven | kFloat64RoundTiesEven |
-                      kWord32Ctz | kWord64Ctz | kWord32Popcnt | kWord64Popcnt |
-                      kWord32ReverseBits | kWord64ReverseBits
+    kFloat32Neg = 1u << 22,
+    kFloat64Neg = 1u << 23,
+    kAllOptionalOps =
+        kFloat32Max | kFloat32Min | kFloat64Max | kFloat64Min |
+        kFloat32RoundDown | kFloat64RoundDown | kFloat32RoundUp |
+        kFloat64RoundUp | kFloat32RoundTruncate | kFloat64RoundTruncate |
+        kFloat64RoundTiesAway | kFloat32RoundTiesEven | kFloat64RoundTiesEven |
+        kWord32Ctz | kWord64Ctz | kWord32Popcnt | kWord64Popcnt |
+        kWord32ReverseBits | kWord64ReverseBits | kFloat32Neg | kFloat64Neg
   };
   typedef base::Flags<Flag, unsigned> Flags;
+
+  class AlignmentRequirements {
+   public:
+    enum UnalignedAccessSupport { kNoSupport, kSomeSupport, kFullSupport };
+
+    bool IsUnalignedLoadSupported(const MachineType& machineType,
+                                  uint8_t alignment) const {
+      return IsUnalignedSupported(unalignedLoadSupportedTypes_, machineType,
+                                  alignment);
+    }
+
+    bool IsUnalignedStoreSupported(const MachineType& machineType,
+                                   uint8_t alignment) const {
+      return IsUnalignedSupported(unalignedStoreSupportedTypes_, machineType,
+                                  alignment);
+    }
+
+    static AlignmentRequirements FullUnalignedAccessSupport() {
+      return AlignmentRequirements(kFullSupport);
+    }
+    static AlignmentRequirements NoUnalignedAccessSupport() {
+      return AlignmentRequirements(kNoSupport);
+    }
+    static AlignmentRequirements SomeUnalignedAccessSupport(
+        const Vector<MachineType>& unalignedLoadSupportedTypes,
+        const Vector<MachineType>& unalignedStoreSupportedTypes) {
+      return AlignmentRequirements(kSomeSupport, unalignedLoadSupportedTypes,
+                                   unalignedStoreSupportedTypes);
+    }
+
+   private:
+    explicit AlignmentRequirements(
+        AlignmentRequirements::UnalignedAccessSupport unalignedAccessSupport,
+        Vector<MachineType> unalignedLoadSupportedTypes =
+            Vector<MachineType>(NULL, 0),
+        Vector<MachineType> unalignedStoreSupportedTypes =
+            Vector<MachineType>(NULL, 0))
+        : unalignedSupport_(unalignedAccessSupport),
+          unalignedLoadSupportedTypes_(unalignedLoadSupportedTypes),
+          unalignedStoreSupportedTypes_(unalignedStoreSupportedTypes) {}
+
+    bool IsUnalignedSupported(const Vector<MachineType>& supported,
+                              const MachineType& machineType,
+                              uint8_t alignment) const {
+      if (unalignedSupport_ == kFullSupport) {
+        return true;
+      } else if (unalignedSupport_ == kNoSupport) {
+        return false;
+      } else {
+        for (MachineType m : supported) {
+          if (m == machineType) {
+            return true;
+          }
+        }
+        return false;
+      }
+    }
+
+    const AlignmentRequirements::UnalignedAccessSupport unalignedSupport_;
+    const Vector<MachineType> unalignedLoadSupportedTypes_;
+    const Vector<MachineType> unalignedStoreSupportedTypes_;
+  };
 
   explicit MachineOperatorBuilder(
       Zone* zone,
       MachineRepresentation word = MachineType::PointerRepresentation(),
-      Flags supportedOperators = kNoFlags);
+      Flags supportedOperators = kNoFlags,
+      AlignmentRequirements alignmentRequirements =
+          AlignmentRequirements::NoUnalignedAccessSupport());
+
+  const Operator* Comment(const char* msg);
+  const Operator* DebugBreak();
 
   const Operator* Word32And();
   const Operator* Word32Or();
@@ -140,7 +215,6 @@ class MachineOperatorBuilder final : public ZoneObject {
   const OptionalOperator Word32Ctz();
   const OptionalOperator Word32Popcnt();
   const OptionalOperator Word64Popcnt();
-  const Operator* Word64PopcntPlaceholder();
   const OptionalOperator Word32ReverseBits();
   const OptionalOperator Word64ReverseBits();
   bool Word32ShiftIsSafe() const { return flags_ & kWord32ShiftIsSafe; }
@@ -154,7 +228,6 @@ class MachineOperatorBuilder final : public ZoneObject {
   const Operator* Word64Ror();
   const Operator* Word64Clz();
   const OptionalOperator Word64Ctz();
-  const Operator* Word64CtzPlaceholder();
   const Operator* Word64Equal();
 
   const Operator* Int32PairAdd();
@@ -295,11 +368,48 @@ class MachineOperatorBuilder final : public ZoneObject {
   const OptionalOperator Float32RoundTiesEven();
   const OptionalOperator Float64RoundTiesEven();
 
+  // Floating point neg.
+  const OptionalOperator Float32Neg();
+  const OptionalOperator Float64Neg();
+
+  // Floating point trigonometric functions (double-precision).
+  const Operator* Float64Acos();
+  const Operator* Float64Acosh();
+  const Operator* Float64Asin();
+  const Operator* Float64Asinh();
+  const Operator* Float64Atan();
+  const Operator* Float64Atan2();
+  const Operator* Float64Atanh();
+  const Operator* Float64Cos();
+  const Operator* Float64Cosh();
+  const Operator* Float64Sin();
+  const Operator* Float64Sinh();
+  const Operator* Float64Tan();
+  const Operator* Float64Tanh();
+
+  // Floating point exponential functions (double-precision).
+  const Operator* Float64Exp();
+  const Operator* Float64Expm1();
+  const Operator* Float64Pow();
+
+  // Floating point logarithm (double-precision).
+  const Operator* Float64Log();
+  const Operator* Float64Log1p();
+  const Operator* Float64Log2();
+  const Operator* Float64Log10();
+
+  // Floating point cube root (double-precision).
+  const Operator* Float64Cbrt();
+
   // Floating point bit representation.
   const Operator* Float64ExtractLowWord32();
   const Operator* Float64ExtractHighWord32();
   const Operator* Float64InsertLowWord32();
   const Operator* Float64InsertHighWord32();
+
+  // Change signalling NaN to quiet NaN.
+  // Identity for any input that is not signalling NaN.
+  const Operator* Float64SilenceNaN();
 
   // SIMD operators.
   const Operator* CreateFloat32x4();
@@ -513,6 +623,18 @@ class MachineOperatorBuilder final : public ZoneObject {
   bool Is64() const { return word() == MachineRepresentation::kWord64; }
   MachineRepresentation word() const { return word_; }
 
+  bool UnalignedLoadSupported(const MachineType& machineType,
+                              uint8_t alignment) {
+    return alignment_requirements_.IsUnalignedLoadSupported(machineType,
+                                                            alignment);
+  }
+
+  bool UnalignedStoreSupported(const MachineType& machineType,
+                               uint8_t alignment) {
+    return alignment_requirements_.IsUnalignedStoreSupported(machineType,
+                                                             alignment);
+  }
+
 // Pseudo operators that translate to 32/64-bit operators depending on the
 // word-size of the target machine assumed by this builder.
 #define PSEUDO_OP_LIST(V) \
@@ -544,9 +666,11 @@ class MachineOperatorBuilder final : public ZoneObject {
 #undef PSEUDO_OP_LIST
 
  private:
+  Zone* zone_;
   MachineOperatorGlobalCache const& cache_;
   MachineRepresentation const word_;
   Flags const flags_;
+  AlignmentRequirements const alignment_requirements_;
 
   DISALLOW_COPY_AND_ASSIGN(MachineOperatorBuilder);
 };

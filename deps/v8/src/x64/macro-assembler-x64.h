@@ -34,8 +34,9 @@ const Register kRuntimeCallArgCountRegister = {Register::kCode_rax};
 // Default scratch register used by MacroAssembler (and other code that needs
 // a spare register). The register isn't callee save, and not used by the
 // function calling convention.
-const Register kScratchRegister = { 10 };      // r10.
-const Register kRootRegister = { 13 };         // r13 (callee save).
+const Register kScratchRegister = {10};      // r10.
+const XMMRegister kScratchDoubleReg = {15};  // xmm15.
+const Register kRootRegister = {13};         // r13 (callee save).
 // Actual value of root register is offset from the root array's start
 // to take advantage of negitive 8-bit displacement values.
 const int kRootRegisterBias = 128;
@@ -338,7 +339,8 @@ class MacroAssembler: public Assembler {
   //
   // Allocates arg_stack_space * kPointerSize memory (not GCed) on the stack
   // accessible via StackSpaceOperand.
-  void EnterExitFrame(int arg_stack_space = 0, bool save_doubles = false);
+  void EnterExitFrame(int arg_stack_space = 0, bool save_doubles = false,
+                      StackFrame::Type frame_type = StackFrame::EXIT);
 
   // Enter specific kind of exit frame. Allocates arg_stack_space * kPointerSize
   // memory (not GCed) on the stack accessible via StackSpaceOperand.
@@ -926,7 +928,6 @@ class MacroAssembler: public Assembler {
     AllowDeferredHandleDereference using_raw_address;
     DCHECK(!RelocInfo::IsNone(rmode));
     DCHECK(value->IsHeapObject());
-    DCHECK(!isolate()->heap()->InNewSpace(*value));
     movp(dst, reinterpret_cast<void*>(value.location()), rmode);
   }
 
@@ -1468,7 +1469,8 @@ class MacroAssembler: public Assembler {
   void TailCallRuntime(Runtime::FunctionId fid);
 
   // Jump to a runtime routines
-  void JumpToExternalReference(const ExternalReference& ext);
+  void JumpToExternalReference(const ExternalReference& ext,
+                               bool builtin_exit_frame = false);
 
   // Before calling a C-function from generated code, align arguments on stack.
   // After aligning the frame, arguments must be stored in rsp[0], rsp[8],
@@ -1633,7 +1635,7 @@ class MacroAssembler: public Assembler {
                       Label::Distance near_jump,
                       const CallWrapper& call_wrapper);
 
-  void EnterExitFramePrologue(bool save_rax);
+  void EnterExitFramePrologue(bool save_rax, StackFrame::Type frame_type);
 
   // Allocates arg_stack_space * kPointerSize memory (not GCed) on the stack
   // accessible via StackSpaceOperand.

@@ -40,6 +40,7 @@ gcsuspects
 shell
 shell_g
 /_*
+/base
 /build
 /gypfiles/win_toolchain.json
 /buildtools
@@ -71,6 +72,7 @@ shell_g
 /tools/luci-go/linux64/isolate
 /tools/luci-go/mac64/isolate
 /tools/luci-go/win64/isolate.exe
+/tools/mb
 /tools/oom_dump/oom_dump
 /tools/oom_dump/oom_dump.o
 /tools/swarming_client

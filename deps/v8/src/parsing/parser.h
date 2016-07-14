@@ -505,7 +505,7 @@ class ParserTraits {
   const AstRawString* GetNumberAsSymbol(Scanner* scanner);
 
   Expression* ThisExpression(Scope* scope, AstNodeFactory* factory,
-                             int pos = RelocInfo::kNoPosition);
+                             int pos = kNoSourcePosition);
   Expression* SuperPropertyReference(Scope* scope, AstNodeFactory* factory,
                                      int pos);
   Expression* SuperCallReference(Scope* scope, AstNodeFactory* factory,
@@ -658,7 +658,7 @@ class ParserTraits {
 
   V8_INLINE void QueueDestructuringAssignmentForRewriting(
       Expression* assignment);
-  V8_INLINE void QueueNonPatternForRewriting(Expression* expr);
+  V8_INLINE void QueueNonPatternForRewriting(Expression* expr, bool* ok);
 
   void SetFunctionNameFromPropertyName(ObjectLiteralProperty* property,
                                        const AstRawString* name);
@@ -670,6 +670,8 @@ class ParserTraits {
   V8_INLINE void RewriteNonPattern(Type::ExpressionClassifier* classifier,
                                    bool* ok);
 
+  V8_INLINE ZoneList<typename Type::ExpressionClassifier::Error>*
+      GetReportedErrorList() const;
   V8_INLINE Zone* zone() const;
 
   V8_INLINE ZoneList<Expression*>* GetNonPatternList() const;
@@ -681,10 +683,10 @@ class ParserTraits {
   Parser* parser_;
 
   void BuildIteratorClose(ZoneList<Statement*>* statements, Variable* iterator,
-                          Maybe<Variable*> input, Variable* output);
-  void BuildIteratorCloseForCompletion(
-      ZoneList<Statement*>* statements, Variable* iterator,
-      Variable* body_threw);
+                          Variable* input, Variable* output);
+  void BuildIteratorCloseForCompletion(ZoneList<Statement*>* statements,
+                                       Variable* iterator,
+                                       Expression* completion);
   Statement* CheckCallable(Variable* var, Expression* error, int pos);
 };
 
@@ -780,18 +782,15 @@ class Parser : public ParserBase<ParserTraits> {
                                    bool* ok);
   Statement* ParseFunctionDeclaration(bool* ok);
   Statement* ParseHoistableDeclaration(ZoneList<const AstRawString*>* names,
-                                      bool* ok);
+                                       bool default_export, bool* ok);
   Statement* ParseHoistableDeclaration(int pos, ParseFunctionFlags flags,
                                        ZoneList<const AstRawString*>* names,
-                                       bool* ok);
+                                       bool default_export, bool* ok);
   Statement* ParseAsyncFunctionDeclaration(ZoneList<const AstRawString*>* names,
-                                           bool* ok);
+                                           bool default_export, bool* ok);
   Expression* ParseAsyncFunctionExpression(bool* ok);
-  Statement* ParseFunctionDeclaration(int pos, bool is_generator,
-                                      ZoneList<const AstRawString*>* names,
-                                      bool* ok);
   Statement* ParseClassDeclaration(ZoneList<const AstRawString*>* names,
-                                   bool* ok);
+                                   bool default_export, bool* ok);
   Statement* ParseNativeDeclaration(bool* ok);
   Block* ParseBlock(ZoneList<const AstRawString*>* labels, bool* ok);
   Block* ParseBlock(ZoneList<const AstRawString*>* labels,
@@ -897,6 +896,8 @@ class Parser : public ParserBase<ParserTraits> {
     PatternContext SetAssignmentContextIfNeeded(Expression* node);
     PatternContext SetInitializerContextIfNeeded(Expression* node);
 
+    void RewriteParameterScopes(Expression* expr);
+
     Variable* CreateTempVar(Expression* value = nullptr);
 
     AstNodeFactory* factory() const { return parser_->factory(); }
@@ -967,7 +968,7 @@ class Parser : public ParserBase<ParserTraits> {
                                   int each_keyword_pos);
   void InitializeForOfStatement(ForOfStatement* stmt, Expression* each,
                                 Expression* iterable, Statement* body,
-                                int next_result_pos = RelocInfo::kNoPosition);
+                                int next_result_pos = kNoSourcePosition);
   Statement* DesugarLexicalBindingsInForStatement(
       Scope* inner_scope, VariableMode mode,
       ZoneList<const AstRawString*>* names, ForStatement* loop, Statement* init,
@@ -1015,7 +1016,9 @@ class Parser : public ParserBase<ParserTraits> {
   void InsertShadowingVarBindingInitializers(Block* block);
 
   // Implement sloppy block-scoped functions, ES2015 Annex B 3.3
-  void InsertSloppyBlockFunctionVarBindings(Scope* scope, bool* ok);
+  void InsertSloppyBlockFunctionVarBindings(Scope* scope,
+                                            Scope* complex_params_scope,
+                                            bool* ok);
 
   // Parser support
   VariableProxy* NewUnresolved(const AstRawString* name, VariableMode mode);

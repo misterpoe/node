@@ -408,6 +408,7 @@ class MarkCompactCollector {
 
     enum SweepingMode { SWEEP_ONLY, SWEEP_AND_VISIT_LIVE_OBJECTS };
     enum SkipListRebuildingMode { REBUILD_SKIP_LIST, IGNORE_SKIP_LIST };
+    enum FreeListRebuildingMode { REBUILD_FREE_LIST, IGNORE_FREE_LIST };
     enum FreeSpaceTreatmentMode { IGNORE_FREE_SPACE, ZAP_FREE_SPACE };
     enum SweepingParallelism { SWEEP_ON_MAIN_THREAD, SWEEP_IN_PARALLEL };
 
@@ -416,6 +417,7 @@ class MarkCompactCollector {
 
     template <SweepingMode sweeping_mode, SweepingParallelism parallelism,
               SkipListRebuildingMode skip_list_mode,
+              FreeListRebuildingMode free_list_mode,
               FreeSpaceTreatmentMode free_space_mode>
     static int RawSweep(PagedSpace* space, Page* p, ObjectVisitor* v);
 
@@ -434,11 +436,12 @@ class MarkCompactCollector {
 
     int ParallelSweepSpace(AllocationSpace identity, int required_freed_bytes,
                            int max_pages = 0);
-    int ParallelSweepPage(Page* page, PagedSpace* space);
+    int ParallelSweepPage(Page* page, AllocationSpace identity);
 
     void StartSweeping();
     void StartSweepingHelper(AllocationSpace space_to_start);
     void EnsureCompleted();
+    void EnsureNewSpaceCompleted();
     bool IsSweepingCompleted();
     void SweepOrWaitUntilSweepingCompleted(Page* page);
 
@@ -467,7 +470,7 @@ class MarkCompactCollector {
     SweepingList sweeping_list_[kAllocationSpaces];
     bool sweeping_in_progress_;
     bool late_pages_;
-    int num_sweeping_tasks_;
+    base::AtomicNumber<intptr_t> num_sweeping_tasks_;
   };
 
   enum IterationMode {
@@ -613,9 +616,7 @@ class MarkCompactCollector {
 
   Sweeper& sweeper() { return sweeper_; }
 
-  std::vector<std::pair<void*, void*>>& wrappers_to_trace() {
-    return wrappers_to_trace_;
-  }
+  void RegisterWrappersWithEmbedderHeapTracer();
 
   void SetEmbedderHeapTracer(EmbedderHeapTracer* tracer);
 
@@ -643,27 +644,6 @@ class MarkCompactCollector {
   void ComputeEvacuationHeuristics(int area_size,
                                    int* target_fragmentation_percent,
                                    int* max_evacuated_bytes);
-
-#ifdef DEBUG
-  enum CollectorState {
-    IDLE,
-    PREPARE_GC,
-    MARK_LIVE_OBJECTS,
-    SWEEP_SPACES,
-    ENCODE_FORWARDING_ADDRESSES,
-    UPDATE_POINTERS,
-    RELOCATE_OBJECTS
-  };
-
-  // The current stage of the collector.
-  CollectorState state_;
-#endif
-
-  MarkingParity marking_parity_;
-
-  bool was_marked_incrementally_;
-
-  bool evacuation_;
 
   // Finishes GC, performs heap verification if enabled.
   void Finish();
@@ -814,7 +794,6 @@ class MarkCompactCollector {
   void SweepSpaces();
 
   void EvacuateNewSpacePrologue();
-  void EvacuateNewSpaceEpilogue();
 
   void EvacuatePagesInParallel();
 
@@ -850,6 +829,38 @@ class MarkCompactCollector {
 #endif
 
   Heap* heap_;
+
+  base::Semaphore page_parallel_job_semaphore_;
+
+#ifdef DEBUG
+  enum CollectorState {
+    IDLE,
+    PREPARE_GC,
+    MARK_LIVE_OBJECTS,
+    SWEEP_SPACES,
+    ENCODE_FORWARDING_ADDRESSES,
+    UPDATE_POINTERS,
+    RELOCATE_OBJECTS
+  };
+
+  // The current stage of the collector.
+  CollectorState state_;
+#endif
+
+  MarkingParity marking_parity_;
+
+  bool was_marked_incrementally_;
+
+  bool evacuation_;
+
+  // True if we are collecting slots to perform evacuation from evacuation
+  // candidates.
+  bool compacting_;
+
+  bool black_allocation_;
+
+  bool have_code_to_deoptimize_;
+
   base::VirtualMemory* marking_deque_memory_;
   size_t marking_deque_memory_committed_;
   MarkingDeque marking_deque_;
@@ -859,16 +870,8 @@ class MarkCompactCollector {
 
   EmbedderHeapTracer* embedder_heap_tracer_;
 
-  bool have_code_to_deoptimize_;
-
   List<Page*> evacuation_candidates_;
   List<Page*> newspace_evacuation_candidates_;
-
-  // True if we are collecting slots to perform evacuation from evacuation
-  // candidates.
-  bool compacting_;
-
-  bool black_allocation_;
 
   Sweeper sweeper_;
 

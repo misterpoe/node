@@ -1091,6 +1091,11 @@ UnresolvedFunctionMirror.prototype.name = function() {
 };
 
 
+UnresolvedFunctionMirror.prototype.debugName = function() {
+  return this.value_;
+};
+
+
 UnresolvedFunctionMirror.prototype.inferredName = function() {
   return UNDEFINED;
 };
@@ -1620,13 +1625,14 @@ InternalPropertyMirror.prototype.value = function() {
 var kFrameDetailsFrameIdIndex = 0;
 var kFrameDetailsReceiverIndex = 1;
 var kFrameDetailsFunctionIndex = 2;
-var kFrameDetailsArgumentCountIndex = 3;
-var kFrameDetailsLocalCountIndex = 4;
-var kFrameDetailsSourcePositionIndex = 5;
-var kFrameDetailsConstructCallIndex = 6;
-var kFrameDetailsAtReturnIndex = 7;
-var kFrameDetailsFlagsIndex = 8;
-var kFrameDetailsFirstDynamicIndex = 9;
+var kFrameDetailsScriptIndex = 3;
+var kFrameDetailsArgumentCountIndex = 4;
+var kFrameDetailsLocalCountIndex = 5;
+var kFrameDetailsSourcePositionIndex = 6;
+var kFrameDetailsConstructCallIndex = 7;
+var kFrameDetailsAtReturnIndex = 8;
+var kFrameDetailsFlagsIndex = 9;
+var kFrameDetailsFirstDynamicIndex = 10;
 
 var kFrameDetailsNameIndex = 0;
 var kFrameDetailsValueIndex = 1;
@@ -1643,12 +1649,13 @@ var kFrameDetailsFlagInlinedFrameIndexMask = 7 << 2;
  *     0: Id
  *     1: Receiver
  *     2: Function
- *     3: Argument count
- *     4: Local count
- *     5: Source position
- *     6: Construct call
- *     7: Is at return
- *     8: Flags (debugger frame, optimized frame, inlined frame index)
+ *     3: Script
+ *     4: Argument count
+ *     5: Local count
+ *     6: Source position
+ *     7: Construct call
+ *     8: Is at return
+ *     9: Flags (debugger frame, optimized frame, inlined frame index)
  *     Arguments name, value
  *     Locals name, value
  *     Return value if any
@@ -1677,6 +1684,12 @@ FrameDetails.prototype.receiver = function() {
 FrameDetails.prototype.func = function() {
   %CheckExecutionState(this.break_id_);
   return this.details_[kFrameDetailsFunctionIndex];
+};
+
+
+FrameDetails.prototype.script = function() {
+  %CheckExecutionState(this.break_id_);
+  return this.details_[kFrameDetailsScriptIndex];
 };
 
 
@@ -1950,7 +1963,7 @@ FrameMirror.prototype.sourceColumn = function() {
 FrameMirror.prototype.sourceLineText = function() {
   var location = this.sourceLocation();
   if (location) {
-    return location.sourceText();
+    return location.sourceText;
   }
 };
 
@@ -2356,18 +2369,13 @@ ScriptMirror.prototype.compilationType = function() {
 
 
 ScriptMirror.prototype.lineCount = function() {
-  return this.script_.lineCount();
+  return %ScriptLineCount(this.script_);
 };
 
 
 ScriptMirror.prototype.locationFromPosition = function(
     position, include_resource_offset) {
   return this.script_.locationFromPosition(position, include_resource_offset);
-};
-
-
-ScriptMirror.prototype.sourceSlice = function (opt_from_line, opt_to_line) {
-  return this.script_.sourceSlice(opt_from_line, opt_to_line);
 };
 
 

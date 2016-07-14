@@ -111,7 +111,9 @@ class StackHandler BASE_EMBEDDED {
   V(STUB_FAILURE_TRAMPOLINE, StubFailureTrampolineFrame) \
   V(INTERNAL, InternalFrame)                             \
   V(CONSTRUCT, ConstructFrame)                           \
-  V(ARGUMENTS_ADAPTOR, ArgumentsAdaptorFrame)
+  V(ARGUMENTS_ADAPTOR, ArgumentsAdaptorFrame)            \
+  V(BUILTIN, BuiltinFrame)                               \
+  V(BUILTIN_EXIT, BuiltinExitFrame)
 
 // Every pointer in a frame has a slot id. On 32-bit platforms, doubles consume
 // two slots.
@@ -280,6 +282,14 @@ class ArgumentsAdaptorFrameConstants : public TypedFrameConstants {
   DEFINE_TYPED_FRAME_SIZES(2);
 };
 
+class BuiltinFrameConstants : public TypedFrameConstants {
+ public:
+  // FP-relative.
+  static const int kFunctionOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(0);
+  static const int kLengthOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(1);
+  DEFINE_TYPED_FRAME_SIZES(2);
+};
+
 class InternalFrameConstants : public TypedFrameConstants {
  public:
   // FP-relative.
@@ -314,6 +324,12 @@ class StubFailureTrampolineFrameConstants : public InternalFrameConstants {
   DEFINE_TYPED_FRAME_SIZES(3);
 };
 
+// Behaves like an exit frame but with target and new target args.
+class BuiltinExitFrameConstants : public CommonFrameConstants {
+ public:
+  static const int kNewTargetOffset = kCallerPCOffset + 1 * kPointerSize;
+  static const int kTargetOffset = kNewTargetOffset + 1 * kPointerSize;
+};
 
 class InterpreterFrameConstants : public AllStatic {
  public:
@@ -325,6 +341,8 @@ class InterpreterFrameConstants : public AllStatic {
 
   // FP-relative.
   static const int kLastParamFromFp = StandardFrameConstants::kCallerSPOffset;
+  static const int kCallerPCOffsetFromFp =
+      StandardFrameConstants::kCallerPCOffset;
   static const int kNewTargetFromFp =
       -StandardFrameConstants::kFixedFrameSizeFromFp - 1 * kPointerSize;
   static const int kBytecodeArrayFromFp =
@@ -409,17 +427,19 @@ class StackFrame BASE_EMBEDDED {
   bool is_wasm_to_js() const { return type() == WASM_TO_JS; }
   bool is_js_to_wasm() const { return type() == JS_TO_WASM; }
   bool is_arguments_adaptor() const { return type() == ARGUMENTS_ADAPTOR; }
+  bool is_builtin() const { return type() == BUILTIN; }
   bool is_internal() const { return type() == INTERNAL; }
   bool is_stub_failure_trampoline() const {
     return type() == STUB_FAILURE_TRAMPOLINE;
   }
   bool is_construct() const { return type() == CONSTRUCT; }
+  bool is_builtin_exit() const { return type() == BUILTIN_EXIT; }
   virtual bool is_standard() const { return false; }
 
   bool is_java_script() const {
     Type type = this->type();
     return (type == JAVA_SCRIPT) || (type == OPTIMIZED) ||
-           (type == INTERPRETED);
+           (type == INTERPRETED) || (type == BUILTIN);
   }
 
   // Accessors.
@@ -618,6 +638,7 @@ class ExitFrame: public StackFrame {
   // iterator and the frames following entry frames.
   static Type GetStateForFramePointer(Address fp, State* state);
   static Address ComputeStackPointer(Address fp);
+  static StackFrame::Type ComputeFrameType(Address fp);
   static void FillState(Address fp, Address sp, State* state);
 
  protected:
@@ -627,6 +648,29 @@ class ExitFrame: public StackFrame {
 
  private:
   void ComputeCallerState(State* state) const override;
+
+  friend class StackFrameIteratorBase;
+};
+
+// Builtin exit frames are a special case of exit frames, which are used
+// whenever C++ builtins (e.g., Math.acos) are called. Their main purpose is
+// to allow such builtins to appear in stack traces.
+class BuiltinExitFrame : public ExitFrame {
+ public:
+  Type type() const override { return BUILTIN_EXIT; }
+
+  static BuiltinExitFrame* cast(StackFrame* frame) {
+    DCHECK(frame->is_builtin_exit());
+    return static_cast<BuiltinExitFrame*>(frame);
+  }
+
+  virtual JSFunction* function() const;
+
+ protected:
+  inline explicit BuiltinExitFrame(StackFrameIteratorBase* iterator);
+
+ private:
+  inline Object* function_slot_object() const;
 
   friend class StackFrameIteratorBase;
 };
@@ -670,14 +714,23 @@ class StandardFrame : public StackFrame {
   bool is_standard() const override { return true; }
 
   // Accessors.
-  inline Object* context() const;
+  virtual Object* receiver() const;
+  virtual Script* script() const;
+  virtual Object* context() const;
 
   // Access the expressions in the stack frame including locals.
   inline Object* GetExpression(int index) const;
   inline void SetExpression(int index, Object* value);
   int ComputeExpressionsCount() const;
 
+  // Access the parameters.
+  virtual Object* GetParameter(int index) const;
+  virtual int ComputeParametersCount() const;
+
   void SetCallerFp(Address caller_fp) override;
+
+  // Check if this frame is a constructor frame invoked through 'new'.
+  virtual bool IsConstructor() const;
 
   static StandardFrame* cast(StackFrame* frame) {
     DCHECK(frame->is_standard());
@@ -735,16 +788,16 @@ class JavaScriptFrame : public StandardFrame {
 
   // Accessors.
   virtual JSFunction* function() const;
-  virtual Object* receiver() const;
+  Object* receiver() const override;
+  Object* context() const override;
+  Script* script() const override;
 
   inline void set_receiver(Object* value);
 
   // Access the parameters.
   inline Address GetParameterSlot(int index) const;
-  inline Object* GetParameter(int index) const;
-  inline int ComputeParametersCount() const {
-    return GetNumberOfIncomingArguments();
-  }
+  Object* GetParameter(int index) const override;
+  int ComputeParametersCount() const override;
 
   // Access the operand stack.
   inline Address GetOperandSlot(int index) const;
@@ -758,7 +811,7 @@ class JavaScriptFrame : public StandardFrame {
   void SetParameterValue(int index, Object* value) const;
 
   // Check if this frame is a constructor frame invoked through 'new'.
-  bool IsConstructor() const;
+  bool IsConstructor() const override;
 
   // Determines whether this frame includes inlined activations. To get details
   // about the inlined frames use {GetFunctions} and {Summarize}.
@@ -948,7 +1001,28 @@ class ArgumentsAdaptorFrame: public JavaScriptFrame {
 
   int GetNumberOfIncomingArguments() const override;
 
-  Address GetCallerStackPointer() const override;
+ private:
+  friend class StackFrameIteratorBase;
+};
+
+// Builtin frames are built for builtins with JavaScript linkage, such as
+// various standard library functions (i.e. Math.asin, Math.floor, etc.).
+class BuiltinFrame final : public JavaScriptFrame {
+ public:
+  Type type() const final { return BUILTIN; }
+
+  static BuiltinFrame* cast(StackFrame* frame) {
+    DCHECK(frame->is_builtin());
+    return static_cast<BuiltinFrame*>(frame);
+  }
+
+  // Printing support.
+  void Print(StringStream* accumulator, PrintMode mode, int index) const final;
+
+ protected:
+  inline explicit BuiltinFrame(StackFrameIteratorBase* iterator);
+
+  int GetNumberOfIncomingArguments() const final;
 
  private:
   friend class StackFrameIteratorBase;
@@ -968,10 +1042,10 @@ class WasmFrame : public StandardFrame {
   // Determine the code for the frame.
   Code* unchecked_code() const override;
 
-  Object* wasm_obj();
-  uint32_t function_index();
-
-  Object* function_name();
+  // Accessors.
+  Object* wasm_obj() const;
+  uint32_t function_index() const;
+  Script* script() const override;
 
   static WasmFrame* cast(StackFrame* frame) {
     DCHECK(frame->is_wasm());
@@ -1161,6 +1235,7 @@ class JavaScriptFrameIterator BASE_EMBEDDED {
 class StackTraceFrameIterator BASE_EMBEDDED {
  public:
   explicit StackTraceFrameIterator(Isolate* isolate);
+  StackTraceFrameIterator(Isolate* isolate, StackFrame::Id id);
   bool done() const { return iterator_.done(); }
   void Advance();
 
@@ -1170,6 +1245,11 @@ class StackTraceFrameIterator BASE_EMBEDDED {
   inline bool is_wasm() const;
   inline JavaScriptFrame* javascript_frame() const;
   inline WasmFrame* wasm_frame() const;
+
+  // Advance to the frame holding the arguments for the current
+  // frame. This only affects the current frame if it is a javascript frame and
+  // has adapted arguments.
+  void AdvanceToArgumentsFrame();
 
  private:
   StackFrameIterator iterator_;

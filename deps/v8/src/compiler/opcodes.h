@@ -47,7 +47,7 @@
   V(Select)              \
   V(Phi)                 \
   V(EffectPhi)           \
-  V(Guard)               \
+  V(Checkpoint)          \
   V(BeginRegion)         \
   V(FinishRegion)        \
   V(FrameState)          \
@@ -137,21 +137,22 @@
   V(JSCreateCatchContext)     \
   V(JSCreateWithContext)      \
   V(JSCreateBlockContext)     \
-  V(JSCreateModuleContext)    \
   V(JSCreateScriptContext)
 
-#define JS_OTHER_OP_LIST(V) \
-  V(JSCallConstruct)        \
-  V(JSCallFunction)         \
-  V(JSCallRuntime)          \
-  V(JSConvertReceiver)      \
-  V(JSForInDone)            \
-  V(JSForInNext)            \
-  V(JSForInPrepare)         \
-  V(JSForInStep)            \
-  V(JSLoadMessage)          \
-  V(JSStoreMessage)         \
-  V(JSYield)                \
+#define JS_OTHER_OP_LIST(V)         \
+  V(JSCallConstruct)                \
+  V(JSCallFunction)                 \
+  V(JSCallRuntime)                  \
+  V(JSConvertReceiver)              \
+  V(JSForInDone)                    \
+  V(JSForInNext)                    \
+  V(JSForInPrepare)                 \
+  V(JSForInStep)                    \
+  V(JSLoadMessage)                  \
+  V(JSStoreMessage)                 \
+  V(JSGeneratorStore)               \
+  V(JSGeneratorRestoreContinuation) \
+  V(JSGeneratorRestoreRegister)     \
   V(JSStackCheck)
 
 #define JS_OP_LIST(V)     \
@@ -162,6 +163,28 @@
   JS_OTHER_OP_LIST(V)
 
 // Opcodes for VirtuaMachine-level operators.
+#define SIMPLIFIED_CHANGE_OP_LIST(V) \
+  V(ChangeTaggedSignedToInt32)       \
+  V(ChangeTaggedToInt32)             \
+  V(ChangeTaggedToUint32)            \
+  V(ChangeTaggedToFloat64)           \
+  V(ChangeInt31ToTaggedSigned)       \
+  V(ChangeInt32ToTagged)             \
+  V(ChangeUint32ToTagged)            \
+  V(ChangeFloat64ToTagged)           \
+  V(ChangeTaggedToBit)               \
+  V(ChangeBitToTagged)               \
+  V(TruncateTaggedToWord32)          \
+  V(TruncateTaggedToFloat64)
+
+#define SIMPLIFIED_CHECKED_OP_LIST(V) \
+  V(CheckedInt32Add)                  \
+  V(CheckedInt32Sub)                  \
+  V(CheckedUint32ToInt32)             \
+  V(CheckedFloat64ToInt32)            \
+  V(CheckedTaggedToInt32)             \
+  V(CheckedTaggedToFloat64)
+
 #define SIMPLIFIED_COMPARE_BINOP_LIST(V) \
   V(NumberEqual)                         \
   V(NumberLessThan)                      \
@@ -171,55 +194,93 @@
   V(StringLessThan)                      \
   V(StringLessThanOrEqual)
 
-#define SIMPLIFIED_OP_LIST(V)      \
-  SIMPLIFIED_COMPARE_BINOP_LIST(V) \
-  V(BooleanNot)                    \
-  V(BooleanToNumber)               \
-  V(NumberAdd)                     \
-  V(NumberSubtract)                \
-  V(NumberMultiply)                \
-  V(NumberDivide)                  \
-  V(NumberModulus)                 \
-  V(NumberBitwiseOr)               \
-  V(NumberBitwiseXor)              \
-  V(NumberBitwiseAnd)              \
-  V(NumberShiftLeft)               \
-  V(NumberShiftRight)              \
-  V(NumberShiftRightLogical)       \
-  V(NumberImul)                    \
-  V(NumberClz32)                   \
-  V(NumberCeil)                    \
-  V(NumberFloor)                   \
-  V(NumberRound)                   \
-  V(NumberTrunc)                   \
-  V(NumberToInt32)                 \
-  V(NumberToUint32)                \
-  V(NumberIsHoleNaN)               \
-  V(StringToNumber)                \
-  V(ChangeTaggedSignedToInt32)     \
-  V(ChangeTaggedToInt32)           \
-  V(ChangeTaggedToUint32)          \
-  V(ChangeTaggedToFloat64)         \
-  V(ChangeInt31ToTaggedSigned)     \
-  V(ChangeInt32ToTagged)           \
-  V(ChangeUint32ToTagged)          \
-  V(ChangeFloat64ToTagged)         \
-  V(ChangeTaggedToBit)             \
-  V(ChangeBitToTagged)             \
-  V(TruncateTaggedToWord32)        \
-  V(Allocate)                      \
-  V(LoadField)                     \
-  V(LoadBuffer)                    \
-  V(LoadElement)                   \
-  V(StoreField)                    \
-  V(StoreBuffer)                   \
-  V(StoreElement)                  \
-  V(ObjectIsCallable)              \
-  V(ObjectIsNumber)                \
-  V(ObjectIsReceiver)              \
-  V(ObjectIsSmi)                   \
-  V(ObjectIsString)                \
+#define SIMPLIFIED_OTHER_OP_LIST(V)   \
+  V(PlainPrimitiveToNumber)           \
+  V(PlainPrimitiveToWord32)           \
+  V(PlainPrimitiveToFloat64)          \
+  V(BooleanNot)                       \
+  V(BooleanToNumber)                  \
+  V(SpeculativeNumberAdd)             \
+  V(SpeculativeNumberSubtract)        \
+  V(SpeculativeNumberMultiply)        \
+  V(SpeculativeNumberDivide)          \
+  V(SpeculativeNumberModulus)         \
+  V(SpeculativeNumberEqual)           \
+  V(SpeculativeNumberLessThan)        \
+  V(SpeculativeNumberLessThanOrEqual) \
+  V(NumberAdd)                        \
+  V(NumberSubtract)                   \
+  V(NumberMultiply)                   \
+  V(NumberDivide)                     \
+  V(NumberModulus)                    \
+  V(NumberBitwiseOr)                  \
+  V(NumberBitwiseXor)                 \
+  V(NumberBitwiseAnd)                 \
+  V(NumberShiftLeft)                  \
+  V(NumberShiftRight)                 \
+  V(NumberShiftRightLogical)          \
+  V(NumberImul)                       \
+  V(NumberAbs)                        \
+  V(NumberClz32)                      \
+  V(NumberCeil)                       \
+  V(NumberCos)                        \
+  V(NumberCosh)                       \
+  V(NumberFloor)                      \
+  V(NumberFround)                     \
+  V(NumberAcos)                       \
+  V(NumberAcosh)                      \
+  V(NumberAsin)                       \
+  V(NumberAsinh)                      \
+  V(NumberAtan)                       \
+  V(NumberAtanh)                      \
+  V(NumberAtan2)                      \
+  V(NumberExp)                        \
+  V(NumberExpm1)                      \
+  V(NumberLog)                        \
+  V(NumberLog1p)                      \
+  V(NumberLog2)                       \
+  V(NumberLog10)                      \
+  V(NumberCbrt)                       \
+  V(NumberPow)                        \
+  V(NumberRound)                      \
+  V(NumberSign)                       \
+  V(NumberSin)                        \
+  V(NumberSinh)                       \
+  V(NumberSqrt)                       \
+  V(NumberTan)                        \
+  V(NumberTanh)                       \
+  V(NumberTrunc)                      \
+  V(NumberToInt32)                    \
+  V(NumberToUint32)                   \
+  V(NumberSilenceNaN)                 \
+  V(StringFromCharCode)               \
+  V(StringToNumber)                   \
+  V(CheckBounds)                      \
+  V(CheckIf)                          \
+  V(CheckNumber)                      \
+  V(CheckTaggedPointer)               \
+  V(CheckTaggedSigned)                \
+  V(CheckFloat64Hole)                 \
+  V(CheckTaggedHole)                  \
+  V(Allocate)                         \
+  V(LoadField)                        \
+  V(LoadBuffer)                       \
+  V(LoadElement)                      \
+  V(StoreField)                       \
+  V(StoreBuffer)                      \
+  V(StoreElement)                     \
+  V(ObjectIsCallable)                 \
+  V(ObjectIsNumber)                   \
+  V(ObjectIsReceiver)                 \
+  V(ObjectIsSmi)                      \
+  V(ObjectIsString)                   \
   V(ObjectIsUndetectable)
+
+#define SIMPLIFIED_OP_LIST(V)      \
+  SIMPLIFIED_CHANGE_OP_LIST(V)     \
+  SIMPLIFIED_CHECKED_OP_LIST(V)    \
+  SIMPLIFIED_COMPARE_BINOP_LIST(V) \
+  SIMPLIFIED_OTHER_OP_LIST(V)
 
 // Opcodes for Machine-level operators.
 #define MACHINE_COMPARE_BINOP_LIST(V) \
@@ -242,6 +303,8 @@
 
 #define MACHINE_OP_LIST(V)      \
   MACHINE_COMPARE_BINOP_LIST(V) \
+  V(DebugBreak)                 \
+  V(Comment)                    \
   V(Load)                       \
   V(Store)                      \
   V(StackSlot)                  \
@@ -292,6 +355,7 @@
   V(ChangeFloat32ToFloat64)     \
   V(ChangeFloat64ToInt32)       \
   V(ChangeFloat64ToUint32)      \
+  V(Float64SilenceNaN)          \
   V(TruncateFloat64ToUint32)    \
   V(TruncateFloat32ToInt32)     \
   V(TruncateFloat32ToUint32)    \
@@ -319,6 +383,7 @@
   V(Float32Add)                 \
   V(Float32Sub)                 \
   V(Float32SubPreserveNan)      \
+  V(Float32Neg)                 \
   V(Float32Mul)                 \
   V(Float32Div)                 \
   V(Float32Max)                 \
@@ -329,13 +394,35 @@
   V(Float64Add)                 \
   V(Float64Sub)                 \
   V(Float64SubPreserveNan)      \
+  V(Float64Neg)                 \
   V(Float64Mul)                 \
   V(Float64Div)                 \
   V(Float64Mod)                 \
   V(Float64Max)                 \
   V(Float64Min)                 \
   V(Float64Abs)                 \
+  V(Float64Acos)                \
+  V(Float64Acosh)               \
+  V(Float64Asin)                \
+  V(Float64Asinh)               \
+  V(Float64Atan)                \
+  V(Float64Atanh)               \
+  V(Float64Atan2)               \
+  V(Float64Cbrt)                \
+  V(Float64Cos)                 \
+  V(Float64Cosh)                \
+  V(Float64Exp)                 \
+  V(Float64Expm1)               \
+  V(Float64Log)                 \
+  V(Float64Log1p)               \
+  V(Float64Log10)               \
+  V(Float64Log2)                \
+  V(Float64Pow)                 \
+  V(Float64Sin)                 \
+  V(Float64Sinh)                \
   V(Float64Sqrt)                \
+  V(Float64Tan)                 \
+  V(Float64Tanh)                \
   V(Float64RoundDown)           \
   V(Float32RoundUp)             \
   V(Float64RoundUp)             \
@@ -509,19 +596,7 @@
   V(Bool8x16Swizzle)                        \
   V(Bool8x16Shuffle)                        \
   V(Bool8x16Equal)                          \
-  V(Bool8x16NotEqual)                       \
-  V(Simd128Load)                            \
-  V(Simd128Load1)                           \
-  V(Simd128Load2)                           \
-  V(Simd128Load3)                           \
-  V(Simd128Store)                           \
-  V(Simd128Store1)                          \
-  V(Simd128Store2)                          \
-  V(Simd128Store3)                          \
-  V(Simd128And)                             \
-  V(Simd128Or)                              \
-  V(Simd128Xor)                             \
-  V(Simd128Not)
+  V(Bool8x16NotEqual)
 
 #define MACHINE_SIMD_RETURN_NUM_OP_LIST(V) \
   V(Float32x4ExtractLane)                  \
@@ -540,10 +615,25 @@
   V(Bool8x16AnyTrue)                        \
   V(Bool8x16AllTrue)
 
+#define MACHINE_SIMD_GENERIC_OP_LIST(V) \
+  V(Simd128Load)                        \
+  V(Simd128Load1)                       \
+  V(Simd128Load2)                       \
+  V(Simd128Load3)                       \
+  V(Simd128Store)                       \
+  V(Simd128Store1)                      \
+  V(Simd128Store2)                      \
+  V(Simd128Store3)                      \
+  V(Simd128And)                         \
+  V(Simd128Or)                          \
+  V(Simd128Xor)                         \
+  V(Simd128Not)
+
 #define MACHINE_SIMD_OP_LIST(V)       \
   MACHINE_SIMD_RETURN_SIMD_OP_LIST(V) \
   MACHINE_SIMD_RETURN_NUM_OP_LIST(V)  \
-  MACHINE_SIMD_RETURN_BOOL_OP_LIST(V)
+  MACHINE_SIMD_RETURN_BOOL_OP_LIST(V) \
+  MACHINE_SIMD_GENERIC_OP_LIST(V)
 
 #define VALUE_OP_LIST(V)  \
   COMMON_OP_LIST(V)       \

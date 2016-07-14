@@ -5,6 +5,7 @@
 #include "src/compiler/code-generator.h"
 
 #include "src/address-map.h"
+#include "src/base/adapters.h"
 #include "src/compiler/code-generator-impl.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/pipeline.h"
@@ -52,7 +53,8 @@ CodeGenerator::CodeGenerator(Frame* frame, Linkage* linkage,
       last_lazy_deopt_pc_(0),
       jump_tables_(nullptr),
       ools_(nullptr),
-      osr_pc_offset_(-1) {
+      osr_pc_offset_(-1),
+      source_position_table_builder_(info->isolate(), zone()) {
   for (int i = 0; i < code->InstructionBlockCount(); ++i) {
     new (&labels_[i]) Label;
   }
@@ -71,10 +73,6 @@ Handle<Code> CodeGenerator::GenerateCode() {
   // MANUAL indicates that the scope shouldn't actually generate code to set up
   // the frame (that is done in AssemblePrologue).
   FrameScope frame_scope(masm(), StackFrame::MANUAL);
-
-  // Emit a code line info recording start event.
-  PositionsRecorder* recorder = masm()->positions_recorder();
-  LOG_CODE_EVENT(isolate(), CodeStartLinePosInfoRecordEvent(recorder));
 
   // Place function entry hook if requested to do so.
   if (linkage()->GetIncomingDescriptor()->IsJSFunctionCall()) {
@@ -209,6 +207,10 @@ Handle<Code> CodeGenerator::GenerateCode() {
   result->set_is_turbofanned(true);
   result->set_stack_slots(frame()->GetTotalFrameSlotCount());
   result->set_safepoint_table_offset(safepoints()->GetCodeOffset());
+  Handle<ByteArray> source_positions =
+      source_position_table_builder_.ToSourcePositionTable();
+  result->set_source_position_table(*source_positions);
+  source_position_table_builder_.EndJitLogging(AbstractCode::cast(*result));
 
   // Emit exception handler table.
   if (!handlers_.empty()) {
@@ -233,11 +235,6 @@ Handle<Code> CodeGenerator::GenerateCode() {
   if (info->ShouldEnsureSpaceForLazyDeopt()) {
     Deoptimizer::EnsureRelocSpaceForLazyDeoptimization(result);
   }
-
-  // Emit a code line info recording stop event.
-  void* line_info = recorder->DetachJITHandlerData();
-  LOG_CODE_EVENT(isolate(), CodeEndLinePosInfoRecordEvent(
-                                AbstractCode::cast(*result), line_info));
 
   return result;
 }
@@ -316,9 +313,95 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleBlock(
   return kSuccess;
 }
 
+bool CodeGenerator::IsValidPush(InstructionOperand source,
+                                CodeGenerator::PushTypeFlags push_type) {
+  if (source.IsImmediate() &&
+      ((push_type & CodeGenerator::kImmediatePush) != 0)) {
+    return true;
+  }
+  if ((source.IsRegister() || source.IsStackSlot()) &&
+      ((push_type & CodeGenerator::kScalarPush) != 0)) {
+    return true;
+  }
+  if ((source.IsFloatRegister() || source.IsFloatStackSlot()) &&
+      ((push_type & CodeGenerator::kFloat32Push) != 0)) {
+    return true;
+  }
+  if ((source.IsDoubleRegister() || source.IsFloatStackSlot()) &&
+      ((push_type & CodeGenerator::kFloat64Push) != 0)) {
+    return true;
+  }
+  return false;
+}
+
+void CodeGenerator::GetPushCompatibleMoves(Instruction* instr,
+                                           PushTypeFlags push_type,
+                                           ZoneVector<MoveOperands*>* pushes) {
+  pushes->clear();
+  for (int i = Instruction::FIRST_GAP_POSITION;
+       i <= Instruction::LAST_GAP_POSITION; ++i) {
+    Instruction::GapPosition inner_pos =
+        static_cast<Instruction::GapPosition>(i);
+    ParallelMove* parallel_move = instr->GetParallelMove(inner_pos);
+    if (parallel_move != nullptr) {
+      for (auto move : *parallel_move) {
+        InstructionOperand source = move->source();
+        InstructionOperand destination = move->destination();
+        int first_push_compatible_index =
+            V8_TARGET_ARCH_STORES_RETURN_ADDRESS_ON_STACK ? 1 : 0;
+        // If there are any moves from slots that will be overridden by pushes,
+        // then the full gap resolver must be used since optimization with
+        // pushes don't participate in the parallel move and might clobber
+        // values needed for the gap resolve.
+        if (source.IsStackSlot() &&
+            LocationOperand::cast(source).index() >=
+                first_push_compatible_index) {
+          pushes->clear();
+          return;
+        }
+        // TODO(danno): Right now, only consider moves from the FIRST gap for
+        // pushes. Theoretically, we could extract pushes for both gaps (there
+        // are cases where this happens), but the logic for that would also have
+        // to check to make sure that non-memory inputs to the pushes from the
+        // LAST gap don't get clobbered in the FIRST gap.
+        if (i == Instruction::FIRST_GAP_POSITION) {
+          if (destination.IsStackSlot() &&
+              LocationOperand::cast(destination).index() >=
+                  first_push_compatible_index) {
+            int index = LocationOperand::cast(destination).index();
+            if (IsValidPush(source, push_type)) {
+              if (index >= static_cast<int>(pushes->size())) {
+                pushes->resize(index + 1);
+              }
+              (*pushes)[index] = move;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // For now, only support a set of continuous pushes at the end of the list.
+  size_t push_count_upper_bound = pushes->size();
+  size_t push_begin = push_count_upper_bound;
+  for (auto move : base::Reversed(*pushes)) {
+    if (move == nullptr) break;
+    push_begin--;
+  }
+  size_t push_count = pushes->size() - push_begin;
+  std::copy(pushes->begin() + push_begin,
+            pushes->begin() + push_begin + push_count, pushes->begin());
+  pushes->resize(push_count);
+}
+
 CodeGenerator::CodeGenResult CodeGenerator::AssembleInstruction(
     Instruction* instr, const InstructionBlock* block) {
+  int first_unused_stack_slot;
+  bool adjust_stack =
+      GetSlotAboveSPBeforeTailCall(instr, &first_unused_stack_slot);
+  if (adjust_stack) AssembleTailCallBeforeGap(instr, first_unused_stack_slot);
   AssembleGaps(instr);
+  if (adjust_stack) AssembleTailCallAfterGap(instr, first_unused_stack_slot);
   DCHECK_IMPLIES(
       block->must_deconstruct_frame(),
       instr != code()->InstructionAt(block->last_instruction_index()) ||
@@ -398,11 +481,12 @@ void CodeGenerator::AssembleSourcePosition(Instruction* instr) {
   current_source_position_ = source_position;
   if (source_position.IsUnknown()) return;
   int code_pos = source_position.raw();
-  masm()->positions_recorder()->RecordPosition(code_pos);
-  masm()->positions_recorder()->WriteRecordedPositions();
+  source_position_table_builder_.AddPosition(masm()->pc_offset(), code_pos,
+                                             false);
   if (FLAG_code_comments) {
-    Vector<char> buffer = Vector<char>::New(256);
     CompilationInfo* info = this->info();
+    if (!info->parse_info()) return;
+    Vector<char> buffer = Vector<char>::New(256);
     int ln = Script::GetLineNumber(info->script(), code_pos);
     int cn = Script::GetColumnNumber(info->script(), code_pos);
     if (info->script()->name()->IsString()) {
@@ -417,6 +501,16 @@ void CodeGenerator::AssembleSourcePosition(Instruction* instr) {
   }
 }
 
+bool CodeGenerator::GetSlotAboveSPBeforeTailCall(Instruction* instr,
+                                                 int* slot) {
+  if (instr->IsTailCall()) {
+    InstructionOperandConverter g(this, instr);
+    *slot = g.InputInt32(instr->InputCount() - 1);
+    return true;
+  } else {
+    return false;
+  }
+}
 
 void CodeGenerator::AssembleGaps(Instruction* instr) {
   for (int i = Instruction::FIRST_GAP_POSITION;
@@ -716,8 +810,12 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
       CHECK(false);
     }
   } else if (op->IsFPStackSlot()) {
-    DCHECK(IsFloatingPoint(type.representation()));
-    translation->StoreDoubleStackSlot(LocationOperand::cast(op)->index());
+    if (type.representation() == MachineRepresentation::kFloat64) {
+      translation->StoreDoubleStackSlot(LocationOperand::cast(op)->index());
+    } else {
+      DCHECK_EQ(MachineRepresentation::kFloat32, type.representation());
+      translation->StoreFloatStackSlot(LocationOperand::cast(op)->index());
+    }
   } else if (op->IsRegister()) {
     InstructionOperandConverter converter(this, instr);
     if (type.representation() == MachineRepresentation::kBit) {
@@ -734,9 +832,13 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
       CHECK(false);
     }
   } else if (op->IsFPRegister()) {
-    DCHECK(IsFloatingPoint(type.representation()));
     InstructionOperandConverter converter(this, instr);
-    translation->StoreDoubleRegister(converter.ToDoubleRegister(op));
+    if (type.representation() == MachineRepresentation::kFloat64) {
+      translation->StoreDoubleRegister(converter.ToDoubleRegister(op));
+    } else {
+      DCHECK_EQ(MachineRepresentation::kFloat32, type.representation());
+      translation->StoreFloatRegister(converter.ToFloatRegister(op));
+    }
   } else if (op->IsImmediate()) {
     InstructionOperandConverter converter(this, instr);
     Constant constant = converter.ToConstant(op);
@@ -790,18 +892,6 @@ DeoptimizationExit* CodeGenerator::AddDeoptimizationExit(
   deoptimization_exits_.push_back(exit);
   return exit;
 }
-
-int CodeGenerator::TailCallFrameStackSlotDelta(int stack_param_delta) {
-  // Leave the PC on the stack on platforms that have that as part of their ABI
-  int pc_slots = V8_TARGET_ARCH_STORES_RETURN_ADDRESS_ON_STACK ? 1 : 0;
-  int sp_slot_delta = frame_access_state()->has_frame()
-                          ? (frame()->GetTotalFrameSlotCount() - pc_slots)
-                          : 0;
-  // Discard only slots that won't be used by new parameters.
-  sp_slot_delta += stack_param_delta;
-  return sp_slot_delta;
-}
-
 
 OutOfLineCode::OutOfLineCode(CodeGenerator* gen)
     : frame_(gen->frame()), masm_(gen->masm()), next_(gen->ools_) {

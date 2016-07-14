@@ -72,6 +72,8 @@ class Schedule;
   V(Float64Mul)                            \
   V(Float64Div)                            \
   V(Float64Mod)                            \
+  V(Float64Atan2)                          \
+  V(Float64Pow)                            \
   V(Float64InsertLowWord32)                \
   V(Float64InsertHighWord32)               \
   V(IntPtrAdd)                             \
@@ -106,13 +108,35 @@ class Schedule;
   V(Word64Ror)
 
 #define CODE_ASSEMBLER_UNARY_OP_LIST(V) \
+  V(Float64Abs)                         \
+  V(Float64Acos)                        \
+  V(Float64Acosh)                       \
+  V(Float64Asin)                        \
+  V(Float64Asinh)                       \
+  V(Float64Atan)                        \
+  V(Float64Atanh)                       \
+  V(Float64Cos)                         \
+  V(Float64Cosh)                        \
+  V(Float64Exp)                         \
+  V(Float64Expm1)                       \
+  V(Float64Log)                         \
+  V(Float64Log1p)                       \
+  V(Float64Log2)                        \
+  V(Float64Log10)                       \
+  V(Float64Cbrt)                        \
   V(Float64Neg)                         \
+  V(Float64Sin)                         \
+  V(Float64Sinh)                        \
   V(Float64Sqrt)                        \
+  V(Float64Tan)                         \
+  V(Float64Tanh)                        \
   V(Float64ExtractLowWord32)            \
   V(Float64ExtractHighWord32)           \
   V(BitcastWordToTagged)                \
+  V(TruncateFloat64ToFloat32)           \
   V(TruncateFloat64ToWord32)            \
   V(TruncateInt64ToInt32)               \
+  V(ChangeFloat32ToFloat64)             \
   V(ChangeFloat64ToUint32)              \
   V(ChangeInt32ToFloat64)               \
   V(ChangeInt32ToInt64)                 \
@@ -166,6 +190,7 @@ class CodeAssembler {
   class Variable {
    public:
     explicit Variable(CodeAssembler* assembler, MachineRepresentation rep);
+    ~Variable();
     void Bind(Node* value);
     Node* value() const;
     MachineRepresentation rep() const;
@@ -175,6 +200,7 @@ class CodeAssembler {
     friend class CodeAssembler;
     class Impl;
     Impl* impl_;
+    CodeAssembler* assembler_;
   };
 
   enum AllocationFlag : uint8_t {
@@ -190,7 +216,8 @@ class CodeAssembler {
   // ===========================================================================
 
   // Constants.
-  Node* Int32Constant(int value);
+  Node* Int32Constant(int32_t value);
+  Node* Int64Constant(int64_t value);
   Node* IntPtrConstant(intptr_t value);
   Node* NumberConstant(double value);
   Node* SmiConstant(Smi* value);
@@ -200,8 +227,15 @@ class CodeAssembler {
   Node* Float64Constant(double value);
   Node* NaNConstant();
 
+  bool ToInt32Constant(Node* node, int32_t& out_value);
+  bool ToInt64Constant(Node* node, int64_t& out_value);
+  bool ToIntPtrConstant(Node* node, intptr_t& out_value);
+
   Node* Parameter(int value);
   void Return(Node* value);
+
+  void DebugBreak();
+  void Comment(const char* format, ...);
 
   void Bind(Label* label);
   void Goto(Label* label);
@@ -211,6 +245,9 @@ class CodeAssembler {
 
   void Switch(Node* index, Label* default_label, int32_t* case_values,
               Label** case_labels, size_t case_count);
+
+  Node* Select(Node* condition, Node* true_value, Node* false_value,
+               MachineRepresentation rep = MachineRepresentation::kTagged);
 
   // Access to the frame pointer
   Node* LoadFramePointer();
@@ -288,6 +325,8 @@ class CodeAssembler {
                  Node* arg2, size_t result_size = 1);
   Node* CallStub(Callable const& callable, Node* context, Node* arg1,
                  Node* arg2, Node* arg3, size_t result_size = 1);
+  Node* CallStubN(Callable const& callable, Node** args,
+                  size_t result_size = 1);
 
   Node* CallStub(const CallInterfaceDescriptor& descriptor, Node* target,
                  Node* context, Node* arg1, size_t result_size = 1);
@@ -302,6 +341,8 @@ class CodeAssembler {
   Node* CallStub(const CallInterfaceDescriptor& descriptor, Node* target,
                  Node* context, Node* arg1, Node* arg2, Node* arg3, Node* arg4,
                  Node* arg5, size_t result_size = 1);
+  Node* CallStubN(const CallInterfaceDescriptor& descriptor, Node* target,
+                  Node** args, size_t result_size = 1);
 
   Node* TailCallStub(Callable const& callable, Node* context, Node* arg1,
                      Node* arg2, size_t result_size = 1);
@@ -313,9 +354,19 @@ class CodeAssembler {
   Node* TailCallStub(const CallInterfaceDescriptor& descriptor, Node* target,
                      Node* context, Node* arg1, Node* arg2, Node* arg3,
                      size_t result_size = 1);
+  Node* TailCallStub(const CallInterfaceDescriptor& descriptor, Node* target,
+                     Node* context, Node* arg1, Node* arg2, Node* arg3,
+                     Node* arg4, size_t result_size = 1);
 
   Node* TailCallBytecodeDispatch(const CallInterfaceDescriptor& descriptor,
                                  Node* code_target_address, Node** args);
+
+  Node* CallJS(Callable const& callable, Node* context, Node* function,
+               Node* receiver, size_t result_size = 1);
+  Node* CallJS(Callable const& callable, Node* context, Node* function,
+               Node* receiver, Node* arg1, size_t result_size = 1);
+  Node* CallJS(Callable const& callable, Node* context, Node* function,
+               Node* receiver, Node* arg1, Node* arg2, size_t result_size = 1);
 
   // Branching helpers.
   void BranchIf(Node* condition, Label* if_true, Label* if_false);
@@ -343,8 +394,6 @@ class CodeAssembler {
   virtual void CallEpilogue();
 
  private:
-  friend class CodeAssemblerTester;
-
   CodeAssembler(Isolate* isolate, Zone* zone, CallDescriptor* call_descriptor,
                 Code::Flags flags, const char* name);
 
@@ -355,7 +404,7 @@ class CodeAssembler {
   Code::Flags flags_;
   const char* name_;
   bool code_generated_;
-  ZoneVector<Variable::Impl*> variables_;
+  ZoneSet<Variable::Impl*> variables_;
 
   DISALLOW_COPY_AND_ASSIGN(CodeAssembler);
 };

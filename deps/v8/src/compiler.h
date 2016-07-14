@@ -48,7 +48,7 @@ class Compiler : public AllStatic {
   static bool CompileOptimized(Handle<JSFunction> function, ConcurrencyMode);
   static bool CompileDebugCode(Handle<JSFunction> function);
   static bool CompileDebugCode(Handle<SharedFunctionInfo> shared);
-  static bool CompileForLiveEdit(Handle<Script> script);
+  static MaybeHandle<JSArray> CompileForLiveEdit(Handle<Script> script);
 
   // Generate and install code from previously queued compilation job.
   static void FinalizeCompilationJob(CompilationJob* job);
@@ -146,6 +146,7 @@ class CompilationInfo final {
     kSourcePositionsEnabled = 1 << 15,
     kBailoutOnUninitialized = 1 << 16,
     kOptimizeFromBytecode = 1 << 17,
+    kTypeFeedbackEnabled = 1 << 18,
   };
 
   CompilationInfo(ParseInfo* parse_info, Handle<JSFunction> closure);
@@ -254,6 +255,12 @@ class CompilationInfo final {
 
   bool is_deoptimization_enabled() const {
     return GetFlag(kDeoptimizationEnabled);
+  }
+
+  void MarkAsTypeFeedbackEnabled() { SetFlag(kTypeFeedbackEnabled); }
+
+  bool is_type_feedback_enabled() const {
+    return GetFlag(kTypeFeedbackEnabled);
   }
 
   void MarkAsSourcePositionsEnabled() { SetFlag(kSourcePositionsEnabled); }

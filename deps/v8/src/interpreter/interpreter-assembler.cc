@@ -27,9 +27,11 @@ InterpreterAssembler::InterpreterAssembler(Isolate* isolate, Zone* zone,
                                            OperandScale operand_scale)
     : CodeStubAssembler(isolate, zone, InterpreterDispatchDescriptor(isolate),
                         Code::ComputeFlags(Code::BYTECODE_HANDLER),
-                        Bytecodes::ToString(bytecode), 0),
+                        Bytecodes::ToString(bytecode),
+                        Bytecodes::ReturnCount(bytecode)),
       bytecode_(bytecode),
       operand_scale_(operand_scale),
+      interpreted_frame_pointer_(this, MachineType::PointerRepresentation()),
       accumulator_(this, MachineRepresentation::kTagged),
       accumulator_use_(AccumulatorUse::kNone),
       made_call_(false),
@@ -47,6 +49,13 @@ InterpreterAssembler::~InterpreterAssembler() {
   // accumulator in the way described in the bytecode definitions in
   // bytecodes.h.
   DCHECK_EQ(accumulator_use_, Bytecodes::GetAccumulatorUse(bytecode_));
+}
+
+Node* InterpreterAssembler::GetInterpretedFramePointer() {
+  if (!interpreted_frame_pointer_.IsBound()) {
+    interpreted_frame_pointer_.Bind(LoadParentFramePointer());
+  }
+  return interpreted_frame_pointer_.value();
 }
 
 Node* InterpreterAssembler::GetAccumulatorUnchecked() {
@@ -92,7 +101,8 @@ Node* InterpreterAssembler::DispatchTableRawPointer() {
 }
 
 Node* InterpreterAssembler::RegisterLocation(Node* reg_index) {
-  return IntPtrAdd(LoadParentFramePointer(), RegisterFrameOffset(reg_index));
+  return IntPtrAdd(GetInterpretedFramePointer(),
+                   RegisterFrameOffset(reg_index));
 }
 
 Node* InterpreterAssembler::RegisterFrameOffset(Node* index) {
@@ -100,24 +110,24 @@ Node* InterpreterAssembler::RegisterFrameOffset(Node* index) {
 }
 
 Node* InterpreterAssembler::LoadRegister(Register reg) {
-  return Load(MachineType::AnyTagged(), LoadParentFramePointer(),
+  return Load(MachineType::AnyTagged(), GetInterpretedFramePointer(),
               IntPtrConstant(reg.ToOperand() << kPointerSizeLog2));
 }
 
 Node* InterpreterAssembler::LoadRegister(Node* reg_index) {
-  return Load(MachineType::AnyTagged(), LoadParentFramePointer(),
+  return Load(MachineType::AnyTagged(), GetInterpretedFramePointer(),
               RegisterFrameOffset(reg_index));
 }
 
 Node* InterpreterAssembler::StoreRegister(Node* value, Register reg) {
   return StoreNoWriteBarrier(
-      MachineRepresentation::kTagged, LoadParentFramePointer(),
+      MachineRepresentation::kTagged, GetInterpretedFramePointer(),
       IntPtrConstant(reg.ToOperand() << kPointerSizeLog2), value);
 }
 
 Node* InterpreterAssembler::StoreRegister(Node* value, Node* reg_index) {
   return StoreNoWriteBarrier(MachineRepresentation::kTagged,
-                             LoadParentFramePointer(),
+                             GetInterpretedFramePointer(),
                              RegisterFrameOffset(reg_index), value);
 }
 
@@ -362,6 +372,15 @@ Node* InterpreterAssembler::BytecodeOperandRuntimeId(int operand_index) {
   return BytecodeUnsignedOperand(operand_index, operand_size);
 }
 
+Node* InterpreterAssembler::BytecodeOperandIntrinsicId(int operand_index) {
+  DCHECK(OperandType::kIntrinsicId ==
+         Bytecodes::GetOperandType(bytecode_, operand_index));
+  OperandSize operand_size =
+      Bytecodes::GetOperandSize(bytecode_, operand_index, operand_scale());
+  DCHECK_EQ(operand_size, OperandSize::kByte);
+  return BytecodeUnsignedOperand(operand_index, operand_size);
+}
+
 Node* InterpreterAssembler::LoadConstantPoolEntry(Node* index) {
   Node* constant_pool = LoadObjectField(BytecodeArrayTaggedPointer(),
                                         BytecodeArray::kConstantPoolOffset);
@@ -393,10 +412,9 @@ Node* InterpreterAssembler::StoreContextSlot(Node* context, Node* slot_index,
 
 Node* InterpreterAssembler::LoadTypeFeedbackVector() {
   Node* function = LoadRegister(Register::function_closure());
-  Node* shared_info =
-      LoadObjectField(function, JSFunction::kSharedFunctionInfoOffset);
+  Node* literals = LoadObjectField(function, JSFunction::kLiteralsOffset);
   Node* vector =
-      LoadObjectField(shared_info, SharedFunctionInfo::kFeedbackVectorOffset);
+      LoadObjectField(literals, LiteralsArray::kFeedbackVectorOffset);
   return vector;
 }
 
@@ -600,7 +618,7 @@ void InterpreterAssembler::DispatchWide(OperandScale operand_scale) {
   DispatchToBytecodeHandlerEntry(target_code_entry, next_bytecode_offset);
 }
 
-compiler::Node* InterpreterAssembler::InterpreterReturn() {
+void InterpreterAssembler::UpdateInterruptBudgetOnReturn() {
   // TODO(rmcilroy): Investigate whether it is worth supporting self
   // optimization of primitive functions like FullCodegen.
 
@@ -610,10 +628,6 @@ compiler::Node* InterpreterAssembler::InterpreterReturn() {
       Int32Sub(Int32Constant(kHeapObjectTag + BytecodeArray::kHeaderSize),
                BytecodeOffset());
   UpdateInterruptBudget(profiling_weight);
-
-  Node* exit_trampoline_code_object =
-      HeapConstant(isolate()->builtins()->InterpreterExitTrampoline());
-  return DispatchToBytecodeHandler(exit_trampoline_code_object);
 }
 
 Node* InterpreterAssembler::StackCheckTriggeredInterrupt() {
@@ -723,7 +737,7 @@ Node* InterpreterAssembler::ExportRegisterFile(Node* array) {
         Int32Sub(Int32Constant(Register(0).ToOperand()), index);
     Node* value = LoadRegister(ChangeInt32ToIntPtr(reg_index));
 
-    StoreFixedArrayElementInt32Index(array, index, value);
+    StoreFixedArrayElement(array, index, value);
 
     var_index.Bind(Int32Add(index, Int32Constant(1)));
     Goto(&loop);
@@ -753,13 +767,13 @@ Node* InterpreterAssembler::ImportRegisterFile(Node* array) {
     Node* condition = Int32LessThan(index, RegisterCount());
     GotoUnless(condition, &done_loop);
 
-    Node* value = LoadFixedArrayElementInt32Index(array, index);
+    Node* value = LoadFixedArrayElement(array, index);
 
     Node* reg_index =
         Int32Sub(Int32Constant(Register(0).ToOperand()), index);
     StoreRegister(value, ChangeInt32ToIntPtr(reg_index));
 
-    StoreFixedArrayElementInt32Index(array, index, StaleRegisterConstant());
+    StoreFixedArrayElement(array, index, StaleRegisterConstant());
 
     var_index.Bind(Int32Add(index, Int32Constant(1)));
     Goto(&loop);

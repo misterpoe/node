@@ -150,8 +150,10 @@ const bool kRequiresCodeRange = true;
 // encoded immediate, the addresses have to be in range of 256MB aligned
 // region. Used only for large object space.
 const size_t kMaximalCodeRangeSize = 256 * MB;
+const size_t kCodeRangeAreaAlignment = 256 * MB;
 #else
 const size_t kMaximalCodeRangeSize = 512 * MB;
+const size_t kCodeRangeAreaAlignment = 4 * KB;  // OS page.
 #endif
 #if V8_OS_WIN
 const size_t kMinimumCodeRangeSize = 4 * MB;
@@ -170,13 +172,19 @@ const bool kRequiresCodeRange = true;
 const size_t kMaximalCodeRangeSize = 256 * MB;
 const size_t kMinimumCodeRangeSize = 3 * MB;
 const size_t kReservedCodeRangePages = 0;
+const size_t kCodeRangeAreaAlignment = 4 * KB;  // OS page.
 #else
 const bool kRequiresCodeRange = false;
 const size_t kMaximalCodeRangeSize = 0 * MB;
 const size_t kMinimumCodeRangeSize = 0 * MB;
 const size_t kReservedCodeRangePages = 0;
+const size_t kCodeRangeAreaAlignment = 4 * KB;  // OS page.
 #endif
 #endif
+
+// The external allocation limit should be below 256 MB on all architectures
+// to avoid that resource-constrained embedders run low on memory.
+const int kExternalAllocationLimit = 192 * 1024 * 1024;
 
 STATIC_ASSERT(kPointerSize == (1 << kPointerSizeLog2));
 
@@ -285,6 +293,8 @@ inline LanguageMode construct_language_mode(bool strict_bit) {
   return static_cast<LanguageMode>(strict_bit);
 }
 
+// This constant is used as an undefined value when passing source positions.
+const int kNoSourcePosition = -1;
 
 // Mask for the sign bit in a smi.
 const intptr_t kSmiSignMask = kIntptrSignBit;
@@ -452,6 +462,26 @@ enum AllocationAlignment {
   kSimd128Unaligned
 };
 
+// Possible outcomes for decisions.
+enum class Decision : uint8_t { kUnknown, kTrue, kFalse };
+
+inline size_t hash_value(Decision decision) {
+  return static_cast<uint8_t>(decision);
+}
+
+inline std::ostream& operator<<(std::ostream& os, Decision decision) {
+  switch (decision) {
+    case Decision::kUnknown:
+      return os << "Unknown";
+    case Decision::kTrue:
+      return os << "True";
+    case Decision::kFalse:
+      return os << "False";
+  }
+  UNREACHABLE();
+  return os;
+}
+
 // Supported write barrier modes.
 enum WriteBarrierKind : uint8_t {
   kNoWriteBarrier,
@@ -549,6 +579,8 @@ struct CodeDesc {
   int instr_size;
   int reloc_size;
   int constant_pool_size;
+  byte* unwinding_info;
+  int unwinding_info_size;
   Assembler* origin;
 };
 
@@ -580,8 +612,6 @@ enum InlineCacheState {
   MEGAMORPHIC,
   // A generic handler is installed and no extra typefeedback is recorded.
   GENERIC,
-  // Special state for debug break or step in prepare stubs.
-  DEBUG_STUB
 };
 
 enum CacheHolderFlag {
@@ -591,6 +621,7 @@ enum CacheHolderFlag {
   kCacheOnReceiver
 };
 
+enum WhereToStart { kStartAtReceiver, kStartAtPrototype };
 
 // The Store Buffer (GC).
 typedef enum {
@@ -603,18 +634,6 @@ typedef enum {
 typedef void (*StoreBufferCallback)(Heap* heap,
                                     MemoryChunk* page,
                                     StoreBufferEvent event);
-
-
-// Union used for fast testing of specific double values.
-union DoubleRepresentation {
-  double  value;
-  int64_t bits;
-  DoubleRepresentation(double x) { value = x; }
-  bool operator==(const DoubleRepresentation& other) const {
-    return bits == other.bits;
-  }
-};
-
 
 // Union used for customized checking of the IEEE double types
 // inlined within v8 runtime, rather than going to the underlying
@@ -640,6 +659,15 @@ union IeeeDoubleBigEndianArchType {
   } bits;
 };
 
+#if V8_TARGET_LITTLE_ENDIAN
+typedef IeeeDoubleLittleEndianArchType IeeeDoubleArchType;
+const int kIeeeDoubleMantissaWordOffset = 0;
+const int kIeeeDoubleExponentWordOffset = 4;
+#else
+typedef IeeeDoubleBigEndianArchType IeeeDoubleArchType;
+const int kIeeeDoubleMantissaWordOffset = 4;
+const int kIeeeDoubleExponentWordOffset = 0;
+#endif
 
 // AccessorCallback
 struct AccessorDescriptor {
@@ -693,7 +721,6 @@ enum CpuFeature {
   ARMv7,
   ARMv8,
   SUDIV,
-  MLS,
   UNALIGNED_ACCESSES,
   MOVW_MOVT_IMMEDIATE_LOADS,
   VFP32DREGS,
@@ -706,7 +733,6 @@ enum CpuFeature {
   MIPSr6,
   // ARM64
   ALWAYS_ALIGN_CSP,
-  COHERENT_CACHE,
   // PPC
   FPR_GPR_MOV,
   LWSYNC,
@@ -801,8 +827,14 @@ enum ScopeType {
 };
 
 // The mips architecture prior to revision 5 has inverted encoding for sNaN.
-#if (V8_TARGET_ARCH_MIPS && !defined(_MIPS_ARCH_MIPS32R6)) || \
-    (V8_TARGET_ARCH_MIPS64 && !defined(_MIPS_ARCH_MIPS64R6))
+// The x87 FPU convert the sNaN to qNaN automatically when loading sNaN from
+// memmory.
+// Use mips sNaN which is a not used qNaN in x87 port as sNaN to workaround this
+// issue
+// for some test cases.
+#if (V8_TARGET_ARCH_MIPS && !defined(_MIPS_ARCH_MIPS32R6)) ||   \
+    (V8_TARGET_ARCH_MIPS64 && !defined(_MIPS_ARCH_MIPS64R6)) || \
+    (V8_TARGET_ARCH_X87)
 const uint32_t kHoleNanUpper32 = 0xFFFF7FFF;
 const uint32_t kHoleNanLower32 = 0xFFFF7FFF;
 #else
@@ -1006,6 +1038,10 @@ inline bool IsGeneratorFunction(FunctionKind kind) {
 inline bool IsAsyncFunction(FunctionKind kind) {
   DCHECK(IsValidFunctionKind(kind));
   return kind & FunctionKind::kAsyncFunction;
+}
+
+inline bool IsResumableFunction(FunctionKind kind) {
+  return IsGeneratorFunction(kind) || IsAsyncFunction(kind);
 }
 
 inline bool IsConciseMethod(FunctionKind kind) {

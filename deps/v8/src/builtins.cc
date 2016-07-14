@@ -7,6 +7,7 @@
 #include "src/api-arguments.h"
 #include "src/api-natives.h"
 #include "src/api.h"
+#include "src/base/ieee754.h"
 #include "src/base/once.h"
 #include "src/bootstrapper.h"
 #include "src/code-factory.h"
@@ -15,11 +16,13 @@
 #include "src/elements.h"
 #include "src/frames-inl.h"
 #include "src/gdb-jit.h"
+#include "src/globals.h"
 #include "src/ic/handler-compiler.h"
 #include "src/ic/ic.h"
 #include "src/isolate-inl.h"
+#include "src/json-parser.h"
+#include "src/json-stringifier.h"
 #include "src/messages.h"
-#include "src/profiler/cpu-profiler.h"
 #include "src/property-descriptor.h"
 #include "src/prototype.h"
 #include "src/string-builder.h"
@@ -32,7 +35,6 @@ namespace internal {
 namespace {
 
 // Arguments object passed to C++ builtins.
-template <BuiltinExtraArguments extra_args>
 class BuiltinArguments : public Arguments {
  public:
   BuiltinArguments(int length, Object** arguments)
@@ -63,68 +65,17 @@ class BuiltinArguments : public Arguments {
   }
 
   template <class S>
-  Handle<S> target();
-  Handle<HeapObject> new_target();
+  Handle<S> target() {
+    return Arguments::at<S>(Arguments::length() - 2);
+  }
+  Handle<HeapObject> new_target() {
+    return Arguments::at<HeapObject>(Arguments::length() - 1);
+  }
 
   // Gets the total number of arguments including the receiver (but
   // excluding extra arguments).
-  int length() const;
+  int length() const { return Arguments::length() - 2; }
 };
-
-
-// Specialize BuiltinArguments for the extra arguments.
-
-template <>
-int BuiltinArguments<BuiltinExtraArguments::kNone>::length() const {
-  return Arguments::length();
-}
-
-template <>
-int BuiltinArguments<BuiltinExtraArguments::kTarget>::length() const {
-  return Arguments::length() - 1;
-}
-
-template <>
-template <class S>
-Handle<S> BuiltinArguments<BuiltinExtraArguments::kTarget>::target() {
-  return Arguments::at<S>(Arguments::length() - 1);
-}
-
-template <>
-int BuiltinArguments<BuiltinExtraArguments::kNewTarget>::length() const {
-  return Arguments::length() - 1;
-}
-
-template <>
-Handle<HeapObject>
-BuiltinArguments<BuiltinExtraArguments::kNewTarget>::new_target() {
-  return Arguments::at<HeapObject>(Arguments::length() - 1);
-}
-
-template <>
-int BuiltinArguments<BuiltinExtraArguments::kTargetAndNewTarget>::length()
-    const {
-  return Arguments::length() - 2;
-}
-
-template <>
-template <class S>
-Handle<S>
-BuiltinArguments<BuiltinExtraArguments::kTargetAndNewTarget>::target() {
-  return Arguments::at<S>(Arguments::length() - 2);
-}
-
-template <>
-Handle<HeapObject>
-BuiltinArguments<BuiltinExtraArguments::kTargetAndNewTarget>::new_target() {
-  return Arguments::at<HeapObject>(Arguments::length() - 1);
-}
-
-
-#define DEF_ARG_TYPE(name, spec) \
-  typedef BuiltinArguments<BuiltinExtraArguments::spec> name##ArgumentsType;
-BUILTIN_LIST_C(DEF_ARG_TYPE)
-#undef DEF_ARG_TYPE
 
 
 // ----------------------------------------------------------------------------
@@ -141,29 +92,29 @@ BUILTIN_LIST_C(DEF_ARG_TYPE)
 // through the BuiltinArguments object args.
 // TODO(cbruni): add global flag to check whether any tracing events have been
 // enabled.
-#define BUILTIN(name)                                                          \
-  MUST_USE_RESULT static Object* Builtin_Impl_##name(name##ArgumentsType args, \
-                                                     Isolate* isolate);        \
-                                                                               \
-  V8_NOINLINE static Object* Builtin_Impl_Stats_##name(                        \
-      int args_length, Object** args_object, Isolate* isolate) {               \
-    name##ArgumentsType args(args_length, args_object);                        \
-    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::Builtin_##name);   \
-    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"),                      \
-                 "V8.Builtin_" #name);                                         \
-    return Builtin_Impl_##name(args, isolate);                                 \
-  }                                                                            \
-                                                                               \
-  MUST_USE_RESULT static Object* Builtin_##name(                               \
-      int args_length, Object** args_object, Isolate* isolate) {               \
-    if (FLAG_runtime_call_stats) {                                             \
-      return Builtin_Impl_Stats_##name(args_length, args_object, isolate);     \
-    }                                                                          \
-    name##ArgumentsType args(args_length, args_object);                        \
-    return Builtin_Impl_##name(args, isolate);                                 \
-  }                                                                            \
-                                                                               \
-  MUST_USE_RESULT static Object* Builtin_Impl_##name(name##ArgumentsType args, \
+#define BUILTIN(name)                                                        \
+  MUST_USE_RESULT static Object* Builtin_Impl_##name(BuiltinArguments args,  \
+                                                     Isolate* isolate);      \
+                                                                             \
+  V8_NOINLINE static Object* Builtin_Impl_Stats_##name(                      \
+      int args_length, Object** args_object, Isolate* isolate) {             \
+    BuiltinArguments args(args_length, args_object);                         \
+    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::Builtin_##name); \
+    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"),                    \
+                 "V8.Builtin_" #name);                                       \
+    return Builtin_Impl_##name(args, isolate);                               \
+  }                                                                          \
+                                                                             \
+  MUST_USE_RESULT static Object* Builtin_##name(                             \
+      int args_length, Object** args_object, Isolate* isolate) {             \
+    if (FLAG_runtime_call_stats) {                                           \
+      return Builtin_Impl_Stats_##name(args_length, args_object, isolate);   \
+    }                                                                        \
+    BuiltinArguments args(args_length, args_object);                         \
+    return Builtin_Impl_##name(args, isolate);                               \
+  }                                                                          \
+                                                                             \
+  MUST_USE_RESULT static Object* Builtin_Impl_##name(BuiltinArguments args,  \
                                                      Isolate* isolate)
 
 // ----------------------------------------------------------------------------
@@ -178,8 +129,22 @@ BUILTIN_LIST_C(DEF_ARG_TYPE)
   }                                                                         \
   Handle<Type> name = Handle<Type>::cast(args.receiver())
 
+// Throws a TypeError for {method} if the receiver is not coercible to Object,
+// or converts the receiver to a String otherwise and assigns it to a new var
+// with the given {name}.
+#define TO_THIS_STRING(name, method)                                          \
+  if (args.receiver()->IsNull(isolate) ||                                     \
+      args.receiver()->IsUndefined(isolate)) {                                \
+    THROW_NEW_ERROR_RETURN_FAILURE(                                           \
+        isolate,                                                              \
+        NewTypeError(MessageTemplate::kCalledOnNullOrUndefined,               \
+                     isolate->factory()->NewStringFromAsciiChecked(method))); \
+  }                                                                           \
+  Handle<String> name;                                                        \
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(                                         \
+      isolate, name, Object::ToString(isolate, args.receiver()))
 
-inline bool ClampedToInteger(Object* object, int* out) {
+inline bool ClampedToInteger(Isolate* isolate, Object* object, int* out) {
   // This is an extended version of ECMA-262 7.1.11 handling signed values
   // Try to convert object to a number and clamp values to [kMinInt, kMaxInt]
   if (object->IsSmi()) {
@@ -197,11 +162,11 @@ inline bool ClampedToInteger(Object* object, int* out) {
       *out = static_cast<int>(value);
     }
     return true;
-  } else if (object->IsUndefined() || object->IsNull()) {
+  } else if (object->IsUndefined(isolate) || object->IsNull(isolate)) {
     *out = 0;
     return true;
   } else if (object->IsBoolean()) {
-    *out = object->IsTrue();
+    *out = object->IsTrue(isolate);
     return true;
   }
   return false;
@@ -257,8 +222,7 @@ inline bool HasOnlySimpleReceiverElements(Isolate* isolate,
 
 inline bool HasOnlySimpleElements(Isolate* isolate, JSReceiver* receiver) {
   DisallowHeapAllocation no_gc;
-  PrototypeIterator iter(isolate, receiver,
-                         PrototypeIterator::START_AT_RECEIVER);
+  PrototypeIterator iter(isolate, receiver, kStartAtReceiver);
   for (; !iter.IsAtEnd(); iter.Advance()) {
     if (iter.GetCurrent()->IsJSProxy()) return false;
     JSObject* current = iter.GetCurrent<JSObject>();
@@ -271,7 +235,7 @@ inline bool HasOnlySimpleElements(Isolate* isolate, JSReceiver* receiver) {
 MUST_USE_RESULT
 inline bool EnsureJSArrayWithWritableFastElements(Isolate* isolate,
                                                   Handle<Object> receiver,
-                                                  Arguments* args,
+                                                  BuiltinArguments* args,
                                                   int first_added_arg) {
   if (!receiver->IsJSArray()) return false;
   Handle<JSArray> array = Handle<JSArray>::cast(receiver);
@@ -318,25 +282,18 @@ inline bool EnsureJSArrayWithWritableFastElements(Isolate* isolate,
   return true;
 }
 
-
-MUST_USE_RESULT static Object* CallJsIntrinsic(
-    Isolate* isolate, Handle<JSFunction> function,
-    BuiltinArguments<BuiltinExtraArguments::kNone> args) {
+MUST_USE_RESULT static Object* CallJsIntrinsic(Isolate* isolate,
+                                               Handle<JSFunction> function,
+                                               BuiltinArguments args) {
   HandleScope handleScope(isolate);
   int argc = args.length() - 1;
   ScopedVector<Handle<Object> > argv(argc);
   for (int i = 0; i < argc; ++i) {
     argv[i] = args.at<Object>(i + 1);
   }
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      Execution::Call(isolate,
-                      function,
-                      args.receiver(),
-                      argc,
-                      argv.start()));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate,
+      Execution::Call(isolate, function, args.receiver(), argc, argv.start()));
 }
 
 
@@ -412,7 +369,7 @@ void Builtins::Generate_ObjectHasOwnProperty(CodeStubAssembler* assembler) {
                        &call_runtime);
 
   assembler->Bind(&if_iskeyunique);
-  assembler->TryLookupProperty(object, map, instance_type, key, &return_true,
+  assembler->TryHasOwnProperty(object, map, instance_type, key, &return_true,
                                &return_false, &call_runtime);
 
   assembler->Bind(&keyisindex);
@@ -432,8 +389,7 @@ void Builtins::Generate_ObjectHasOwnProperty(CodeStubAssembler* assembler) {
 
 namespace {
 
-Object* DoArrayPush(Isolate* isolate,
-                    BuiltinArguments<BuiltinExtraArguments::kNone> args) {
+Object* DoArrayPush(Isolate* isolate, BuiltinArguments args) {
   HandleScope scope(isolate);
   Handle<Object> receiver = args.receiver();
   if (!EnsureJSArrayWithWritableFastElements(isolate, receiver, &args, 1)) {
@@ -467,8 +423,8 @@ RUNTIME_FUNCTION(Runtime_ArrayPush) {
   DCHECK_EQ(2, args.length());
   Arguments* incoming = reinterpret_cast<Arguments*>(args[0]);
   // Rewrap the arguments as builtins arguments.
-  BuiltinArguments<BuiltinExtraArguments::kNone> caller_args(
-      incoming->length() + 1, incoming->arguments() + 1);
+  BuiltinArguments caller_args(incoming->length() + 3,
+                               incoming->arguments() + 1);
   return DoArrayPush(isolate, caller_args);
 }
 
@@ -588,16 +544,16 @@ BUILTIN(ArraySlice) {
   relative_end = len;
   if (argument_count > 0) {
     DisallowHeapAllocation no_gc;
-    if (!ClampedToInteger(args[1], &relative_start)) {
+    if (!ClampedToInteger(isolate, args[1], &relative_start)) {
       AllowHeapAllocation allow_allocation;
       return CallJsIntrinsic(isolate, isolate->array_slice(), args);
     }
     if (argument_count > 1) {
       Object* end_arg = args[2];
       // slice handles the end_arg specially
-      if (end_arg->IsUndefined()) {
+      if (end_arg->IsUndefined(isolate)) {
         relative_end = len;
-      } else if (!ClampedToInteger(end_arg, &relative_end)) {
+      } else if (!ClampedToInteger(isolate, end_arg, &relative_end)) {
         AllowHeapAllocation allow_allocation;
         return CallJsIntrinsic(isolate, isolate->array_slice(), args);
       }
@@ -635,7 +591,7 @@ BUILTIN(ArraySplice) {
   int relative_start = 0;
   if (argument_count > 0) {
     DisallowHeapAllocation no_gc;
-    if (!ClampedToInteger(args[1], &relative_start)) {
+    if (!ClampedToInteger(isolate, args[1], &relative_start)) {
       AllowHeapAllocation allow_allocation;
       return CallJsIntrinsic(isolate, isolate->array_splice(), args);
     }
@@ -657,7 +613,7 @@ BUILTIN(ArraySplice) {
     int delete_count = 0;
     DisallowHeapAllocation no_gc;
     if (argument_count > 1) {
-      if (!ClampedToInteger(args[2], &delete_count)) {
+      if (!ClampedToInteger(isolate, args[2], &delete_count)) {
         AllowHeapAllocation allow_allocation;
         return CallJsIntrinsic(isolate, isolate->array_splice(), args);
       }
@@ -810,7 +766,7 @@ class ArrayConcatVisitor {
     FOR_WITH_HANDLE_SCOPE(
         isolate_, uint32_t, i = 0, i, i < current_length, i++, {
           Handle<Object> element(current_storage->get(i), isolate_);
-          if (!element->IsTheHole()) {
+          if (!element->IsTheHole(isolate_)) {
             // The object holding this backing store has just been allocated, so
             // it cannot yet be used as a prototype.
             Handle<SeededNumberDictionary> new_storage =
@@ -856,6 +812,7 @@ class ArrayConcatVisitor {
 
 
 uint32_t EstimateElementCount(Handle<JSArray> array) {
+  DisallowHeapAllocation no_gc;
   uint32_t length = static_cast<uint32_t>(array->length()->Number());
   int element_count = 0;
   switch (array->GetElementsKind()) {
@@ -867,9 +824,10 @@ uint32_t EstimateElementCount(Handle<JSArray> array) {
       // a 32-bit signed integer.
       DCHECK(static_cast<int32_t>(FixedArray::kMaxLength) >= 0);
       int fast_length = static_cast<int>(length);
-      Handle<FixedArray> elements(FixedArray::cast(array->elements()));
+      Isolate* isolate = array->GetIsolate();
+      FixedArray* elements = FixedArray::cast(array->elements());
       for (int i = 0; i < fast_length; i++) {
-        if (!elements->get(i)->IsTheHole()) element_count++;
+        if (!elements->get(i)->IsTheHole(isolate)) element_count++;
       }
       break;
     }
@@ -883,20 +841,20 @@ uint32_t EstimateElementCount(Handle<JSArray> array) {
         DCHECK(FixedArray::cast(array->elements())->length() == 0);
         break;
       }
-      Handle<FixedDoubleArray> elements(
-          FixedDoubleArray::cast(array->elements()));
+      FixedDoubleArray* elements = FixedDoubleArray::cast(array->elements());
       for (int i = 0; i < fast_length; i++) {
         if (!elements->is_the_hole(i)) element_count++;
       }
       break;
     }
     case DICTIONARY_ELEMENTS: {
-      Handle<SeededNumberDictionary> dictionary(
-          SeededNumberDictionary::cast(array->elements()));
+      SeededNumberDictionary* dictionary =
+          SeededNumberDictionary::cast(array->elements());
+      Isolate* isolate = dictionary->GetIsolate();
       int capacity = dictionary->Capacity();
       for (int i = 0; i < capacity; i++) {
-        Handle<Object> key(dictionary->KeyAt(i), array->GetIsolate());
-        if (dictionary->IsKey(*key)) {
+        Object* key = dictionary->KeyAt(i);
+        if (dictionary->IsKey(isolate, key)) {
           element_count++;
         }
       }
@@ -945,7 +903,7 @@ void CollectElementIndices(Handle<JSObject> object, uint32_t range,
       uint32_t length = static_cast<uint32_t>(elements->length());
       if (range < length) length = range;
       for (uint32_t i = 0; i < length; i++) {
-        if (!elements->get(i)->IsTheHole()) {
+        if (!elements->get(i)->IsTheHole(isolate)) {
           indices->Add(i);
         }
       }
@@ -973,13 +931,9 @@ void CollectElementIndices(Handle<JSObject> object, uint32_t range,
       SeededNumberDictionary* dict =
           SeededNumberDictionary::cast(object->elements());
       uint32_t capacity = dict->Capacity();
-      Heap* heap = isolate->heap();
-      Object* undefined = heap->undefined_value();
-      Object* the_hole = heap->the_hole_value();
       FOR_WITH_HANDLE_SCOPE(isolate, uint32_t, j = 0, j, j < capacity, j++, {
         Object* k = dict->KeyAt(j);
-        if (k == undefined) continue;
-        if (k == the_hole) continue;
+        if (!dict->IsKey(isolate, k)) continue;
         DCHECK(k->IsNumber());
         uint32_t index = static_cast<uint32_t>(k->Number());
         if (index < range) {
@@ -1088,12 +1042,8 @@ bool IterateElements(Isolate* isolate, Handle<JSReceiver> receiver,
     length = static_cast<uint32_t>(array->length()->Number());
   } else {
     Handle<Object> val;
-    Handle<Object> key = isolate->factory()->length_string();
     ASSIGN_RETURN_ON_EXCEPTION_VALUE(
-        isolate, val, Runtime::GetObjectProperty(isolate, receiver, key),
-        false);
-    ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, val,
-                                     Object::ToLength(isolate, val), false);
+        isolate, val, Object::GetLengthFromArrayLike(isolate, receiver), false);
     // TODO(caitp): Support larger element indexes (up to 2^53-1).
     if (!val->ToUint32(&length)) {
       length = 0;
@@ -1119,7 +1069,7 @@ bool IterateElements(Isolate* isolate, Handle<JSReceiver> receiver,
       DCHECK(fast_length <= elements->length());
       FOR_WITH_HANDLE_SCOPE(isolate, int, j = 0, j, j < fast_length, j++, {
         Handle<Object> element_value(elements->get(j), isolate);
-        if (!element_value->IsTheHole()) {
+        if (!element_value->IsTheHole(isolate)) {
           if (!visitor->visit(j, element_value)) return false;
         } else {
           Maybe<bool> maybe = JSReceiver::HasElement(array, j);
@@ -1233,13 +1183,12 @@ static Maybe<bool> IsConcatSpreadable(Isolate* isolate, Handle<Object> obj) {
     MaybeHandle<Object> maybeValue =
         i::Runtime::GetObjectProperty(isolate, obj, key);
     if (!maybeValue.ToHandle(&value)) return Nothing<bool>();
-    if (!value->IsUndefined()) return Just(value->BooleanValue());
+    if (!value->IsUndefined(isolate)) return Just(value->BooleanValue());
   }
   return Object::IsArray(obj);
 }
 
-
-Object* Slow_ArrayConcat(Arguments* args, Handle<Object> species,
+Object* Slow_ArrayConcat(BuiltinArguments* args, Handle<Object> species,
                          Isolate* isolate) {
   int argument_count = args->length();
 
@@ -1436,7 +1385,8 @@ bool IsSimpleArray(Isolate* isolate, Handle<JSArray> obj) {
   return false;
 }
 
-MaybeHandle<JSArray> Fast_ArrayConcat(Isolate* isolate, Arguments* args) {
+MaybeHandle<JSArray> Fast_ArrayConcat(Isolate* isolate,
+                                      BuiltinArguments* args) {
   if (!isolate->IsIsConcatSpreadableLookupChainIntact()) {
     return MaybeHandle<JSArray>();
   }
@@ -1471,7 +1421,8 @@ MaybeHandle<JSArray> Fast_ArrayConcat(Isolate* isolate, Arguments* args) {
       result_len += Smi::cast(array->length())->value();
       DCHECK(result_len >= 0);
       // Throw an Error if we overflow the FixedArray limits
-      if (FixedArray::kMaxLength < result_len) {
+      if (FixedDoubleArray::kMaxLength < result_len ||
+          FixedArray::kMaxLength < result_len) {
         AllowHeapAllocation gc;
         THROW_NEW_ERROR(isolate,
                         NewRangeError(MessageTemplate::kInvalidArrayLength),
@@ -1491,7 +1442,7 @@ BUILTIN(ArrayConcat) {
 
   Handle<Object> receiver = args.receiver();
   // TODO(bmeurer): Do we really care about the exact exception message here?
-  if (receiver->IsNull() || receiver->IsUndefined()) {
+  if (receiver->IsNull(isolate) || receiver->IsUndefined(isolate)) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate, NewTypeError(MessageTemplate::kCalledOnNullOrUndefined,
                               isolate->factory()->NewStringFromAsciiChecked(
@@ -1636,8 +1587,9 @@ BUILTIN(ObjectAssign) {
     // 4b ii. Let keys be ? from.[[OwnPropertyKeys]]().
     Handle<FixedArray> keys;
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, keys,
-        JSReceiver::GetKeys(from, OWN_ONLY, ALL_PROPERTIES, KEEP_NUMBERS));
+        isolate, keys, KeyAccumulator::GetKeys(
+                           from, KeyCollectionMode::kOwnOnly, ALL_PROPERTIES,
+                           GetKeysConversion::kKeepNumbers));
     // 4c. Repeat for each element nextKey of keys in List order,
     for (int j = 0; j < keys->length(); ++j) {
       Handle<Object> next_key(keys->get(j), isolate);
@@ -1667,10 +1619,12 @@ BUILTIN(ObjectAssign) {
 
 
 // ES6 section 19.1.2.2 Object.create ( O [ , Properties ] )
+// TODO(verwaest): Support the common cases with precached map directly in
+// an Object.create stub.
 BUILTIN(ObjectCreate) {
   HandleScope scope(isolate);
   Handle<Object> prototype = args.atOrUndefined(isolate, 1);
-  if (!prototype->IsNull() && !prototype->IsJSReceiver()) {
+  if (!prototype->IsNull(isolate) && !prototype->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate, NewTypeError(MessageTemplate::kProtoObjectOrNull, prototype));
   }
@@ -1682,7 +1636,26 @@ BUILTIN(ObjectCreate) {
   Handle<Map> map(isolate->native_context()->object_function()->initial_map(),
                   isolate);
   if (map->prototype() != *prototype) {
-    map = Map::TransitionToPrototype(map, prototype, FAST_PROTOTYPE);
+    if (prototype->IsNull(isolate)) {
+      map = isolate->object_with_null_prototype_map();
+    } else if (prototype->IsJSObject()) {
+      Handle<JSObject> js_prototype = Handle<JSObject>::cast(prototype);
+      if (!js_prototype->map()->is_prototype_map()) {
+        JSObject::OptimizeAsPrototype(js_prototype, FAST_PROTOTYPE);
+      }
+      Handle<PrototypeInfo> info =
+          Map::GetOrCreatePrototypeInfo(js_prototype, isolate);
+      // TODO(verwaest): Use inobject slack tracking for this map.
+      if (info->HasObjectCreateMap()) {
+        map = handle(info->ObjectCreateMap(), isolate);
+      } else {
+        map = Map::CopyInitialMap(map);
+        Map::SetPrototype(map, prototype, FAST_PROTOTYPE);
+        PrototypeInfo::SetObjectCreateMap(info, map);
+      }
+    } else {
+      map = Map::TransitionToPrototype(map, prototype, REGULAR_PROTOTYPE);
+    }
   }
 
   // Actually allocate the object.
@@ -1690,7 +1663,7 @@ BUILTIN(ObjectCreate) {
 
   // Define the properties if properties was specified and is not undefined.
   Handle<Object> properties = args.atOrUndefined(isolate, 2);
-  if (!properties->IsUndefined()) {
+  if (!properties->IsUndefined(isolate)) {
     RETURN_FAILURE_ON_EXCEPTION(
         isolate, JSReceiver::DefineProperties(isolate, object, properties));
   }
@@ -1705,11 +1678,8 @@ BUILTIN(ObjectDefineProperties) {
   Handle<Object> target = args.at<Object>(1);
   Handle<Object> properties = args.at<Object>(2);
 
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      JSReceiver::DefineProperties(isolate, target, properties));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, JSReceiver::DefineProperties(isolate, target, properties));
 }
 
 // ES6 section 19.1.2.4 Object.defineProperty
@@ -1760,6 +1730,9 @@ Object* ObjectDefineAccessor(Isolate* isolate, Handle<Object> object,
   Maybe<bool> success = JSReceiver::DefineOwnProperty(
       isolate, receiver, name, &desc, Object::DONT_THROW);
   MAYBE_RETURN(success, isolate->heap()->exception());
+  if (!success.FromJust()) {
+    isolate->CountUsage(v8::Isolate::kDefineGetterOrSetterWouldThrow);
+  }
   // 6. Return undefined.
   return isolate->heap()->undefined_value();
 }
@@ -1871,11 +1844,8 @@ BUILTIN(ObjectGetPrototypeOf) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, receiver, Object::ToObject(isolate, object));
 
-  Handle<Object> prototype;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, prototype, JSReceiver::GetPrototype(isolate, receiver));
-
-  return *prototype;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           JSReceiver::GetPrototype(isolate, receiver));
 }
 
 
@@ -1905,8 +1875,7 @@ BUILTIN(ObjectGetOwnPropertyDescriptor) {
 
 namespace {
 
-Object* GetOwnPropertyKeys(Isolate* isolate,
-                           BuiltinArguments<BuiltinExtraArguments::kNone> args,
+Object* GetOwnPropertyKeys(Isolate* isolate, BuiltinArguments args,
                            PropertyFilter filter) {
   HandleScope scope(isolate);
   Handle<Object> object = args.atOrUndefined(isolate, 1);
@@ -1916,7 +1885,8 @@ Object* GetOwnPropertyKeys(Isolate* isolate,
   Handle<FixedArray> keys;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, keys,
-      JSReceiver::GetKeys(receiver, OWN_ONLY, filter, CONVERT_TO_STRING));
+      KeyAccumulator::GetKeys(receiver, KeyCollectionMode::kOwnOnly, filter,
+                              GetKeysConversion::kConvertToString));
   return *isolate->factory()->NewJSArrayWithElements(keys);
 }
 
@@ -2012,8 +1982,9 @@ BUILTIN(ObjectKeys) {
   } else {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, keys,
-        JSReceiver::GetKeys(receiver, OWN_ONLY, ENUMERABLE_STRINGS,
-                            CONVERT_TO_STRING));
+        KeyAccumulator::GetKeys(receiver, KeyCollectionMode::kOwnOnly,
+                                ENUMERABLE_STRINGS,
+                                GetKeysConversion::kConvertToString));
   }
   return *isolate->factory()->NewJSArrayWithElements(keys, FAST_ELEMENTS);
 }
@@ -2055,8 +2026,9 @@ BUILTIN(ObjectGetOwnPropertyDescriptors) {
 
   Handle<FixedArray> keys;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, keys, JSReceiver::GetKeys(receiver, OWN_ONLY, ALL_PROPERTIES,
-                                         CONVERT_TO_STRING));
+      isolate, keys, KeyAccumulator::GetKeys(
+                         receiver, KeyCollectionMode::kOwnOnly, ALL_PROPERTIES,
+                         GetKeysConversion::kConvertToString));
 
   Handle<JSObject> descriptors =
       isolate->factory()->NewJSObject(isolate->object_function());
@@ -2107,6 +2079,29 @@ BUILTIN(ObjectSeal) {
   return *object;
 }
 
+// ES6 section 18.2.6.2 decodeURI (encodedURI)
+BUILTIN(GlobalDecodeURI) {
+  HandleScope scope(isolate);
+  Handle<String> encoded_uri;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, encoded_uri,
+      Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  RETURN_RESULT_OR_FAILURE(isolate, Uri::DecodeUri(isolate, encoded_uri));
+}
+
+// ES6 section 18.2.6.3 decodeURIComponent (encodedURIComponent)
+BUILTIN(GlobalDecodeURIComponent) {
+  HandleScope scope(isolate);
+  Handle<String> encoded_uri_component;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, encoded_uri_component,
+      Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  RETURN_RESULT_OR_FAILURE(
+      isolate, Uri::DecodeUriComponent(isolate, encoded_uri_component));
+}
+
 // ES6 section 18.2.6.4 encodeURI (uri)
 BUILTIN(GlobalEncodeURI) {
   HandleScope scope(isolate);
@@ -2114,25 +2109,48 @@ BUILTIN(GlobalEncodeURI) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, uri, Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
 
-  return Uri::EncodeUri(isolate, uri);
+  RETURN_RESULT_OR_FAILURE(isolate, Uri::EncodeUri(isolate, uri));
 }
 
 // ES6 section 18.2.6.5 encodeURIComponenet (uriComponent)
 BUILTIN(GlobalEncodeURIComponent) {
   HandleScope scope(isolate);
-  Handle<String> uriComponent;
+  Handle<String> uri_component;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, uriComponent,
+      isolate, uri_component,
       Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
 
-  return Uri::EncodeUriComponent(isolate, uriComponent);
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           Uri::EncodeUriComponent(isolate, uri_component));
+}
+
+// ES6 section B.2.1.1 escape (string)
+BUILTIN(GlobalEscape) {
+  HandleScope scope(isolate);
+  Handle<String> string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, string,
+      Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  RETURN_RESULT_OR_FAILURE(isolate, Uri::Escape(isolate, string));
+}
+
+// ES6 section B.2.1.2 unescape (string)
+BUILTIN(GlobalUnescape) {
+  HandleScope scope(isolate);
+  Handle<String> string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, string,
+      Object::ToString(isolate, args.atOrUndefined(isolate, 1)));
+
+  RETURN_RESULT_OR_FAILURE(isolate, Uri::Unescape(isolate, string));
 }
 
 namespace {
 
 bool CodeGenerationFromStringsAllowed(Isolate* isolate,
                                       Handle<Context> context) {
-  DCHECK(context->allow_code_gen_from_strings()->IsFalse());
+  DCHECK(context->allow_code_gen_from_strings()->IsFalse(isolate));
   // Check with callback if set.
   AllowCodeGenerationFromStringsCallback callback =
       isolate->allow_code_gen_callback();
@@ -2155,7 +2173,7 @@ MaybeHandle<JSFunction> CompileString(Handle<Context> context,
 
   // Check if native context allows code generation from
   // strings. Throw an exception if it doesn't.
-  if (native_context->allow_code_gen_from_strings()->IsFalse() &&
+  if (native_context->allow_code_gen_from_strings()->IsFalse(isolate) &&
       !CodeGenerationFromStringsAllowed(isolate, native_context)) {
     Handle<Object> error_message =
         native_context->ErrorMessageForCodeGenerationFromStrings();
@@ -2166,7 +2184,7 @@ MaybeHandle<JSFunction> CompileString(Handle<Context> context,
 
   // Compile source string in the native context.
   int eval_scope_position = 0;
-  int eval_position = RelocInfo::kNoPosition;
+  int eval_position = kNoSourcePosition;
   Handle<SharedFunctionInfo> outer_info(native_context->closure()->shared());
   return Compiler::GetFunctionFromEval(source, outer_info, native_context,
                                        SLOPPY, restriction, eval_scope_position,
@@ -2188,45 +2206,135 @@ BUILTIN(GlobalEval) {
       isolate, function,
       CompileString(handle(target->native_context(), isolate),
                     Handle<String>::cast(x), NO_PARSE_RESTRICTION));
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
+  RETURN_RESULT_OR_FAILURE(
+      isolate,
       Execution::Call(isolate, function, target_global_proxy, 0, nullptr));
-  return *result;
 }
 
+// ES6 section 24.3.1 JSON.parse.
+BUILTIN(JsonParse) {
+  HandleScope scope(isolate);
+  Handle<Object> source = args.atOrUndefined(isolate, 1);
+  Handle<Object> reviver = args.atOrUndefined(isolate, 2);
+  Handle<String> string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, string,
+                                     Object::ToString(isolate, source));
+  string = String::Flatten(string);
+  RETURN_RESULT_OR_FAILURE(
+      isolate, string->IsSeqOneByteString()
+                   ? JsonParser<true>::Parse(isolate, string, reviver)
+                   : JsonParser<false>::Parse(isolate, string, reviver));
+}
+
+// ES6 section 24.3.2 JSON.stringify.
+BUILTIN(JsonStringify) {
+  HandleScope scope(isolate);
+  JsonStringifier stringifier(isolate);
+  Handle<Object> object = args.atOrUndefined(isolate, 1);
+  Handle<Object> replacer = args.atOrUndefined(isolate, 2);
+  Handle<Object> indent = args.atOrUndefined(isolate, 3);
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           stringifier.Stringify(object, replacer, indent));
+}
 
 // -----------------------------------------------------------------------------
 // ES6 section 20.2.2 Function Properties of the Math Object
 
+// ES6 section - 20.2.2.1 Math.abs ( x )
+void Builtins::Generate_MathAbs(CodeStubAssembler* assembler) {
+  using compiler::Node;
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Abs(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
 
 // ES6 section 20.2.2.2 Math.acos ( x )
-BUILTIN(MathAcos) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(2, args.length());
-  Handle<Object> x = args.at<Object>(1);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, x, Object::ToNumber(x));
-  return *isolate->factory()->NewHeapNumber(std::acos(x->Number()));
+void Builtins::Generate_MathAcos(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Acos(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
 }
 
+// ES6 section 20.2.2.3 Math.acosh ( x )
+void Builtins::Generate_MathAcosh(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Acosh(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
 
 // ES6 section 20.2.2.4 Math.asin ( x )
-BUILTIN(MathAsin) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(2, args.length());
-  Handle<Object> x = args.at<Object>(1);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, x, Object::ToNumber(x));
-  return *isolate->factory()->NewHeapNumber(std::asin(x->Number()));
+void Builtins::Generate_MathAsin(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Asin(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
 }
 
+// ES6 section 20.2.2.5 Math.asinh ( x )
+void Builtins::Generate_MathAsinh(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Asinh(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
 
 // ES6 section 20.2.2.6 Math.atan ( x )
-BUILTIN(MathAtan) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(2, args.length());
-  Handle<Object> x = args.at<Object>(1);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, x, Object::ToNumber(x));
-  return *isolate->factory()->NewHeapNumber(std::atan(x->Number()));
+void Builtins::Generate_MathAtan(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Atan(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.7 Math.atanh ( x )
+void Builtins::Generate_MathAtanh(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Atanh(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.8 Math.atan2 ( y, x )
+void Builtins::Generate_MathAtan2(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* y = assembler->Parameter(1);
+  Node* x = assembler->Parameter(2);
+  Node* context = assembler->Parameter(5);
+  Node* y_value = assembler->TruncateTaggedToFloat64(context, y);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Atan2(y_value, x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
 }
 
 namespace {
@@ -2297,6 +2405,18 @@ void Builtins::Generate_MathCeil(CodeStubAssembler* assembler) {
   Generate_MathRoundingOperation(assembler, &CodeStubAssembler::Float64Ceil);
 }
 
+// ES6 section 20.2.2.9 Math.cbrt ( x )
+void Builtins::Generate_MathCbrt(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Cbrt(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
 // ES6 section 20.2.2.11 Math.clz32 ( x )
 void Builtins::Generate_MathClz32(CodeStubAssembler* assembler) {
   typedef CodeStubAssembler::Label Label;
@@ -2365,36 +2485,254 @@ void Builtins::Generate_MathClz32(CodeStubAssembler* assembler) {
   }
 }
 
+// ES6 section 20.2.2.12 Math.cos ( x )
+void Builtins::Generate_MathCos(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Cos(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.13 Math.cosh ( x )
+void Builtins::Generate_MathCosh(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Cosh(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.14 Math.exp ( x )
+void Builtins::Generate_MathExp(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Exp(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
 // ES6 section 20.2.2.16 Math.floor ( x )
 void Builtins::Generate_MathFloor(CodeStubAssembler* assembler) {
   Generate_MathRoundingOperation(assembler, &CodeStubAssembler::Float64Floor);
 }
 
 // ES6 section 20.2.2.17 Math.fround ( x )
-BUILTIN(MathFround) {
+void Builtins::Generate_MathFround(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value32 = assembler->TruncateFloat64ToFloat32(x_value);
+  Node* value = assembler->ChangeFloat32ToFloat64(value32);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.18 Math.hypot ( value1, value2, ...values )
+BUILTIN(MathHypot) {
   HandleScope scope(isolate);
-  DCHECK_EQ(2, args.length());
-  Handle<Object> x = args.at<Object>(1);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, x, Object::ToNumber(x));
-  float x32 = DoubleToFloat32(x->Number());
-  return *isolate->factory()->NewNumber(x32);
+  int const length = args.length() - 1;
+  if (length == 0) return Smi::FromInt(0);
+  DCHECK_LT(0, length);
+  double max = 0;
+  bool one_arg_is_nan = false;
+  List<double> abs_values(length);
+  for (int i = 0; i < length; i++) {
+    Handle<Object> x = args.at<Object>(i + 1);
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, x, Object::ToNumber(x));
+    double abs_value = std::abs(x->Number());
+
+    if (std::isnan(abs_value)) {
+      one_arg_is_nan = true;
+    } else {
+      abs_values.Add(abs_value);
+      if (max < abs_value) {
+        max = abs_value;
+      }
+    }
+  }
+
+  if (max == V8_INFINITY) {
+    return *isolate->factory()->NewNumber(V8_INFINITY);
+  }
+
+  if (one_arg_is_nan) {
+    return *isolate->factory()->nan_value();
+  }
+
+  if (max == 0) {
+    return Smi::FromInt(0);
+  }
+  DCHECK_GT(max, 0);
+
+  // Kahan summation to avoid rounding errors.
+  // Normalize the numbers to the largest one to avoid overflow.
+  double sum = 0;
+  double compensation = 0;
+  for (int i = 0; i < length; i++) {
+    double n = abs_values.at(i) / max;
+    double summand = n * n - compensation;
+    double preliminary = sum + summand;
+    compensation = (preliminary - sum) - summand;
+    sum = preliminary;
+  }
+
+  return *isolate->factory()->NewNumber(std::sqrt(sum) * max);
 }
 
 // ES6 section 20.2.2.19 Math.imul ( x, y )
-BUILTIN(MathImul) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(3, args.length());
-  Handle<Object> x = args.at<Object>(1);
-  Handle<Object> y = args.at<Object>(2);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, x, Object::ToNumber(x));
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, y, Object::ToNumber(y));
-  int product = static_cast<int>(NumberToUint32(*x) * NumberToUint32(*y));
-  return *isolate->factory()->NewNumberFromInt(product);
+void Builtins::Generate_MathImul(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* y = assembler->Parameter(2);
+  Node* context = assembler->Parameter(5);
+  Node* x_value = assembler->TruncateTaggedToWord32(context, x);
+  Node* y_value = assembler->TruncateTaggedToWord32(context, y);
+  Node* value = assembler->Int32Mul(x_value, y_value);
+  Node* result = assembler->ChangeInt32ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.20 Math.log ( x )
+void Builtins::Generate_MathLog(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Log(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.21 Math.log1p ( x )
+void Builtins::Generate_MathLog1p(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Log1p(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.22 Math.log10 ( x )
+void Builtins::Generate_MathLog10(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Log10(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.23 Math.log2 ( x )
+void Builtins::Generate_MathLog2(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Log2(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.15 Math.expm1 ( x )
+void Builtins::Generate_MathExpm1(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Expm1(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.26 Math.pow ( x, y )
+void Builtins::Generate_MathPow(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* y = assembler->Parameter(2);
+  Node* context = assembler->Parameter(5);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* y_value = assembler->TruncateTaggedToFloat64(context, y);
+  Node* value = assembler->Float64Pow(x_value, y_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
 }
 
 // ES6 section 20.2.2.28 Math.round ( x )
 void Builtins::Generate_MathRound(CodeStubAssembler* assembler) {
   Generate_MathRoundingOperation(assembler, &CodeStubAssembler::Float64Round);
+}
+
+// ES6 section 20.2.2.29 Math.sign ( x )
+void Builtins::Generate_MathSign(CodeStubAssembler* assembler) {
+  typedef CodeStubAssembler::Label Label;
+  using compiler::Node;
+
+  // Convert the {x} value to a Number.
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+
+  // Return -1 if {x} is negative, 1 if {x} is positive, or {x} itself.
+  Label if_xisnegative(assembler), if_xispositive(assembler);
+  assembler->GotoIf(
+      assembler->Float64LessThan(x_value, assembler->Float64Constant(0.0)),
+      &if_xisnegative);
+  assembler->GotoIf(
+      assembler->Float64LessThan(assembler->Float64Constant(0.0), x_value),
+      &if_xispositive);
+  assembler->Return(assembler->ChangeFloat64ToTagged(x_value));
+
+  assembler->Bind(&if_xisnegative);
+  assembler->Return(assembler->SmiConstant(Smi::FromInt(-1)));
+
+  assembler->Bind(&if_xispositive);
+  assembler->Return(assembler->SmiConstant(Smi::FromInt(1)));
+}
+
+// ES6 section 20.2.2.30 Math.sin ( x )
+void Builtins::Generate_MathSin(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Sin(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.31 Math.sinh ( x )
+void Builtins::Generate_MathSinh(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Sinh(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
 }
 
 // ES6 section 20.2.2.32 Math.sqrt ( x )
@@ -2405,6 +2743,30 @@ void Builtins::Generate_MathSqrt(CodeStubAssembler* assembler) {
   Node* context = assembler->Parameter(4);
   Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
   Node* value = assembler->Float64Sqrt(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.33 Math.tan ( x )
+void Builtins::Generate_MathTan(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Tan(x_value);
+  Node* result = assembler->ChangeFloat64ToTagged(value);
+  assembler->Return(result);
+}
+
+// ES6 section 20.2.2.34 Math.tanh ( x )
+void Builtins::Generate_MathTanh(CodeStubAssembler* assembler) {
+  using compiler::Node;
+
+  Node* x = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+  Node* x_value = assembler->TruncateTaggedToFloat64(context, x);
+  Node* value = assembler->Float64Tanh(x_value);
   Node* result = assembler->ChangeFloat64ToTagged(value);
   assembler->Return(result);
 }
@@ -2612,12 +2974,9 @@ BUILTIN(ReflectGet) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, name,
                                      Object::ToName(isolate, key));
 
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, Object::GetPropertyOrElement(
-                           receiver, name, Handle<JSReceiver>::cast(target)));
-
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, Object::GetPropertyOrElement(receiver, name,
+                                            Handle<JSReceiver>::cast(target)));
 }
 
 
@@ -2660,11 +3019,9 @@ BUILTIN(ReflectGetPrototypeOf) {
                               isolate->factory()->NewStringFromAsciiChecked(
                                   "Reflect.getPrototypeOf")));
   }
-  Handle<Object> prototype;
   Handle<JSReceiver> receiver = Handle<JSReceiver>::cast(target);
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, prototype, JSReceiver::GetPrototype(isolate, receiver));
-  return *prototype;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           JSReceiver::GetPrototype(isolate, receiver));
 }
 
 
@@ -2729,8 +3086,9 @@ BUILTIN(ReflectOwnKeys) {
   Handle<FixedArray> keys;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, keys,
-      JSReceiver::GetKeys(Handle<JSReceiver>::cast(target), OWN_ONLY,
-                          ALL_PROPERTIES, CONVERT_TO_STRING));
+      KeyAccumulator::GetKeys(Handle<JSReceiver>::cast(target),
+                              KeyCollectionMode::kOwnOnly, ALL_PROPERTIES,
+                              GetKeysConversion::kConvertToString));
   return *isolate->factory()->NewJSArrayWithElements(keys);
 }
 
@@ -2797,7 +3155,7 @@ BUILTIN(ReflectSetPrototypeOf) {
                                   "Reflect.setPrototypeOf")));
   }
 
-  if (!proto->IsJSReceiver() && !proto->IsNull()) {
+  if (!proto->IsJSReceiver() && !proto->IsNull(isolate)) {
     THROW_NEW_ERROR_RETURN_FAILURE(
         isolate, NewTypeError(MessageTemplate::kProtoObjectOrNull, proto));
   }
@@ -2905,7 +3263,7 @@ BUILTIN(DataViewConstructor_ConstructStub) {
 
   // 4. Let numberOffset be ? ToNumber(byteOffset).
   Handle<Object> number_offset;
-  if (byte_offset->IsUndefined()) {
+  if (byte_offset->IsUndefined(isolate)) {
     // We intentionally violate the specification at this point to allow
     // for new DataView(buffer) invocations to be equivalent to the full
     // new DataView(buffer, 0) invocation.
@@ -2940,7 +3298,7 @@ BUILTIN(DataViewConstructor_ConstructStub) {
   }
 
   Handle<Object> view_byte_length;
-  if (byte_length->IsUndefined()) {
+  if (byte_length->IsUndefined(isolate)) {
     // 10. If byteLength is undefined, then
     //       a. Let viewByteLength be bufferByteLength - offset.
     view_byte_length =
@@ -2982,6 +3340,119 @@ BUILTIN(DataViewConstructor_ConstructStub) {
   return *result;
 }
 
+// ES6 section 24.2.4.1 get DataView.prototype.buffer
+BUILTIN(DataViewPrototypeGetBuffer) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSDataView, data_view, "get DataView.prototype.buffer");
+  return data_view->buffer();
+}
+
+// ES6 section 24.2.4.2 get DataView.prototype.byteLength
+BUILTIN(DataViewPrototypeGetByteLength) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSDataView, data_view, "get DataView.prototype.byteLength");
+  // TODO(bmeurer): According to the ES6 spec, we should throw a TypeError
+  // here if the JSArrayBuffer of the {data_view} was neutered.
+  return data_view->byte_length();
+}
+
+// ES6 section 24.2.4.3 get DataView.prototype.byteOffset
+BUILTIN(DataViewPrototypeGetByteOffset) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSDataView, data_view, "get DataView.prototype.byteOffset");
+  // TODO(bmeurer): According to the ES6 spec, we should throw a TypeError
+  // here if the JSArrayBuffer of the {data_view} was neutered.
+  return data_view->byte_offset();
+}
+
+// -----------------------------------------------------------------------------
+// ES6 section 22.2 TypedArray Objects
+
+// ES6 section 22.2.3.1 get %TypedArray%.prototype.buffer
+BUILTIN(TypedArrayPrototypeBuffer) {
+  HandleScope scope(isolate);
+  CHECK_RECEIVER(JSTypedArray, typed_array, "get TypedArray.prototype.buffer");
+  return *typed_array->GetBuffer();
+}
+
+namespace {
+
+void Generate_TypedArrayProtoypeGetter(CodeStubAssembler* assembler,
+                                       const char* method_name,
+                                       int object_offset) {
+  typedef CodeStubAssembler::Label Label;
+  typedef compiler::Node Node;
+
+  Node* receiver = assembler->Parameter(0);
+  Node* context = assembler->Parameter(3);
+
+  // Check if the {receiver} is actually a JSTypedArray.
+  Label if_receiverisincompatible(assembler, Label::kDeferred);
+  assembler->GotoIf(assembler->WordIsSmi(receiver), &if_receiverisincompatible);
+  Node* receiver_instance_type = assembler->LoadInstanceType(receiver);
+  assembler->GotoUnless(
+      assembler->Word32Equal(receiver_instance_type,
+                             assembler->Int32Constant(JS_TYPED_ARRAY_TYPE)),
+      &if_receiverisincompatible);
+
+  // Check if the {receiver}'s JSArrayBuffer was neutered.
+  Node* receiver_buffer =
+      assembler->LoadObjectField(receiver, JSTypedArray::kBufferOffset);
+  Node* receiver_buffer_bit_field = assembler->LoadObjectField(
+      receiver_buffer, JSArrayBuffer::kBitFieldOffset, MachineType::Uint32());
+  Label if_receiverisneutered(assembler, Label::kDeferred);
+  assembler->GotoUnless(
+      assembler->Word32Equal(
+          assembler->Word32And(
+              receiver_buffer_bit_field,
+              assembler->Int32Constant(JSArrayBuffer::WasNeutered::kMask)),
+          assembler->Int32Constant(0)),
+      &if_receiverisneutered);
+  assembler->Return(assembler->LoadObjectField(receiver, object_offset));
+
+  assembler->Bind(&if_receiverisneutered);
+  {
+    // The {receiver}s buffer was neutered, default to zero.
+    assembler->Return(assembler->SmiConstant(0));
+  }
+
+  assembler->Bind(&if_receiverisincompatible);
+  {
+    // The {receiver} is not a valid JSGeneratorObject.
+    Node* result = assembler->CallRuntime(
+        Runtime::kThrowIncompatibleMethodReceiver, context,
+        assembler->HeapConstant(assembler->factory()->NewStringFromAsciiChecked(
+            method_name, TENURED)),
+        receiver);
+    assembler->Return(result);  // Never reached.
+  }
+}
+
+}  // namespace
+
+// ES6 section 22.2.3.2 get %TypedArray%.prototype.byteLength
+void Builtins::Generate_TypedArrayPrototypeByteLength(
+    CodeStubAssembler* assembler) {
+  Generate_TypedArrayProtoypeGetter(assembler,
+                                    "get TypedArray.prototype.byteLength",
+                                    JSTypedArray::kByteLengthOffset);
+}
+
+// ES6 section 22.2.3.3 get %TypedArray%.prototype.byteOffset
+void Builtins::Generate_TypedArrayPrototypeByteOffset(
+    CodeStubAssembler* assembler) {
+  Generate_TypedArrayProtoypeGetter(assembler,
+                                    "get TypedArray.prototype.byteOffset",
+                                    JSTypedArray::kByteOffsetOffset);
+}
+
+// ES6 section 22.2.3.18 get %TypedArray%.prototype.length
+void Builtins::Generate_TypedArrayPrototypeLength(
+    CodeStubAssembler* assembler) {
+  Generate_TypedArrayProtoypeGetter(assembler,
+                                    "get TypedArray.prototype.length",
+                                    JSTypedArray::kLengthOffset);
+}
 
 // -----------------------------------------------------------------------------
 // ES6 section 20.3 Date Objects
@@ -3100,11 +3571,9 @@ double ParseDateTimeString(Handle<String> str) {
   String::FlatContent str_content = str->GetFlatContent();
   bool result;
   if (str_content.IsOneByte()) {
-    result = DateParser::Parse(str_content.ToOneByteVector(), *tmp,
-                               isolate->unicode_cache());
+    result = DateParser::Parse(isolate, str_content.ToOneByteVector(), *tmp);
   } else {
-    result = DateParser::Parse(str_content.ToUC16Vector(), *tmp,
-                               isolate->unicode_cache());
+    result = DateParser::Parse(isolate, str_content.ToUC16Vector(), *tmp);
   }
   if (!result) return std::numeric_limits<double>::quiet_NaN();
   double const day = MakeDay(tmp->get(0)->Number(), tmp->get(1)->Number(),
@@ -3112,7 +3581,7 @@ double ParseDateTimeString(Handle<String> str) {
   double const time = MakeTime(tmp->get(3)->Number(), tmp->get(4)->Number(),
                                tmp->get(5)->Number(), tmp->get(6)->Number());
   double date = MakeDate(day, time);
-  if (tmp->get(7)->IsNull()) {
+  if (tmp->get(7)->IsNull(isolate)) {
     if (!std::isnan(date)) {
       date = isolate->date_cache()->ToUTC(static_cast<int64_t>(date));
     }
@@ -3183,11 +3652,8 @@ BUILTIN(DateConstructor) {
   double const time_val = JSDate::CurrentTimeValue(isolate);
   char buffer[128];
   ToDateString(time_val, ArrayVector(buffer), isolate->date_cache());
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
 }
 
 
@@ -3269,10 +3735,7 @@ BUILTIN(DateConstructor_ConstructStub) {
       time_val = std::numeric_limits<double>::quiet_NaN();
     }
   }
-  Handle<JSDate> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result,
-                                     JSDate::New(target, new_target, time_val));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate, JSDate::New(target, new_target, time_val));
 }
 
 
@@ -3767,11 +4230,8 @@ BUILTIN(DatePrototypeToDateString) {
   char buffer[128];
   ToDateString(date->value()->Number(), ArrayVector(buffer),
                isolate->date_cache(), kDateOnly);
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
 }
 
 
@@ -3810,11 +4270,8 @@ BUILTIN(DatePrototypeToString) {
   char buffer[128];
   ToDateString(date->value()->Number(), ArrayVector(buffer),
                isolate->date_cache());
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
 }
 
 
@@ -3825,11 +4282,8 @@ BUILTIN(DatePrototypeToTimeString) {
   char buffer[128];
   ToDateString(date->value()->Number(), ArrayVector(buffer),
                isolate->date_cache(), kTimeOnly);
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result,
-      isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(
+      isolate, isolate->factory()->NewStringFromUtf8(CStrVector(buffer)));
 }
 
 
@@ -3867,10 +4321,7 @@ BUILTIN(DatePrototypeToPrimitive) {
   DCHECK_EQ(2, args.length());
   CHECK_RECEIVER(JSReceiver, receiver, "Date.prototype [ @@toPrimitive ]");
   Handle<Object> hint = args.at<Object>(1);
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result,
-                                     JSDate::ToPrimitive(receiver, hint));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate, JSDate::ToPrimitive(receiver, hint));
 }
 
 
@@ -3914,6 +4365,33 @@ BUILTIN(DatePrototypeSetYear) {
   return SetLocalDateValue(date, time_val);
 }
 
+// ES6 section 20.3.4.37 Date.prototype.toJSON ( key )
+BUILTIN(DatePrototypeToJson) {
+  HandleScope scope(isolate);
+  Handle<Object> receiver = args.atOrUndefined(isolate, 0);
+  Handle<JSReceiver> receiver_obj;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, receiver_obj,
+                                     Object::ToObject(isolate, receiver));
+  Handle<Object> primitive;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, primitive,
+      Object::ToPrimitive(receiver_obj, ToPrimitiveHint::kNumber));
+  if (primitive->IsNumber() && !std::isfinite(primitive->Number())) {
+    return isolate->heap()->null_value();
+  } else {
+    Handle<String> name =
+        isolate->factory()->NewStringFromAsciiChecked("toISOString");
+    Handle<Object> function;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, function,
+                                       Object::GetProperty(receiver_obj, name));
+    if (!function->IsCallable()) {
+      THROW_NEW_ERROR_RETURN_FAILURE(
+          isolate, NewTypeError(MessageTemplate::kCalledNonCallable, name));
+    }
+    RETURN_RESULT_OR_FAILURE(
+        isolate, Execution::Call(isolate, function, receiver_obj, 0, NULL));
+  }
+}
 
 // static
 void Builtins::Generate_DatePrototypeGetDate(MacroAssembler* masm) {
@@ -4026,10 +4504,9 @@ void Builtins::Generate_DatePrototypeGetUTCSeconds(MacroAssembler* masm) {
 namespace {
 
 // ES6 section 19.2.1.1.1 CreateDynamicFunction
-MaybeHandle<JSFunction> CreateDynamicFunction(
-    Isolate* isolate,
-    BuiltinArguments<BuiltinExtraArguments::kTargetAndNewTarget> args,
-    const char* token) {
+MaybeHandle<JSFunction> CreateDynamicFunction(Isolate* isolate,
+                                              BuiltinArguments args,
+                                              const char* token) {
   // Compute number of arguments, ignoring the receiver.
   DCHECK_LE(1, args.length());
   int const argc = args.length() - 1;
@@ -4115,7 +4592,7 @@ MaybeHandle<JSFunction> CreateDynamicFunction(
   // function has wrong initial map. To fix that we create a new
   // function object with correct initial map.
   Handle<Object> unchecked_new_target = args.new_target();
-  if (!unchecked_new_target->IsUndefined() &&
+  if (!unchecked_new_target->IsUndefined(isolate) &&
       !unchecked_new_target.is_identical_to(target)) {
     Handle<JSReceiver> new_target =
         Handle<JSReceiver>::cast(unchecked_new_target);
@@ -4147,9 +4624,9 @@ BUILTIN(FunctionConstructor) {
   return *result;
 }
 
+namespace {
 
-// ES6 section 19.2.3.2 Function.prototype.bind ( thisArg, ...args )
-BUILTIN(FunctionPrototypeBind) {
+Object* DoFunctionBind(Isolate* isolate, BuiltinArguments args) {
   HandleScope scope(isolate);
   DCHECK_LE(1, args.length());
   if (!args.receiver()->IsCallable()) {
@@ -4233,6 +4710,22 @@ BUILTIN(FunctionPrototypeBind) {
   return *function;
 }
 
+}  // namespace
+
+// ES6 section 19.2.3.2 Function.prototype.bind ( thisArg, ...args )
+BUILTIN(FunctionPrototypeBind) { return DoFunctionBind(isolate, args); }
+
+// TODO(verwaest): This is a temporary helper until the FastFunctionBind stub
+// can tailcall to the builtin directly.
+RUNTIME_FUNCTION(Runtime_FunctionBind) {
+  DCHECK_EQ(2, args.length());
+  Arguments* incoming = reinterpret_cast<Arguments*>(args[0]);
+  // Rewrap the arguments as builtins arguments.
+  BuiltinArguments caller_args(incoming->length() + 3,
+                               incoming->arguments() + 1);
+  return DoFunctionBind(isolate, caller_args);
+}
+
 // ES6 section 19.2.3.5 Function.prototype.toString ( )
 BUILTIN(FunctionPrototypeToString) {
   HandleScope scope(isolate);
@@ -4252,18 +4745,23 @@ BUILTIN(FunctionPrototypeToString) {
 // ES6 section 25.2.1.1 GeneratorFunction (p1, p2, ... , pn, body)
 BUILTIN(GeneratorFunctionConstructor) {
   HandleScope scope(isolate);
-  Handle<JSFunction> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, CreateDynamicFunction(isolate, args, "function*"));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           CreateDynamicFunction(isolate, args, "function*"));
 }
 
 BUILTIN(AsyncFunctionConstructor) {
   HandleScope scope(isolate);
-  Handle<JSFunction> result;
+  Handle<JSFunction> func;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, CreateDynamicFunction(isolate, args, "async function"));
-  return *result;
+      isolate, func, CreateDynamicFunction(isolate, args, "async function"));
+
+  // Do not lazily compute eval position for AsyncFunction, as they may not be
+  // determined after the function is resumed.
+  Handle<Script> script = handle(Script::cast(func->shared()->script()));
+  int position = script->GetEvalPosition();
+  USE(position);
+
+  return *func;
 }
 
 // ES6 section 19.4.1.1 Symbol ( [ description ] ) for the [[Call]] case.
@@ -4271,7 +4769,7 @@ BUILTIN(SymbolConstructor) {
   HandleScope scope(isolate);
   Handle<Symbol> result = isolate->factory()->NewSymbol();
   Handle<Object> description = args.atOrUndefined(isolate, 1);
-  if (!description->IsUndefined()) {
+  if (!description->IsUndefined(isolate)) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, description,
                                        Object::ToString(isolate, description));
     result->set_name(*description);
@@ -4293,14 +4791,292 @@ BUILTIN(SymbolConstructor_ConstructStub) {
 BUILTIN(ObjectProtoToString) {
   HandleScope scope(isolate);
   Handle<Object> object = args.at<Object>(0);
-  Handle<String> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, result, Object::ObjectProtoToString(isolate, object));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           Object::ObjectProtoToString(isolate, object));
 }
 
 // -----------------------------------------------------------------------------
 // ES6 section 21.1 String Objects
+
+// ES6 section 21.1.2.1 String.fromCharCode ( ...codeUnits )
+void Builtins::Generate_StringFromCharCode(CodeStubAssembler* assembler) {
+  typedef CodeStubAssembler::Label Label;
+  typedef compiler::Node Node;
+  typedef CodeStubAssembler::Variable Variable;
+
+  Node* code = assembler->Parameter(1);
+  Node* context = assembler->Parameter(4);
+
+  // Check if we have exactly one argument (plus the implicit receiver), i.e.
+  // if the parent frame is not an arguments adaptor frame.
+  Label if_oneargument(assembler), if_notoneargument(assembler);
+  Node* parent_frame_pointer = assembler->LoadParentFramePointer();
+  Node* parent_frame_type =
+      assembler->Load(MachineType::Pointer(), parent_frame_pointer,
+                      assembler->IntPtrConstant(
+                          CommonFrameConstants::kContextOrFrameTypeOffset));
+  assembler->Branch(
+      assembler->WordEqual(
+          parent_frame_type,
+          assembler->SmiConstant(Smi::FromInt(StackFrame::ARGUMENTS_ADAPTOR))),
+      &if_notoneargument, &if_oneargument);
+
+  assembler->Bind(&if_oneargument);
+  {
+    // Single argument case, perform fast single character string cache lookup
+    // for one-byte code units, or fall back to creating a single character
+    // string on the fly otherwise.
+    Node* code32 = assembler->TruncateTaggedToWord32(context, code);
+    Node* code16 = assembler->Word32And(
+        code32, assembler->Int32Constant(String::kMaxUtf16CodeUnit));
+    Node* result = assembler->StringFromCharCode(code16);
+    assembler->Return(result);
+  }
+
+  assembler->Bind(&if_notoneargument);
+  {
+    // Determine the resulting string length.
+    Node* parent_frame_length =
+        assembler->Load(MachineType::Pointer(), parent_frame_pointer,
+                        assembler->IntPtrConstant(
+                            ArgumentsAdaptorFrameConstants::kLengthOffset));
+    Node* length = assembler->SmiToWord(parent_frame_length);
+
+    // Assume that the resulting string contains only one-byte characters.
+    Node* result = assembler->AllocateSeqOneByteString(context, length);
+
+    // Truncate all input parameters and append them to the resulting string.
+    Variable var_offset(assembler, MachineType::PointerRepresentation());
+    Label loop(assembler, &var_offset), done_loop(assembler);
+    var_offset.Bind(assembler->IntPtrConstant(0));
+    assembler->Goto(&loop);
+    assembler->Bind(&loop);
+    {
+      // Load the current {offset}.
+      Node* offset = var_offset.value();
+
+      // Check if we're done with the string.
+      assembler->GotoIf(assembler->WordEqual(offset, length), &done_loop);
+
+      // Load the next code point and truncate it to a 16-bit value.
+      Node* code = assembler->Load(
+          MachineType::AnyTagged(), parent_frame_pointer,
+          assembler->IntPtrAdd(
+              assembler->WordShl(assembler->IntPtrSub(length, offset),
+                                 assembler->IntPtrConstant(kPointerSizeLog2)),
+              assembler->IntPtrConstant(
+                  CommonFrameConstants::kFixedFrameSizeAboveFp -
+                  kPointerSize)));
+      Node* code32 = assembler->TruncateTaggedToWord32(context, code);
+      Node* code16 = assembler->Word32And(
+          code32, assembler->Int32Constant(String::kMaxUtf16CodeUnit));
+
+      // Check if {code16} fits into a one-byte string.
+      Label if_codeisonebyte(assembler), if_codeistwobyte(assembler);
+      assembler->Branch(
+          assembler->Int32LessThanOrEqual(
+              code16, assembler->Int32Constant(String::kMaxOneByteCharCode)),
+          &if_codeisonebyte, &if_codeistwobyte);
+
+      assembler->Bind(&if_codeisonebyte);
+      {
+        // The {code16} fits into the SeqOneByteString {result}.
+        assembler->StoreNoWriteBarrier(
+            MachineRepresentation::kWord8, result,
+            assembler->IntPtrAdd(
+                assembler->IntPtrConstant(SeqOneByteString::kHeaderSize -
+                                          kHeapObjectTag),
+                offset),
+            code16);
+        var_offset.Bind(
+            assembler->IntPtrAdd(offset, assembler->IntPtrConstant(1)));
+        assembler->Goto(&loop);
+      }
+
+      assembler->Bind(&if_codeistwobyte);
+      {
+        // Allocate a SeqTwoByteString to hold the resulting string.
+        Node* cresult = assembler->AllocateSeqTwoByteString(context, length);
+
+        // Copy all characters that were previously written to the
+        // SeqOneByteString in {result} over to the new {cresult}.
+        Variable var_coffset(assembler, MachineType::PointerRepresentation());
+        Label cloop(assembler, &var_coffset), done_cloop(assembler);
+        var_coffset.Bind(assembler->IntPtrConstant(0));
+        assembler->Goto(&cloop);
+        assembler->Bind(&cloop);
+        {
+          Node* coffset = var_coffset.value();
+          assembler->GotoIf(assembler->WordEqual(coffset, offset), &done_cloop);
+          Node* ccode = assembler->Load(
+              MachineType::Uint8(), result,
+              assembler->IntPtrAdd(
+                  assembler->IntPtrConstant(SeqOneByteString::kHeaderSize -
+                                            kHeapObjectTag),
+                  coffset));
+          assembler->StoreNoWriteBarrier(
+              MachineRepresentation::kWord16, cresult,
+              assembler->IntPtrAdd(
+                  assembler->IntPtrConstant(SeqTwoByteString::kHeaderSize -
+                                            kHeapObjectTag),
+                  assembler->WordShl(coffset, 1)),
+              ccode);
+          var_coffset.Bind(
+              assembler->IntPtrAdd(coffset, assembler->IntPtrConstant(1)));
+          assembler->Goto(&cloop);
+        }
+
+        // Write the pending {code16} to {offset}.
+        assembler->Bind(&done_cloop);
+        assembler->StoreNoWriteBarrier(
+            MachineRepresentation::kWord16, cresult,
+            assembler->IntPtrAdd(
+                assembler->IntPtrConstant(SeqTwoByteString::kHeaderSize -
+                                          kHeapObjectTag),
+                assembler->WordShl(offset, 1)),
+            code16);
+
+        // Copy the remaining parameters to the SeqTwoByteString {cresult}.
+        Label floop(assembler, &var_offset), done_floop(assembler);
+        assembler->Goto(&floop);
+        assembler->Bind(&floop);
+        {
+          // Compute the next {offset}.
+          Node* offset = assembler->IntPtrAdd(var_offset.value(),
+                                              assembler->IntPtrConstant(1));
+
+          // Check if we're done with the string.
+          assembler->GotoIf(assembler->WordEqual(offset, length), &done_floop);
+
+          // Load the next code point and truncate it to a 16-bit value.
+          Node* code = assembler->Load(
+              MachineType::AnyTagged(), parent_frame_pointer,
+              assembler->IntPtrAdd(
+                  assembler->WordShl(
+                      assembler->IntPtrSub(length, offset),
+                      assembler->IntPtrConstant(kPointerSizeLog2)),
+                  assembler->IntPtrConstant(
+                      CommonFrameConstants::kFixedFrameSizeAboveFp -
+                      kPointerSize)));
+          Node* code32 = assembler->TruncateTaggedToWord32(context, code);
+          Node* code16 = assembler->Word32And(
+              code32, assembler->Int32Constant(String::kMaxUtf16CodeUnit));
+
+          // Store the truncated {code} point at the next offset.
+          assembler->StoreNoWriteBarrier(
+              MachineRepresentation::kWord16, cresult,
+              assembler->IntPtrAdd(
+                  assembler->IntPtrConstant(SeqTwoByteString::kHeaderSize -
+                                            kHeapObjectTag),
+                  assembler->WordShl(offset, 1)),
+              code16);
+          var_offset.Bind(offset);
+          assembler->Goto(&floop);
+        }
+
+        // Return the SeqTwoByteString.
+        assembler->Bind(&done_floop);
+        assembler->Return(cresult);
+      }
+    }
+
+    assembler->Bind(&done_loop);
+    assembler->Return(result);
+  }
+}
+
+namespace {  // for String.fromCodePoint
+
+bool IsValidCodePoint(Isolate* isolate, Handle<Object> value) {
+  if (!value->IsNumber() && !Object::ToNumber(value).ToHandle(&value)) {
+    return false;
+  }
+
+  if (Object::ToInteger(isolate, value).ToHandleChecked()->Number() !=
+      value->Number()) {
+    return false;
+  }
+
+  if (value->Number() < 0 || value->Number() > 0x10FFFF) {
+    return false;
+  }
+
+  return true;
+}
+
+uc32 NextCodePoint(Isolate* isolate, BuiltinArguments args, int index) {
+  Handle<Object> value = args.at<Object>(1 + index);
+  ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, value, Object::ToNumber(value), -1);
+  if (!IsValidCodePoint(isolate, value)) {
+    isolate->Throw(*isolate->factory()->NewRangeError(
+        MessageTemplate::kInvalidCodePoint, value));
+    return -1;
+  }
+  return DoubleToUint32(value->Number());
+}
+
+}  // namespace
+
+// ES6 section 21.1.2.2 String.fromCodePoint ( ...codePoints )
+BUILTIN(StringFromCodePoint) {
+  HandleScope scope(isolate);
+  int const length = args.length() - 1;
+  if (length == 0) return isolate->heap()->empty_string();
+  DCHECK_LT(0, length);
+
+  // Optimistically assume that the resulting String contains only one byte
+  // characters.
+  List<uint8_t> one_byte_buffer(length);
+  uc32 code = 0;
+  int index;
+  for (index = 0; index < length; index++) {
+    code = NextCodePoint(isolate, args, index);
+    if (code < 0) {
+      return isolate->heap()->exception();
+    }
+    if (code > String::kMaxOneByteCharCode) {
+      break;
+    }
+    one_byte_buffer.Add(code);
+  }
+
+  if (index == length) {
+    RETURN_RESULT_OR_FAILURE(isolate, isolate->factory()->NewStringFromOneByte(
+                                          one_byte_buffer.ToConstVector()));
+  }
+
+  List<uc16> two_byte_buffer(length - index);
+
+  while (true) {
+    if (code <= unibrow::Utf16::kMaxNonSurrogateCharCode) {
+      two_byte_buffer.Add(code);
+    } else {
+      two_byte_buffer.Add(unibrow::Utf16::LeadSurrogate(code));
+      two_byte_buffer.Add(unibrow::Utf16::TrailSurrogate(code));
+    }
+
+    if (++index == length) {
+      break;
+    }
+    code = NextCodePoint(isolate, args, index);
+    if (code < 0) {
+      return isolate->heap()->exception();
+    }
+  }
+
+  Handle<SeqTwoByteString> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      isolate->factory()->NewRawTwoByteString(one_byte_buffer.length() +
+                                              two_byte_buffer.length()));
+
+  CopyChars(result->GetChars(), one_byte_buffer.ToConstVector().start(),
+            one_byte_buffer.length());
+  CopyChars(result->GetChars() + one_byte_buffer.length(),
+            two_byte_buffer.ToConstVector().start(), two_byte_buffer.length());
+
+  return *result;
+}
 
 // ES6 section 21.1.3.1 String.prototype.charAt ( pos )
 void Builtins::Generate_StringPrototypeCharAt(CodeStubAssembler* assembler) {
@@ -4489,6 +5265,27 @@ void Builtins::Generate_StringPrototypeCharCodeAt(
   assembler->Return(result);
 }
 
+// ES6 section 21.1.3.25 String.prototype.trim ()
+BUILTIN(StringPrototypeTrim) {
+  HandleScope scope(isolate);
+  TO_THIS_STRING(string, "String.prototype.trim");
+  return *String::Trim(string, String::kTrim);
+}
+
+// Non-standard WebKit extension
+BUILTIN(StringPrototypeTrimLeft) {
+  HandleScope scope(isolate);
+  TO_THIS_STRING(string, "String.prototype.trimLeft");
+  return *String::Trim(string, String::kTrimLeft);
+}
+
+// Non-standard WebKit extension
+BUILTIN(StringPrototypeTrimRight) {
+  HandleScope scope(isolate);
+  TO_THIS_STRING(string, "String.prototype.trimRight");
+  return *String::Trim(string, String::kTrimRight);
+}
+
 // -----------------------------------------------------------------------------
 // ES6 section 21.1 ArrayBuffer Objects
 
@@ -4566,10 +5363,7 @@ BUILTIN(ProxyConstructor_ConstructStub) {
   DCHECK(isolate->proxy_function()->IsConstructor());
   Handle<Object> target = args.atOrUndefined(isolate, 1);
   Handle<Object> handler = args.atOrUndefined(isolate, 2);
-  Handle<JSProxy> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result,
-                                     JSProxy::New(isolate, target, handler));
-  return *result;
+  RETURN_RESULT_OR_FAILURE(isolate, JSProxy::New(isolate, target, handler));
 }
 
 
@@ -4598,25 +5392,38 @@ BUILTIN(RestrictedStrictArgumentsPropertiesThrower) {
 
 namespace {
 
+// Returns the holder JSObject if the function can legally be called with this
+// receiver.  Returns nullptr if the call is illegal.
+// TODO(dcarney): CallOptimization duplicates this logic, merge.
+JSObject* GetCompatibleReceiver(Isolate* isolate, FunctionTemplateInfo* info,
+                                JSObject* receiver) {
+  Object* recv_type = info->signature();
+  // No signature, return holder.
+  if (!recv_type->IsFunctionTemplateInfo()) return receiver;
+  FunctionTemplateInfo* signature = FunctionTemplateInfo::cast(recv_type);
+
+  // Check the receiver. Fast path for receivers with no hidden prototypes.
+  if (signature->IsTemplateFor(receiver)) return receiver;
+  if (!receiver->map()->has_hidden_prototype()) return nullptr;
+  for (PrototypeIterator iter(isolate, receiver, kStartAtPrototype,
+                              PrototypeIterator::END_AT_NON_HIDDEN);
+       !iter.IsAtEnd(); iter.Advance()) {
+    JSObject* current = iter.GetCurrent<JSObject>();
+    if (signature->IsTemplateFor(current)) return current;
+  }
+  return nullptr;
+}
+
+template <bool is_construct>
 MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
-    Isolate* isolate,
-    BuiltinArguments<BuiltinExtraArguments::kTargetAndNewTarget> args) {
-  HandleScope scope(isolate);
-  Handle<HeapObject> function = args.target<HeapObject>();
-  Handle<HeapObject> new_target = args.new_target();
-  bool is_construct = !new_target->IsUndefined();
-  Handle<JSReceiver> receiver;
-
-  DCHECK(function->IsFunctionTemplateInfo() ||
-         Handle<JSFunction>::cast(function)->shared()->IsApiFunction());
-
-  Handle<FunctionTemplateInfo> fun_data =
-      function->IsFunctionTemplateInfo()
-          ? Handle<FunctionTemplateInfo>::cast(function)
-          : handle(JSFunction::cast(*function)->shared()->get_api_func_data());
+    Isolate* isolate, Handle<HeapObject> function,
+    Handle<HeapObject> new_target, Handle<FunctionTemplateInfo> fun_data,
+    Handle<Object> receiver, BuiltinArguments args) {
+  Handle<JSObject> js_receiver;
+  JSObject* raw_holder;
   if (is_construct) {
-    DCHECK(args.receiver()->IsTheHole());
-    if (fun_data->instance_template()->IsUndefined()) {
+    DCHECK(args.receiver()->IsTheHole(isolate));
+    if (fun_data->instance_template()->IsUndefined(isolate)) {
       v8::Local<ObjectTemplate> templ =
           ObjectTemplate::New(reinterpret_cast<v8::Isolate*>(isolate),
                               ToApiHandle<v8::FunctionTemplate>(fun_data));
@@ -4625,37 +5432,43 @@ MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
     Handle<ObjectTemplateInfo> instance_template(
         ObjectTemplateInfo::cast(fun_data->instance_template()), isolate);
     ASSIGN_RETURN_ON_EXCEPTION(
-        isolate, receiver,
+        isolate, js_receiver,
         ApiNatives::InstantiateObject(instance_template,
                                       Handle<JSReceiver>::cast(new_target)),
         Object);
-    args[0] = *receiver;
-    DCHECK_EQ(*receiver, *args.receiver());
-  } else {
-    DCHECK(args.receiver()->IsJSReceiver());
-    receiver = args.at<JSReceiver>(0);
-  }
+    args[0] = *js_receiver;
+    DCHECK_EQ(*js_receiver, *args.receiver());
 
-  if (!is_construct && !fun_data->accept_any_receiver()) {
-    if (receiver->IsJSObject() && receiver->IsAccessCheckNeeded()) {
-      Handle<JSObject> js_receiver = Handle<JSObject>::cast(receiver);
-      if (!isolate->MayAccess(handle(isolate->context()), js_receiver)) {
-        isolate->ReportFailedAccessCheck(js_receiver);
-        RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
-      }
+    raw_holder = *js_receiver;
+  } else {
+    DCHECK(receiver->IsJSReceiver());
+
+    if (!receiver->IsJSObject()) {
+      // This function cannot be called with the given receiver.  Abort!
+      THROW_NEW_ERROR(
+          isolate, NewTypeError(MessageTemplate::kIllegalInvocation), Object);
+    }
+
+    js_receiver = Handle<JSObject>::cast(receiver);
+
+    if (!fun_data->accept_any_receiver() &&
+        js_receiver->IsAccessCheckNeeded() &&
+        !isolate->MayAccess(handle(isolate->context()), js_receiver)) {
+      isolate->ReportFailedAccessCheck(js_receiver);
+      RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
+    }
+
+    raw_holder = GetCompatibleReceiver(isolate, *fun_data, *js_receiver);
+
+    if (raw_holder == nullptr) {
+      // This function cannot be called with the given receiver.  Abort!
+      THROW_NEW_ERROR(
+          isolate, NewTypeError(MessageTemplate::kIllegalInvocation), Object);
     }
   }
 
-  Object* raw_holder = fun_data->GetCompatibleReceiver(isolate, *receiver);
-
-  if (raw_holder->IsNull()) {
-    // This function cannot be called with the given receiver.  Abort!
-    THROW_NEW_ERROR(isolate, NewTypeError(MessageTemplate::kIllegalInvocation),
-                    Object);
-  }
-
   Object* raw_call_data = fun_data->call_code();
-  if (!raw_call_data->IsUndefined()) {
+  if (!raw_call_data->IsUndefined(isolate)) {
     DCHECK(raw_call_data->IsCallHandlerInfo());
     CallHandlerInfo* call_data = CallHandlerInfo::cast(raw_call_data);
     Object* callback_obj = call_data->callback();
@@ -4663,23 +5476,25 @@ MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
         v8::ToCData<v8::FunctionCallback>(callback_obj);
     Object* data_obj = call_data->data();
 
-    LOG(isolate, ApiObjectAccess("call", JSObject::cast(*args.receiver())));
-    DCHECK(raw_holder->IsJSObject());
+    LOG(isolate, ApiObjectAccess("call", JSObject::cast(*js_receiver)));
 
     FunctionCallbackArguments custom(isolate, data_obj, *function, raw_holder,
                                      *new_target, &args[0] - 1,
                                      args.length() - 1);
 
     Handle<Object> result = custom.Call(callback);
-    if (result.is_null()) result = isolate->factory()->undefined_value();
 
     RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, Object);
-    if (!is_construct || result->IsJSObject()) {
-      return scope.CloseAndEscape(result);
+    if (result.is_null()) {
+      if (is_construct) return js_receiver;
+      return isolate->factory()->undefined_value();
     }
+    // Rebox the result.
+    result->VerifyApiCallResultType();
+    if (!is_construct || result->IsJSObject()) return handle(*result, isolate);
   }
 
-  return scope.CloseAndEscape(receiver);
+  return js_receiver;
 }
 
 }  // namespace
@@ -4687,10 +5502,20 @@ MUST_USE_RESULT MaybeHandle<Object> HandleApiCallHelper(
 
 BUILTIN(HandleApiCall) {
   HandleScope scope(isolate);
-  Handle<Object> result;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result,
-                                     HandleApiCallHelper(isolate, args));
-  return *result;
+  Handle<JSFunction> function = args.target<JSFunction>();
+  Handle<Object> receiver = args.receiver();
+  Handle<HeapObject> new_target = args.new_target();
+  Handle<FunctionTemplateInfo> fun_data(function->shared()->get_api_func_data(),
+                                        isolate);
+  if (new_target->IsJSReceiver()) {
+    RETURN_RESULT_OR_FAILURE(
+        isolate, HandleApiCallHelper<true>(isolate, function, new_target,
+                                           fun_data, receiver, args));
+  } else {
+    RETURN_RESULT_OR_FAILURE(
+        isolate, HandleApiCallHelper<false>(isolate, function, new_target,
+                                            fun_data, receiver, args));
+  }
 }
 
 
@@ -4774,14 +5599,10 @@ Handle<Code> Builtins::InterpreterPushArgsAndCall(TailCallMode tail_call_mode) {
 
 namespace {
 
-class RelocatableArguments
-    : public BuiltinArguments<BuiltinExtraArguments::kTargetAndNewTarget>,
-      public Relocatable {
+class RelocatableArguments : public BuiltinArguments, public Relocatable {
  public:
   RelocatableArguments(Isolate* isolate, int length, Object** arguments)
-      : BuiltinArguments<BuiltinExtraArguments::kTargetAndNewTarget>(length,
-                                                                     arguments),
-        Relocatable(isolate) {}
+      : BuiltinArguments(length, arguments), Relocatable(isolate) {}
 
   virtual inline void IterateInstance(ObjectVisitor* v) {
     if (length() == 0) return;
@@ -4794,14 +5615,17 @@ class RelocatableArguments
 
 }  // namespace
 
-MaybeHandle<Object> Builtins::InvokeApiFunction(Handle<HeapObject> function,
+MaybeHandle<Object> Builtins::InvokeApiFunction(Isolate* isolate,
+                                                Handle<HeapObject> function,
                                                 Handle<Object> receiver,
                                                 int argc,
                                                 Handle<Object> args[]) {
-  Isolate* isolate = function->GetIsolate();
+  DCHECK(function->IsFunctionTemplateInfo() ||
+         (function->IsJSFunction() &&
+          JSFunction::cast(*function)->shared()->IsApiFunction()));
+
   // Do proper receiver conversion for non-strict mode api functions.
   if (!receiver->IsJSReceiver()) {
-    DCHECK(function->IsFunctionTemplateInfo() || function->IsJSFunction());
     if (function->IsFunctionTemplateInfo() ||
         is_sloppy(JSFunction::cast(*function)->shared()->language_mode())) {
       ASSIGN_RETURN_ON_EXCEPTION(isolate, receiver,
@@ -4809,6 +5633,13 @@ MaybeHandle<Object> Builtins::InvokeApiFunction(Handle<HeapObject> function,
                                  Object);
     }
   }
+
+  Handle<FunctionTemplateInfo> fun_data =
+      function->IsFunctionTemplateInfo()
+          ? Handle<FunctionTemplateInfo>::cast(function)
+          : handle(JSFunction::cast(*function)->shared()->get_api_func_data(),
+                   isolate);
+  Handle<HeapObject> new_target = isolate->factory()->undefined_value();
   // Construct BuiltinArguments object:
   // new target, function, arguments reversed, receiver.
   const int kBufferSize = 32;
@@ -4824,15 +5655,14 @@ MaybeHandle<Object> Builtins::InvokeApiFunction(Handle<HeapObject> function,
     argv[argc - i + 1] = *args[i];
   }
   argv[1] = *function;
-  argv[0] = isolate->heap()->undefined_value();  // new target
+  argv[0] = *new_target;
   MaybeHandle<Object> result;
   {
     RelocatableArguments arguments(isolate, argc + 3, &argv[argc] + 2);
-    result = HandleApiCallHelper(isolate, arguments);
+    result = HandleApiCallHelper<false>(isolate, function, new_target, fun_data,
+                                        receiver, arguments);
   }
-  if (argv != small_argv) {
-    delete[] argv;
-  }
+  if (argv != small_argv) delete[] argv;
   return result;
 }
 
@@ -4841,8 +5671,7 @@ MaybeHandle<Object> Builtins::InvokeApiFunction(Handle<HeapObject> function,
 // API. The object can be called as either a constructor (using new) or just as
 // a function (without new).
 MUST_USE_RESULT static Object* HandleApiCallAsFunctionOrConstructor(
-    Isolate* isolate, bool is_construct_call,
-    BuiltinArguments<BuiltinExtraArguments::kNone> args) {
+    Isolate* isolate, bool is_construct_call, BuiltinArguments args) {
   Handle<Object> receiver = args.receiver();
 
   // Get the object called.
@@ -4868,7 +5697,7 @@ MUST_USE_RESULT static Object* HandleApiCallAsFunctionOrConstructor(
   CHECK(constructor->shared()->IsApiFunction());
   Object* handler =
       constructor->shared()->get_api_func_data()->instance_call_handler();
-  DCHECK(!handler->IsUndefined());
+  DCHECK(!handler->IsUndefined(isolate));
   // TODO(ishell): remove this debugging code.
   CHECK(handler->IsCallHandlerInfo());
   CallHandlerInfo* call_data = CallHandlerInfo::cast(handler);
@@ -4911,106 +5740,133 @@ BUILTIN(HandleApiCallAsConstructor) {
   return HandleApiCallAsFunctionOrConstructor(isolate, true, args);
 }
 
+namespace {
 
-static void Generate_LoadIC_Miss(MacroAssembler* masm) {
-  LoadIC::GenerateMiss(masm);
+void Generate_LoadIC_Miss(CodeStubAssembler* assembler) {
+  typedef compiler::Node Node;
+
+  Node* receiver = assembler->Parameter(0);
+  Node* name = assembler->Parameter(1);
+  Node* slot = assembler->Parameter(2);
+  Node* vector = assembler->Parameter(3);
+  Node* context = assembler->Parameter(4);
+
+  assembler->TailCallRuntime(Runtime::kLoadIC_Miss, context, receiver, name,
+                             slot, vector);
 }
 
+void Generate_LoadGlobalIC_Miss(CodeStubAssembler* assembler) {
+  typedef compiler::Node Node;
 
-static void Generate_LoadIC_Normal(MacroAssembler* masm) {
+  Node* slot = assembler->Parameter(0);
+  Node* vector = assembler->Parameter(1);
+  Node* context = assembler->Parameter(2);
+
+  assembler->TailCallRuntime(Runtime::kLoadGlobalIC_Miss, context, slot,
+                             vector);
+}
+
+void Generate_LoadIC_Normal(MacroAssembler* masm) {
   LoadIC::GenerateNormal(masm);
 }
 
-
-static void Generate_LoadIC_Getter_ForDeopt(MacroAssembler* masm) {
+void Generate_LoadIC_Getter_ForDeopt(MacroAssembler* masm) {
   NamedLoadHandlerCompiler::GenerateLoadViaGetterForDeopt(masm);
 }
 
+void Generate_LoadIC_Slow(CodeStubAssembler* assembler) {
+  typedef compiler::Node Node;
 
-static void Generate_LoadIC_Slow(MacroAssembler* masm) {
-  LoadIC::GenerateRuntimeGetProperty(masm);
+  Node* receiver = assembler->Parameter(0);
+  Node* name = assembler->Parameter(1);
+  // Node* slot = assembler->Parameter(2);
+  // Node* vector = assembler->Parameter(3);
+  Node* context = assembler->Parameter(4);
+
+  assembler->TailCallRuntime(Runtime::kGetProperty, context, receiver, name);
 }
 
+void Generate_LoadGlobalIC_SlowInsideTypeof(CodeStubAssembler* assembler) {
+  typedef compiler::Node Node;
 
-static void Generate_KeyedLoadIC_Slow(MacroAssembler* masm) {
+  Node* slot = assembler->Parameter(0);
+  Node* vector = assembler->Parameter(1);
+  Node* context = assembler->Parameter(2);
+
+  assembler->TailCallRuntime(Runtime::kGetGlobalInsideTypeof, context, slot,
+                             vector);
+}
+
+void Generate_LoadGlobalIC_SlowNotInsideTypeof(CodeStubAssembler* assembler) {
+  typedef compiler::Node Node;
+
+  Node* slot = assembler->Parameter(0);
+  Node* vector = assembler->Parameter(1);
+  Node* context = assembler->Parameter(2);
+
+  assembler->TailCallRuntime(Runtime::kGetGlobalNotInsideTypeof, context, slot,
+                             vector);
+}
+
+void Generate_KeyedLoadIC_Slow(MacroAssembler* masm) {
   KeyedLoadIC::GenerateRuntimeGetProperty(masm);
 }
 
-
-static void Generate_KeyedLoadIC_Miss(MacroAssembler* masm) {
+void Generate_KeyedLoadIC_Miss(MacroAssembler* masm) {
   KeyedLoadIC::GenerateMiss(masm);
 }
 
-
-static void Generate_KeyedLoadIC_Megamorphic(MacroAssembler* masm) {
+void Generate_KeyedLoadIC_Megamorphic(MacroAssembler* masm) {
   KeyedLoadIC::GenerateMegamorphic(masm);
 }
 
-
-static void Generate_StoreIC_Miss(MacroAssembler* masm) {
+void Generate_StoreIC_Miss(MacroAssembler* masm) {
   StoreIC::GenerateMiss(masm);
 }
 
-
-static void Generate_StoreIC_Normal(MacroAssembler* masm) {
+void Generate_StoreIC_Normal(MacroAssembler* masm) {
   StoreIC::GenerateNormal(masm);
 }
 
-
-static void Generate_StoreIC_Slow(MacroAssembler* masm) {
+void Generate_StoreIC_Slow(MacroAssembler* masm) {
   NamedStoreHandlerCompiler::GenerateSlow(masm);
 }
 
-
-static void Generate_KeyedStoreIC_Slow(MacroAssembler* masm) {
+void Generate_KeyedStoreIC_Slow(MacroAssembler* masm) {
   ElementHandlerCompiler::GenerateStoreSlow(masm);
 }
 
-
-static void Generate_StoreIC_Setter_ForDeopt(MacroAssembler* masm) {
+void Generate_StoreIC_Setter_ForDeopt(MacroAssembler* masm) {
   NamedStoreHandlerCompiler::GenerateStoreViaSetterForDeopt(masm);
 }
 
-static void Generate_StoreIC_Megamorphic(MacroAssembler* masm) {
-  StoreIC::GenerateMegamorphic(masm);
-}
-
-static void Generate_StoreIC_Megamorphic_Strict(MacroAssembler* masm) {
-  StoreIC::GenerateMegamorphic(masm);
-}
-
-
-static void Generate_KeyedStoreIC_Megamorphic(MacroAssembler* masm) {
+void Generate_KeyedStoreIC_Megamorphic(MacroAssembler* masm) {
   KeyedStoreIC::GenerateMegamorphic(masm, SLOPPY);
 }
 
-
-static void Generate_KeyedStoreIC_Megamorphic_Strict(MacroAssembler* masm) {
+void Generate_KeyedStoreIC_Megamorphic_Strict(MacroAssembler* masm) {
   KeyedStoreIC::GenerateMegamorphic(masm, STRICT);
 }
 
-
-static void Generate_KeyedStoreIC_Miss(MacroAssembler* masm) {
+void Generate_KeyedStoreIC_Miss(MacroAssembler* masm) {
   KeyedStoreIC::GenerateMiss(masm);
 }
 
-
-static void Generate_Return_DebugBreak(MacroAssembler* masm) {
+void Generate_Return_DebugBreak(MacroAssembler* masm) {
   DebugCodegen::GenerateDebugBreakStub(masm,
                                        DebugCodegen::SAVE_RESULT_REGISTER);
 }
 
-
-static void Generate_Slot_DebugBreak(MacroAssembler* masm) {
+void Generate_Slot_DebugBreak(MacroAssembler* masm) {
   DebugCodegen::GenerateDebugBreakStub(masm,
                                        DebugCodegen::IGNORE_RESULT_REGISTER);
 }
 
-
-static void Generate_FrameDropper_LiveEdit(MacroAssembler* masm) {
+void Generate_FrameDropper_LiveEdit(MacroAssembler* masm) {
   DebugCodegen::GenerateFrameDropperLiveEdit(masm);
 }
 
+}  // namespace
 
 Builtins::Builtins() : initialized_(false) {
   memset(builtins_, 0, sizeof(builtins_[0]) * builtin_count);
@@ -5020,7 +5876,6 @@ Builtins::Builtins() : initialized_(false) {
 
 Builtins::~Builtins() {
 }
-
 
 #define DEF_ENUM_C(name, ignore) FUNCTION_ADDR(Builtin_##name),
 Address const Builtins::c_functions_[cfunction_count] = {
@@ -5036,7 +5891,7 @@ struct BuiltinDesc {
   const char* s_name;  // name is only used for generating log information.
   int name;
   Code::Flags flags;
-  BuiltinExtraArguments extra_args;
+  Builtins::ExitFrameType exit_frame_type;
   int argc;
 };
 
@@ -5081,13 +5936,13 @@ Handle<Code> MacroAssemblerBuilder(Isolate* isolate,
   MacroAssembler masm(isolate, u.buffer, sizeof(u.buffer),
                       CodeObjectRequired::kYes);
   // Generate the code/adaptor.
-  typedef void (*Generator)(MacroAssembler*, int, BuiltinExtraArguments);
+  typedef void (*Generator)(MacroAssembler*, int, Builtins::ExitFrameType);
   Generator g = FUNCTION_CAST<Generator>(builtin_desc->generator);
   // We pass all arguments to the generator, but it may not use all of
   // them.  This works because the first arguments are on top of the
   // stack.
   DCHECK(!masm.has_frame());
-  g(&masm, builtin_desc->name, builtin_desc->extra_args);
+  g(&masm, builtin_desc->name, builtin_desc->exit_frame_type);
   // Move the code into the object heap.
   CodeDesc desc;
   masm.GetCode(&desc);
@@ -5095,11 +5950,31 @@ Handle<Code> MacroAssemblerBuilder(Isolate* isolate,
   return isolate->factory()->NewCode(desc, flags, masm.CodeObject());
 }
 
-Handle<Code> CodeStubAssemblerBuilder(Isolate* isolate,
-                                      BuiltinDesc const* builtin_desc) {
+// Builder for builtins implemented in TurboFan with JS linkage.
+Handle<Code> CodeStubAssemblerBuilderJS(Isolate* isolate,
+                                        BuiltinDesc const* builtin_desc) {
   Zone zone(isolate->allocator());
   CodeStubAssembler assembler(isolate, &zone, builtin_desc->argc,
                               builtin_desc->flags, builtin_desc->s_name);
+  // Generate the code/adaptor.
+  typedef void (*Generator)(CodeStubAssembler*);
+  Generator g = FUNCTION_CAST<Generator>(builtin_desc->generator);
+  g(&assembler);
+  return assembler.GenerateCode();
+}
+
+// Builder for builtins implemented in TurboFan with CallStub linkage.
+Handle<Code> CodeStubAssemblerBuilderCS(Isolate* isolate,
+                                        BuiltinDesc const* builtin_desc) {
+  Zone zone(isolate->allocator());
+  // The interface descriptor with given key must be initialized at this point
+  // and this construction just queries the details from the descriptors table.
+  CallInterfaceDescriptor descriptor(
+      isolate, static_cast<CallDescriptors::Key>(builtin_desc->argc));
+  // Ensure descriptor is already initialized.
+  DCHECK_NOT_NULL(descriptor.GetFunctionType());
+  CodeStubAssembler assembler(isolate, &zone, descriptor, builtin_desc->flags,
+                              builtin_desc->s_name);
   // Generate the code/adaptor.
   typedef void (*Generator)(CodeStubAssembler*);
   Generator g = FUNCTION_CAST<Generator>(builtin_desc->generator);
@@ -5121,41 +5996,51 @@ void Builtins::InitBuiltinFunctionTable() {
   functions[builtin_count].s_name = nullptr;
   functions[builtin_count].name = builtin_count;
   functions[builtin_count].flags = static_cast<Code::Flags>(0);
-  functions[builtin_count].extra_args = BuiltinExtraArguments::kNone;
+  functions[builtin_count].exit_frame_type = EXIT;
   functions[builtin_count].argc = 0;
 
-#define DEF_FUNCTION_PTR_C(aname, aextra_args)                \
-  functions->builder = &MacroAssemblerBuilder;                \
-  functions->generator = FUNCTION_ADDR(Generate_Adaptor);     \
-  functions->c_code = FUNCTION_ADDR(Builtin_##aname);         \
-  functions->s_name = #aname;                                 \
-  functions->name = c_##aname;                                \
-  functions->flags = Code::ComputeFlags(Code::BUILTIN);       \
-  functions->extra_args = BuiltinExtraArguments::aextra_args; \
-  functions->argc = 0;                                        \
+#define DEF_FUNCTION_PTR_C(aname, aexit_frame_type)       \
+  functions->builder = &MacroAssemblerBuilder;            \
+  functions->generator = FUNCTION_ADDR(Generate_Adaptor); \
+  functions->c_code = FUNCTION_ADDR(Builtin_##aname);     \
+  functions->s_name = #aname;                             \
+  functions->name = c_##aname;                            \
+  functions->flags = Code::ComputeFlags(Code::BUILTIN);   \
+  functions->exit_frame_type = aexit_frame_type;          \
+  functions->argc = 0;                                    \
   ++functions;
 
-#define DEF_FUNCTION_PTR_A(aname, kind, state, extra)              \
-  functions->builder = &MacroAssemblerBuilder;                     \
-  functions->generator = FUNCTION_ADDR(Generate_##aname);          \
-  functions->c_code = NULL;                                        \
-  functions->s_name = #aname;                                      \
-  functions->name = k##aname;                                      \
-  functions->flags = Code::ComputeFlags(Code::kind, state, extra); \
-  functions->extra_args = BuiltinExtraArguments::kNone;            \
-  functions->argc = 0;                                             \
+#define DEF_FUNCTION_PTR_A(aname, kind, extra)              \
+  functions->builder = &MacroAssemblerBuilder;              \
+  functions->generator = FUNCTION_ADDR(Generate_##aname);   \
+  functions->c_code = NULL;                                 \
+  functions->s_name = #aname;                               \
+  functions->name = k##aname;                               \
+  functions->flags = Code::ComputeFlags(Code::kind, extra); \
+  functions->exit_frame_type = EXIT;                        \
+  functions->argc = 0;                                      \
   ++functions;
 
-#define DEF_FUNCTION_PTR_T(aname, aargc)                                 \
-  functions->builder = &CodeStubAssemblerBuilder;                        \
-  functions->generator = FUNCTION_ADDR(Generate_##aname);                \
-  functions->c_code = NULL;                                              \
-  functions->s_name = #aname;                                            \
-  functions->name = k##aname;                                            \
-  functions->flags =                                                     \
-      Code::ComputeFlags(Code::BUILTIN, UNINITIALIZED, kNoExtraICState); \
-  functions->extra_args = BuiltinExtraArguments::kNone;                  \
-  functions->argc = aargc;                                               \
+#define DEF_FUNCTION_PTR_T(aname, aargc)                  \
+  functions->builder = &CodeStubAssemblerBuilderJS;       \
+  functions->generator = FUNCTION_ADDR(Generate_##aname); \
+  functions->c_code = NULL;                               \
+  functions->s_name = #aname;                             \
+  functions->name = k##aname;                             \
+  functions->flags = Code::ComputeFlags(Code::BUILTIN);   \
+  functions->exit_frame_type = EXIT;                      \
+  functions->argc = aargc;                                \
+  ++functions;
+
+#define DEF_FUNCTION_PTR_S(aname, kind, extra, interface_descriptor) \
+  functions->builder = &CodeStubAssemblerBuilderCS;                  \
+  functions->generator = FUNCTION_ADDR(Generate_##aname);            \
+  functions->c_code = NULL;                                          \
+  functions->s_name = #aname;                                        \
+  functions->name = k##aname;                                        \
+  functions->flags = Code::ComputeFlags(Code::kind, extra);          \
+  functions->exit_frame_type = EXIT;                                 \
+  functions->argc = CallDescriptors::interface_descriptor;           \
   ++functions;
 
 #define DEF_FUNCTION_PTR_H(aname, kind)                     \
@@ -5165,20 +6050,22 @@ void Builtins::InitBuiltinFunctionTable() {
   functions->s_name = #aname;                               \
   functions->name = k##aname;                               \
   functions->flags = Code::ComputeHandlerFlags(Code::kind); \
-  functions->extra_args = BuiltinExtraArguments::kNone;     \
+  functions->exit_frame_type = EXIT;                        \
   functions->argc = 0;                                      \
   ++functions;
 
   BUILTIN_LIST_C(DEF_FUNCTION_PTR_C)
   BUILTIN_LIST_A(DEF_FUNCTION_PTR_A)
   BUILTIN_LIST_T(DEF_FUNCTION_PTR_T)
+  BUILTIN_LIST_S(DEF_FUNCTION_PTR_S)
   BUILTIN_LIST_H(DEF_FUNCTION_PTR_H)
   BUILTIN_LIST_DEBUG_A(DEF_FUNCTION_PTR_A)
 
 #undef DEF_FUNCTION_PTR_C
 #undef DEF_FUNCTION_PTR_A
-#undef DEF_FUNCTION_PTR_H
 #undef DEF_FUNCTION_PTR_T
+#undef DEF_FUNCTION_PTR_S
+#undef DEF_FUNCTION_PTR_H
 }
 
 
@@ -5187,6 +6074,11 @@ void Builtins::SetUp(Isolate* isolate, bool create_heap_objects) {
 
   // Create a scope for the handles in the builtins.
   HandleScope scope(isolate);
+
+#define INITIALIZE_CALL_DESCRIPTOR(name, kind, extra, interface_descriptor) \
+  { interface_descriptor##Descriptor descriptor(isolate); }
+  BUILTIN_LIST_S(INITIALIZE_CALL_DESCRIPTOR)
+#undef INITIALIZE_CALL_DESCRIPTOR
 
   const BuiltinDesc* functions = builtin_function_table.functions();
 
@@ -5197,8 +6089,8 @@ void Builtins::SetUp(Isolate* isolate, bool create_heap_objects) {
       Handle<Code> code = (*functions[i].builder)(isolate, functions + i);
       // Log the event and add the code to the builtins array.
       PROFILE(isolate,
-              CodeCreateEvent(Logger::BUILTIN_TAG, AbstractCode::cast(*code),
-                              functions[i].s_name));
+              CodeCreateEvent(CodeEventListener::BUILTIN_TAG,
+                              AbstractCode::cast(*code), functions[i].s_name));
       builtins_[i] = *code;
       code->set_builtin_index(i);
 #ifdef ENABLE_DISASSEMBLER
@@ -5492,19 +6384,22 @@ void Builtins::Generate_AtomicsStore(CodeStubAssembler* a) {
   a->Return(a->Int32Constant(0));
 }
 
-#define DEFINE_BUILTIN_ACCESSOR_C(name, ignore)               \
-Handle<Code> Builtins::name() {                               \
-  Code** code_address =                                       \
-      reinterpret_cast<Code**>(builtin_address(k##name));     \
-  return Handle<Code>(code_address);                          \
-}
-#define DEFINE_BUILTIN_ACCESSOR_A(name, kind, state, extra) \
-Handle<Code> Builtins::name() {                             \
-  Code** code_address =                                     \
-      reinterpret_cast<Code**>(builtin_address(k##name));   \
-  return Handle<Code>(code_address);                        \
-}
+#define DEFINE_BUILTIN_ACCESSOR_C(name, ignore)                               \
+  Handle<Code> Builtins::name() {                                             \
+    Code** code_address = reinterpret_cast<Code**>(builtin_address(k##name)); \
+    return Handle<Code>(code_address);                                        \
+  }
+#define DEFINE_BUILTIN_ACCESSOR_A(name, kind, extra)                          \
+  Handle<Code> Builtins::name() {                                             \
+    Code** code_address = reinterpret_cast<Code**>(builtin_address(k##name)); \
+    return Handle<Code>(code_address);                                        \
+  }
 #define DEFINE_BUILTIN_ACCESSOR_T(name, argc)                                 \
+  Handle<Code> Builtins::name() {                                             \
+    Code** code_address = reinterpret_cast<Code**>(builtin_address(k##name)); \
+    return Handle<Code>(code_address);                                        \
+  }
+#define DEFINE_BUILTIN_ACCESSOR_S(name, kind, extra, interface_descriptor)    \
   Handle<Code> Builtins::name() {                                             \
     Code** code_address = reinterpret_cast<Code**>(builtin_address(k##name)); \
     return Handle<Code>(code_address);                                        \
@@ -5518,11 +6413,13 @@ Handle<Code> Builtins::name() {                             \
 BUILTIN_LIST_C(DEFINE_BUILTIN_ACCESSOR_C)
 BUILTIN_LIST_A(DEFINE_BUILTIN_ACCESSOR_A)
 BUILTIN_LIST_T(DEFINE_BUILTIN_ACCESSOR_T)
+BUILTIN_LIST_S(DEFINE_BUILTIN_ACCESSOR_S)
 BUILTIN_LIST_H(DEFINE_BUILTIN_ACCESSOR_H)
 BUILTIN_LIST_DEBUG_A(DEFINE_BUILTIN_ACCESSOR_A)
 #undef DEFINE_BUILTIN_ACCESSOR_C
 #undef DEFINE_BUILTIN_ACCESSOR_A
 #undef DEFINE_BUILTIN_ACCESSOR_T
+#undef DEFINE_BUILTIN_ACCESSOR_S
 #undef DEFINE_BUILTIN_ACCESSOR_H
 
 }  // namespace internal

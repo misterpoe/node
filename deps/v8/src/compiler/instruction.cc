@@ -12,6 +12,7 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
+const auto GetRegConfig = RegisterConfiguration::Turbofan;
 
 FlagsCondition CommuteFlagsCondition(FlagsCondition condition) {
   switch (condition) {
@@ -47,6 +48,10 @@ FlagsCondition CommuteFlagsCondition(FlagsCondition condition) {
       return kFloatGreaterThanOrEqualOrUnordered;
     case kFloatGreaterThan:
       return kFloatLessThan;
+    case kPositiveOrZero:
+    case kNegative:
+      UNREACHABLE();
+      break;
     case kEqual:
     case kNotEqual:
     case kOverflow:
@@ -59,6 +64,16 @@ FlagsCondition CommuteFlagsCondition(FlagsCondition condition) {
   return condition;
 }
 
+bool InstructionOperand::InterferesWith(const InstructionOperand& that) const {
+  if (!IsFPRegister() || !that.IsFPRegister() || kSimpleFPAliasing)
+    return EqualsCanonicalized(that);
+  // Both operands are fp registers and aliasing is non-simple.
+  const LocationOperand& loc1 = *LocationOperand::cast(this);
+  const LocationOperand& loc2 = LocationOperand::cast(that);
+  return GetRegConfig()->AreAliases(loc1.representation(), loc1.register_code(),
+                                    loc2.representation(),
+                                    loc2.register_code());
+}
 
 void InstructionOperand::Print(const RegisterConfiguration* config) const {
   OFStream os(stdout);
@@ -68,13 +83,7 @@ void InstructionOperand::Print(const RegisterConfiguration* config) const {
   os << wrapper << std::endl;
 }
 
-
-void InstructionOperand::Print() const {
-  const RegisterConfiguration* config =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::TURBOFAN);
-  Print(config);
-}
-
+void InstructionOperand::Print() const { Print(GetRegConfig()); }
 
 std::ostream& operator<<(std::ostream& os,
                          const PrintableInstructionOperand& printable) {
@@ -95,7 +104,7 @@ std::ostream& operator<<(std::ostream& os,
                     << conf->GetGeneralRegisterName(
                            unalloc->fixed_register_index())
                     << ")";
-        case UnallocatedOperand::FIXED_DOUBLE_REGISTER:
+        case UnallocatedOperand::FIXED_FP_REGISTER:
           return os << "(="
                     << conf->GetDoubleRegisterName(
                            unalloc->fixed_register_index())
@@ -126,14 +135,21 @@ std::ostream& operator<<(std::ostream& os,
     case InstructionOperand::ALLOCATED: {
       LocationOperand allocated = LocationOperand::cast(op);
       if (op.IsStackSlot()) {
-        os << "[stack:" << LocationOperand::cast(op).index();
+        os << "[stack:" << allocated.index();
       } else if (op.IsFPStackSlot()) {
-        os << "[fp_stack:" << LocationOperand::cast(op).index();
+        os << "[fp_stack:" << allocated.index();
       } else if (op.IsRegister()) {
-        os << "[" << LocationOperand::cast(op).GetRegister().ToString() << "|R";
+        os << "["
+           << GetRegConfig()->GetGeneralRegisterName(allocated.register_code())
+           << "|R";
+      } else if (op.IsDoubleRegister()) {
+        os << "["
+           << GetRegConfig()->GetDoubleRegisterName(allocated.register_code())
+           << "|R";
       } else {
-        DCHECK(op.IsFPRegister());
-        os << "[" << LocationOperand::cast(op).GetDoubleRegister().ToString()
+        DCHECK(op.IsFloatRegister());
+        os << "["
+           << GetRegConfig()->GetFloatRegisterName(allocated.register_code())
            << "|R";
       }
       if (allocated.IsExplicit()) {
@@ -180,7 +196,6 @@ std::ostream& operator<<(std::ostream& os,
   return os;
 }
 
-
 void MoveOperands::Print(const RegisterConfiguration* config) const {
   OFStream os(stdout);
   PrintableInstructionOperand wrapper;
@@ -191,13 +206,7 @@ void MoveOperands::Print(const RegisterConfiguration* config) const {
   os << wrapper << std::endl;
 }
 
-
-void MoveOperands::Print() const {
-  const RegisterConfiguration* config =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::TURBOFAN);
-  Print(config);
-}
-
+void MoveOperands::Print() const { Print(GetRegConfig()); }
 
 std::ostream& operator<<(std::ostream& os,
                          const PrintableMoveOperands& printable) {
@@ -246,9 +255,11 @@ ExplicitOperand::ExplicitOperand(LocationKind kind, MachineRepresentation rep,
                                  int index)
     : LocationOperand(EXPLICIT, kind, rep, index) {
   DCHECK_IMPLIES(kind == REGISTER && !IsFloatingPoint(rep),
-                 Register::from_code(index).IsAllocatable());
-  DCHECK_IMPLIES(kind == REGISTER && IsFloatingPoint(rep),
-                 DoubleRegister::from_code(index).IsAllocatable());
+                 GetRegConfig()->IsAllocatableGeneralCode(index));
+  DCHECK_IMPLIES(kind == REGISTER && rep == MachineRepresentation::kFloat32,
+                 GetRegConfig()->IsAllocatableFloatCode(index));
+  DCHECK_IMPLIES(kind == REGISTER && (rep == MachineRepresentation::kFloat64),
+                 GetRegConfig()->IsAllocatableDoubleCode(index));
 }
 
 Instruction::Instruction(InstructionCode opcode)
@@ -309,13 +320,7 @@ void Instruction::Print(const RegisterConfiguration* config) const {
   os << wrapper << std::endl;
 }
 
-
-void Instruction::Print() const {
-  const RegisterConfiguration* config =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::TURBOFAN);
-  Print(config);
-}
-
+void Instruction::Print() const { Print(GetRegConfig()); }
 
 std::ostream& operator<<(std::ostream& os,
                          const PrintableParallelMove& printable) {
@@ -343,9 +348,7 @@ void ReferenceMap::RecordReference(const AllocatedOperand& op) {
 std::ostream& operator<<(std::ostream& os, const ReferenceMap& pm) {
   os << "{";
   bool first = true;
-  PrintableInstructionOperand poi = {
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::TURBOFAN),
-      InstructionOperand()};
+  PrintableInstructionOperand poi = {GetRegConfig(), InstructionOperand()};
   for (const InstructionOperand& op : pm.reference_operands_) {
     if (!first) {
       os << ";";
@@ -449,6 +452,10 @@ std::ostream& operator<<(std::ostream& os, const FlagsCondition& fc) {
       return os << "overflow";
     case kNotOverflow:
       return os << "not overflow";
+    case kPositiveOrZero:
+      return os << "positive or zero";
+    case kNegative:
+      return os << "negative";
   }
   UNREACHABLE();
   return os;
@@ -520,9 +527,6 @@ Handle<HeapObject> Constant::ToHeapObject() const {
   DCHECK_EQ(kHeapObject, type());
   Handle<HeapObject> value(
       bit_cast<HeapObject**>(static_cast<intptr_t>(value_)));
-  if (value->IsConsString()) {
-    value = String::Flatten(Handle<String>::cast(value), TENURED);
-  }
   return value;
 }
 
@@ -880,12 +884,7 @@ void InstructionSequence::Print(const RegisterConfiguration* config) const {
   os << wrapper << std::endl;
 }
 
-
-void InstructionSequence::Print() const {
-  const RegisterConfiguration* config =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::TURBOFAN);
-  Print(config);
-}
+void InstructionSequence::Print() const { Print(GetRegConfig()); }
 
 void InstructionSequence::PrintBlock(const RegisterConfiguration* config,
                                      int block_id) const {
@@ -939,9 +938,7 @@ void InstructionSequence::PrintBlock(const RegisterConfiguration* config,
 }
 
 void InstructionSequence::PrintBlock(int block_id) const {
-  const RegisterConfiguration* config =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::TURBOFAN);
-  PrintBlock(config, block_id);
+  PrintBlock(GetRegConfig(), block_id);
 }
 
 FrameStateDescriptor::FrameStateDescriptor(

@@ -66,7 +66,8 @@ Debug.StepAction = { StepOut: 0,
 // The different types of scripts matching enum ScriptType in objects.h.
 Debug.ScriptType = { Native: 0,
                      Extension: 1,
-                     Normal: 2 };
+                     Normal: 2,
+                     Wasm: 3};
 
 // The different types of script compilations matching enum
 // Script::CompilationType in objects.h.
@@ -361,7 +362,7 @@ ScriptBreakPoint.prototype.matchesScript = function(script) {
   } else {
     // We might want to account columns here as well.
     if (!(script.line_offset <= this.line_  &&
-          this.line_ < script.line_offset + script.lineCount())) {
+          this.line_ < script.line_offset + %ScriptLineCount(script))) {
       return false;
     }
     if (this.type_ == Debug.ScriptBreakPointType.ScriptName) {
@@ -383,11 +384,11 @@ ScriptBreakPoint.prototype.set = function (script) {
   // first piece of breakable code on the line try to find the column on the
   // line which contains some source.
   if (IS_UNDEFINED(column)) {
-    var source_line = script.sourceLine(this.line());
+    var source_line = %ScriptSourceLine(script, line || script.line_offset);
 
     // Allocate array for caching the columns where the actual source starts.
     if (!script.sourceColumnStart_) {
-      script.sourceColumnStart_ = new GlobalArray(script.lineCount());
+      script.sourceColumnStart_ = new GlobalArray(%ScriptLineCount(script));
     }
 
     // Fill cache if needed and get column where the actual source starts.
@@ -487,7 +488,7 @@ Debug.findScript = function(func_or_script_name) {
   if (IS_FUNCTION(func_or_script_name)) {
     return %FunctionGetScript(func_or_script_name);
   } else if (IS_REGEXP(func_or_script_name)) {
-    var scripts = Debug.scripts();
+    var scripts = this.scripts();
     var last_result = null;
     var result_count = 0;
     for (var i in scripts) {
@@ -536,14 +537,14 @@ Debug.sourcePosition = function(f) {
 Debug.findFunctionSourceLocation = function(func, opt_line, opt_column) {
   var script = %FunctionGetScript(func);
   var script_offset = %FunctionGetScriptSourcePosition(func);
-  return script.locationFromLine(opt_line, opt_column, script_offset);
+  return %ScriptLocationFromLine(script, opt_line, opt_column, script_offset);
 };
 
 
 // Returns the character position in a script based on a line number and an
 // optional position within that line.
 Debug.findScriptSourcePosition = function(script, opt_line, opt_column) {
-  var location = script.locationFromLine(opt_line, opt_column);
+  var location = %ScriptLocationFromLine(script, opt_line, opt_column, 0);
   return location ? location.position : null;
 };
 
@@ -633,15 +634,12 @@ Debug.setBreakPointByScriptIdAndPosition = function(script_id, position,
   if (!enabled) {
     break_point.disable();
   }
-  var scripts = this.scripts();
-  var position_alignment = IS_UNDEFINED(opt_position_alignment)
-      ? Debug.BreakPositionAlignment.Statement : opt_position_alignment;
-  for (var i = 0; i < scripts.length; i++) {
-    if (script_id == scripts[i].id) {
-      break_point.actual_position = %SetScriptBreakPoint(scripts[i], position,
-          position_alignment, break_point);
-      break;
-    }
+  var script = scriptById(script_id);
+  if (script) {
+    var position_alignment = IS_UNDEFINED(opt_position_alignment)
+        ? Debug.BreakPositionAlignment.Statement : opt_position_alignment;
+    break_point.actual_position = %SetScriptBreakPoint(script, position,
+        position_alignment, break_point);
   }
   return break_point;
 };
@@ -858,9 +856,30 @@ Debug.scripts = function() {
 };
 
 
+// Get a specific script currently loaded. This is based on scanning the heap.
+// TODO(clemensh): Create a runtime function for this.
+function scriptById(scriptId) {
+  var scripts = Debug.scripts();
+  for (var script of scripts) {
+    if (script.id == scriptId) return script;
+  }
+  return UNDEFINED;
+};
+
+
 Debug.debuggerFlags = function() {
   return debugger_flags;
 };
+
+Debug.getWasmFunctionOffsetTable = function(scriptId) {
+  var script = scriptById(scriptId);
+  return script ? %GetWasmFunctionOffsetTable(script) : UNDEFINED;
+}
+
+Debug.disassembleWasmFunction = function(scriptId) {
+  var script = scriptById(scriptId);
+  return script ? %DisassembleWasmFunction(script) : UNDEFINED;
+}
 
 Debug.MakeMirror = MakeMirror;
 
@@ -2085,18 +2104,34 @@ DebugCommandProcessor.prototype.sourceRequest_ = function(request, response) {
     return response.failed('No source');
   }
 
-  // Get the source slice and fill it into the response.
-  var slice = script.sourceSlice(from_line, to_line);
-  if (!slice) {
+  var raw_script = script.value();
+
+  // Sanitize arguments and remove line offset.
+  var line_offset = raw_script.line_offset;
+  var line_count = %ScriptLineCount(raw_script);
+  from_line = IS_UNDEFINED(from_line) ? 0 : from_line - line_offset;
+  to_line = IS_UNDEFINED(to_line) ? line_count : to_line - line_offset;
+
+  if (from_line < 0) from_line = 0;
+  if (to_line > line_count) to_line = line_count;
+
+  if (from_line >= line_count || to_line < 0 || from_line > to_line) {
     return response.failed('Invalid line interval');
   }
+
+  // Fill in the response.
+
   response.body = {};
-  response.body.source = slice.sourceText();
-  response.body.fromLine = slice.from_line;
-  response.body.toLine = slice.to_line;
-  response.body.fromPosition = slice.from_position;
-  response.body.toPosition = slice.to_position;
-  response.body.totalLines = script.lineCount();
+  response.body.fromLine = from_line + line_offset;
+  response.body.toLine = to_line + line_offset;
+  response.body.fromPosition = %ScriptLineStartPosition(raw_script, from_line);
+  response.body.toPosition =
+    (to_line == 0) ? 0 : %ScriptLineEndPosition(raw_script, to_line - 1);
+  response.body.totalLines = %ScriptLineCount(raw_script);
+
+  response.body.source = %_SubString(raw_script.source,
+                                     response.body.fromPosition,
+                                     response.body.toPosition);
 };
 
 
@@ -2139,7 +2174,7 @@ DebugCommandProcessor.prototype.scriptsRequest_ = function(request, response) {
   }
 
   // Collect all scripts in the heap.
-  var scripts = %DebugGetLoadedScripts();
+  var scripts = Debug.scripts();
 
   response.body = [];
 
@@ -2189,14 +2224,7 @@ DebugCommandProcessor.prototype.changeLiveRequest_ = function(
   var script_id = request.arguments.script_id;
   var preview_only = !!request.arguments.preview_only;
 
-  var scripts = %DebugGetLoadedScripts();
-
-  var the_script = null;
-  for (var i = 0; i < scripts.length; i++) {
-    if (scripts[i].id == script_id) {
-      the_script = scripts[i];
-    }
-  }
+  var the_script = scriptById(script_id);
   if (!the_script) {
     response.failed('Script not found');
     return;

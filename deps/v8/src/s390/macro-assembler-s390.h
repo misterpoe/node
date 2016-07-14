@@ -734,7 +734,8 @@ class MacroAssembler : public Assembler {
   // Enter exit frame.
   // stack_space - extra stack space, used for parameters before call to C.
   // At least one slot (for the return address) should be provided.
-  void EnterExitFrame(bool save_doubles, int stack_space = 1);
+  void EnterExitFrame(bool save_doubles, int stack_space = 1,
+                      StackFrame::Type frame_type = StackFrame::EXIT);
 
   // Leave the current exit frame. Expects the return value in r0.
   // Expect the number of values, pushed prior to the exit frame, to
@@ -1337,7 +1338,8 @@ class MacroAssembler : public Assembler {
   void MovFromFloatResult(DoubleRegister dst);
 
   // Jump to a runtime routine.
-  void JumpToExternalReference(const ExternalReference& builtin);
+  void JumpToExternalReference(const ExternalReference& builtin,
+                               bool builtin_exit_frame = false);
 
   Handle<Object> CodeObject() {
     DCHECK(!code_object_.is_null());
@@ -1582,17 +1584,29 @@ class MacroAssembler : public Assembler {
   }
 
   void IndexToArrayOffset(Register dst, Register src, int elementSizeLog2,
-                          bool isSmi) {
+                          bool isSmi, bool keyMaybeNegative) {
     if (isSmi) {
       SmiToArrayOffset(dst, src, elementSizeLog2);
-    } else {
+    } else if (keyMaybeNegative ||
+          !CpuFeatures::IsSupported(GENERAL_INSTR_EXT)) {
 #if V8_TARGET_ARCH_S390X
+      // If array access is dehoisted, the key, being an int32, can contain
+      // a negative value, as needs to be sign-extended to 64-bit for
+      // memory access.
+      //
       // src (key) is a 32-bit integer.  Sign extension ensures
       // upper 32-bit does not contain garbage before being used to
       // reference memory.
       lgfr(src, src);
 #endif
       ShiftLeftP(dst, src, Operand(elementSizeLog2));
+    } else {
+      // Small optimization to reduce pathlength.  After Bounds Check,
+      // the key is guaranteed to be non-negative.  Leverage RISBG,
+      // which also performs zero-extension.
+      risbg(dst, src, Operand(32 - elementSizeLog2),
+            Operand(63 - elementSizeLog2), Operand(elementSizeLog2),
+            true);
     }
   }
 

@@ -5,7 +5,6 @@
 #ifndef V8_AST_AST_H_
 #define V8_AST_AST_H_
 
-#include "src/assembler.h"
 #include "src/ast/ast-value-factory.h"
 #include "src/ast/modules.h"
 #include "src/ast/variables.h"
@@ -13,6 +12,7 @@
 #include "src/base/flags.h"
 #include "src/base/smart-pointers.h"
 #include "src/factory.h"
+#include "src/globals.h"
 #include "src/isolate.h"
 #include "src/list.h"
 #include "src/parsing/token.h"
@@ -40,8 +40,7 @@ namespace internal {
 #define DECLARATION_NODE_LIST(V) \
   V(VariableDeclaration)         \
   V(FunctionDeclaration)         \
-  V(ImportDeclaration)           \
-  V(ExportDeclaration)
+  V(ImportDeclaration)
 
 #define STATEMENT_NODE_LIST(V)    \
   V(Block)                        \
@@ -130,7 +129,8 @@ class FeedbackVectorSlotCache {
  public:
   explicit FeedbackVectorSlotCache(Zone* zone)
       : zone_(zone),
-        hash_map_(HashMap::PointersMatch, ZoneHashMap::kDefaultHashMapCapacity,
+        hash_map_(base::HashMap::PointersMatch,
+                  ZoneHashMap::kDefaultHashMapCapacity,
                   ZoneAllocationPolicy(zone)) {}
 
   void Put(Variable* variable, FeedbackVectorSlot slot) {
@@ -599,20 +599,6 @@ class ImportDeclaration final : public Declaration {
  private:
   const AstRawString* import_name_;
   const AstRawString* module_specifier_;
-};
-
-
-class ExportDeclaration final : public Declaration {
- public:
-  DECLARE_NODE_TYPE(ExportDeclaration)
-
-  InitializationFlag initialization() const override {
-    return kCreatedInitialized;
-  }
-
- protected:
-  ExportDeclaration(Zone* zone, VariableProxy* proxy, Scope* scope, int pos)
-      : Declaration(zone, proxy, LET, scope, pos) {}
 };
 
 
@@ -1277,7 +1263,7 @@ class SloppyBlockFunctionStatement final : public Statement {
 
  private:
   SloppyBlockFunctionStatement(Zone* zone, Statement* statement, Scope* scope)
-      : Statement(zone, RelocInfo::kNoPosition),
+      : Statement(zone, kNoSourcePosition),
         statement_(statement),
         scope_(scope) {}
 
@@ -1551,13 +1537,14 @@ class ObjectLiteral final : public MaterializedLiteral {
 
 
 // A map from property names to getter/setter pairs allocated in the zone.
-class AccessorTable : public TemplateHashMap<Literal, ObjectLiteral::Accessors,
-                                             ZoneAllocationPolicy> {
+class AccessorTable
+    : public base::TemplateHashMap<Literal, ObjectLiteral::Accessors,
+                                   ZoneAllocationPolicy> {
  public:
   explicit AccessorTable(Zone* zone)
-      : TemplateHashMap<Literal, ObjectLiteral::Accessors,
-                        ZoneAllocationPolicy>(Literal::Match,
-                                              ZoneAllocationPolicy(zone)),
+      : base::TemplateHashMap<Literal, ObjectLiteral::Accessors,
+                              ZoneAllocationPolicy>(Literal::Match,
+                                                    ZoneAllocationPolicy(zone)),
         zone_(zone) {}
 
   Iterator lookup(Literal* literal) {
@@ -2004,6 +1991,9 @@ class CallNew final : public Expression {
   void AssignFeedbackVectorSlots(Isolate* isolate, FeedbackVectorSpec* spec,
                                  FeedbackVectorSlotCache* cache) override {
     callnew_feedback_slot_ = spec->AddGeneralSlot();
+    // Construct calls have two slots, one right after the other.
+    // The second slot stores the call count for monomorphic calls.
+    spec->AddGeneralSlot();
   }
 
   FeedbackVectorSlot CallNewFeedbackSlot() {
@@ -2714,7 +2704,7 @@ class FunctionLiteral final : public Expression {
         materialized_literal_count_(materialized_literal_count),
         expected_property_count_(expected_property_count),
         parameter_count_(parameter_count),
-        function_token_position_(RelocInfo::kNoPosition),
+        function_token_position_(kNoSourcePosition),
         yield_count_(0) {
     bitfield_ =
         FunctionTypeBits::encode(function_type) | Pretenure::encode(false) |
@@ -3053,20 +3043,26 @@ class AstVisitor BASE_EMBEDDED {
 class AstTraversalVisitor : public AstVisitor {
  public:
   explicit AstTraversalVisitor(Isolate* isolate);
+  explicit AstTraversalVisitor(uintptr_t stack_limit);
   virtual ~AstTraversalVisitor() {}
 
   // Iteration left-to-right.
   void VisitDeclarations(ZoneList<Declaration*>* declarations) override;
   void VisitStatements(ZoneList<Statement*>* statements) override;
-  void VisitExpressions(ZoneList<Expression*>* expressions) override;
 
 // Individual nodes
 #define DECLARE_VISIT(type) void Visit##type(type* node) override;
   AST_NODE_LIST(DECLARE_VISIT)
 #undef DECLARE_VISIT
 
+ protected:
+  int depth() { return depth_; }
+
  private:
   DEFINE_AST_VISITOR_SUBCLASS_MEMBERS();
+
+  int depth_;
+
   DISALLOW_COPY_AND_ASSIGN(AstTraversalVisitor);
 };
 
@@ -3104,13 +3100,6 @@ class AstNodeFactory final BASE_EMBEDDED {
                                           Scope* scope, int pos) {
     return new (parser_zone_) ImportDeclaration(
         parser_zone_, proxy, import_name, module_specifier, scope, pos);
-  }
-
-  ExportDeclaration* NewExportDeclaration(VariableProxy* proxy,
-                                          Scope* scope,
-                                          int pos) {
-    return new (parser_zone_)
-        ExportDeclaration(parser_zone_, proxy, scope, pos);
   }
 
   Block* NewBlock(ZoneList<const AstRawString*>* labels, int capacity,
@@ -3303,16 +3292,16 @@ class AstNodeFactory final BASE_EMBEDDED {
   }
 
   VariableProxy* NewVariableProxy(Variable* var,
-                                  int start_position = RelocInfo::kNoPosition,
-                                  int end_position = RelocInfo::kNoPosition) {
+                                  int start_position = kNoSourcePosition,
+                                  int end_position = kNoSourcePosition) {
     return new (parser_zone_)
         VariableProxy(parser_zone_, var, start_position, end_position);
   }
 
   VariableProxy* NewVariableProxy(const AstRawString* name,
                                   Variable::Kind variable_kind,
-                                  int start_position = RelocInfo::kNoPosition,
-                                  int end_position = RelocInfo::kNoPosition) {
+                                  int start_position = kNoSourcePosition,
+                                  int end_position = kNoSourcePosition) {
     DCHECK_NOT_NULL(name);
     return new (parser_zone_) VariableProxy(parser_zone_, name, variable_kind,
                                             start_position, end_position);

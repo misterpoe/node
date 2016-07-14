@@ -179,11 +179,9 @@ void Assembler::emit_optional_rex_32(Register rm_reg) {
   if (rm_reg.high_bit()) emit(0x41);
 }
 
-
 void Assembler::emit_optional_rex_32(XMMRegister rm_reg) {
   if (rm_reg.high_bit()) emit(0x41);
 }
-
 
 void Assembler::emit_optional_rex_32(const Operand& op) {
   if (op.rex_ != 0) emit(0x40 | op.rex_);
@@ -412,6 +410,7 @@ void RelocInfo::set_target_object(Object* target,
       target->IsHeapObject()) {
     host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(
         host(), this, HeapObject::cast(target));
+    host()->GetHeap()->RecordWriteIntoCode(host(), this, target);
   }
 }
 

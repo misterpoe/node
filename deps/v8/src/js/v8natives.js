@@ -9,24 +9,19 @@
 // ----------------------------------------------------------------------------
 // Imports
 
-var GlobalArray = global.Array;
 var GlobalNumber = global.Number;
 var GlobalObject = global.Object;
-var InternalArray = utils.InternalArray;
 var iteratorSymbol = utils.ImportNow("iterator_symbol");
 var MakeRangeError;
 var MakeSyntaxError;
 var MakeTypeError;
-var MathAbs;
 var NaN = %GetRootNaN();
 var ObjectToString = utils.ImportNow("object_to_string");
-var toStringTagSymbol = utils.ImportNow("to_string_tag_symbol");
 
 utils.Import(function(from) {
   MakeRangeError = from.MakeRangeError;
   MakeSyntaxError = from.MakeSyntaxError;
   MakeTypeError = from.MakeTypeError;
-  MathAbs = from.MathAbs;
 });
 
 // ----------------------------------------------------------------------------
@@ -368,7 +363,7 @@ function NumberIsSafeInteger(number) {
   if (NumberIsFinite(number)) {
     var integral = TO_INTEGER(number);
     if (integral == number) {
-      return MathAbs(integral) <= kMaxSafeInteger;
+      return -kMaxSafeInteger <= integral && integral <= kMaxSafeInteger;
     }
   }
   return false;
@@ -398,9 +393,9 @@ utils.InstallConstants(GlobalNumber, [
 
   // --- Harmony constants (no spec refs until settled.)
 
-  "MAX_SAFE_INTEGER", %_MathPow(2, 53) - 1,
-  "MIN_SAFE_INTEGER", -%_MathPow(2, 53) + 1,
-  "EPSILON", %_MathPow(2, -52)
+  "MAX_SAFE_INTEGER", 9007199254740991,
+  "MIN_SAFE_INTEGER", -9007199254740991,
+  "EPSILON", 2.220446049250313e-16,
 ]);
 
 // Set up non-enumerable functions on the Number prototype object.
@@ -450,7 +445,6 @@ function GetIterator(obj, method) {
 utils.Export(function(to) {
   to.GetIterator = GetIterator;
   to.GetMethod = GetMethod;
-  to.IsFinite = GlobalIsFinite;
   to.IsNaN = GlobalIsNaN;
   to.NumberIsNaN = NumberIsNaN;
   to.NumberIsInteger = NumberIsInteger;

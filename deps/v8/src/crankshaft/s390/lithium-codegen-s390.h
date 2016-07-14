@@ -116,7 +116,8 @@ class LCodeGen : public LCodeGenBase {
   MemOperand PrepareKeyedOperand(Register key, Register base,
                                  bool key_is_constant, bool key_is_tagged,
                                  int constant_key, int element_size_shift,
-                                 int base_offset);
+                                 int base_offset,
+                                 bool keyMaybeNegative = true);
 
   // Emit frame translation commands for an environment.
   void WriteTranslation(LEnvironment* environment, Translation* translation);
@@ -227,15 +228,13 @@ class LCodeGen : public LCodeGenBase {
   void EmitInteger32MathAbs(LMathAbs* instr);
 #endif
 
-  // Support for recording safepoint and position information.
+  // Support for recording safepoint information.
   void RecordSafepoint(LPointerMap* pointers, Safepoint::Kind kind,
                        int arguments, Safepoint::DeoptMode mode);
   void RecordSafepoint(LPointerMap* pointers, Safepoint::DeoptMode mode);
   void RecordSafepoint(Safepoint::DeoptMode mode);
   void RecordSafepointWithRegisters(LPointerMap* pointers, int arguments,
                                     Safepoint::DeoptMode mode);
-
-  void RecordAndWritePosition(int position) override;
 
   static Condition TokenToCondition(Token::Value op);
   void EmitGoto(int block);

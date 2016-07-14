@@ -16,10 +16,7 @@ namespace internal {
 
 #define __ ACCESS_MASM(masm)
 
-
-void Builtins::Generate_Adaptor(MacroAssembler* masm,
-                                CFunctionId id,
-                                BuiltinExtraArguments extra_args) {
+void Builtins::Generate_Adaptor(MacroAssembler* masm, CFunctionId id) {
   // ----------- S t a t e -------------
   //  -- eax                : number of arguments excluding receiver
   //  -- edi                : target
@@ -39,19 +36,11 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm,
   __ mov(esi, FieldOperand(edi, JSFunction::kContextOffset));
 
   // Insert extra arguments.
-  int num_extra_args = 0;
-  if (extra_args != BuiltinExtraArguments::kNone) {
-    __ PopReturnAddressTo(ecx);
-    if (extra_args & BuiltinExtraArguments::kTarget) {
-      ++num_extra_args;
-      __ Push(edi);
-    }
-    if (extra_args & BuiltinExtraArguments::kNewTarget) {
-      ++num_extra_args;
-      __ Push(edx);
-    }
-    __ PushReturnAddressFrom(ecx);
-  }
+  const int num_extra_args = 2;
+  __ PopReturnAddressTo(ecx);
+  __ Push(edi);
+  __ Push(edx);
+  __ PushReturnAddressFrom(ecx);
 
   // JumpToExternalReference expects eax to contain the number of arguments
   // including the receiver and the extra arguments.
@@ -396,8 +385,8 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   __ AssertGeneratorObject(ebx);
 
   // Store input value into generator object.
-  __ mov(FieldOperand(ebx, JSGeneratorObject::kInputOffset), eax);
-  __ RecordWriteField(ebx, JSGeneratorObject::kInputOffset, eax, ecx,
+  __ mov(FieldOperand(ebx, JSGeneratorObject::kInputOrDebugPosOffset), eax);
+  __ RecordWriteField(ebx, JSGeneratorObject::kInputOrDebugPosOffset, eax, ecx,
                       kDontSaveFPRegs);
 
   // Store resume mode into generator object.
@@ -408,22 +397,20 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   __ mov(edi, FieldOperand(ebx, JSGeneratorObject::kFunctionOffset));
 
   // Flood function if we are stepping.
-  Label skip_flooding;
-  ExternalReference step_in_enabled =
-      ExternalReference::debug_step_in_enabled_address(masm->isolate());
-  __ cmpb(Operand::StaticVariable(step_in_enabled), Immediate(0));
-  __ j(equal, &skip_flooding);
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ Push(ebx);
-    __ Push(edx);
-    __ Push(edi);
-    __ CallRuntime(Runtime::kDebugPrepareStepInIfStepping);
-    __ Pop(edx);
-    __ Pop(ebx);
-    __ mov(edi, FieldOperand(ebx, JSGeneratorObject::kFunctionOffset));
-  }
-  __ bind(&skip_flooding);
+  Label prepare_step_in_if_stepping, prepare_step_in_suspended_generator;
+  Label stepping_prepared;
+  ExternalReference last_step_action =
+      ExternalReference::debug_last_step_action_address(masm->isolate());
+  STATIC_ASSERT(StepFrame > StepIn);
+  __ cmpb(Operand::StaticVariable(last_step_action), Immediate(StepIn));
+  __ j(greater_equal, &prepare_step_in_if_stepping);
+
+  // Flood function if we need to continue stepping in the suspended generator.
+  ExternalReference debug_suspended_generator =
+      ExternalReference::debug_suspended_generator_address(masm->isolate());
+  __ cmp(ebx, Operand::StaticVariable(debug_suspended_generator));
+  __ j(equal, &prepare_step_in_suspended_generator);
+  __ bind(&stepping_prepared);
 
   // Pop return address.
   __ PopReturnAddressTo(eax);
@@ -519,6 +506,51 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
     __ mov(eax, ebx);  // Continuation expects generator object in eax.
     __ jmp(edx);
   }
+
+  __ bind(&prepare_step_in_if_stepping);
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+    __ Push(ebx);
+    __ Push(edx);
+    __ Push(edi);
+    __ CallRuntime(Runtime::kDebugPrepareStepInIfStepping);
+    __ Pop(edx);
+    __ Pop(ebx);
+    __ mov(edi, FieldOperand(ebx, JSGeneratorObject::kFunctionOffset));
+  }
+  __ jmp(&stepping_prepared);
+
+  __ bind(&prepare_step_in_suspended_generator);
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+    __ Push(ebx);
+    __ Push(edx);
+    __ CallRuntime(Runtime::kDebugPrepareStepInSuspendedGenerator);
+    __ Pop(edx);
+    __ Pop(ebx);
+    __ mov(edi, FieldOperand(ebx, JSGeneratorObject::kFunctionOffset));
+  }
+  __ jmp(&stepping_prepared);
+}
+
+static void LeaveInterpreterFrame(MacroAssembler* masm, Register scratch1,
+                                  Register scratch2) {
+  Register args_count = scratch1;
+  Register return_pc = scratch2;
+
+  // Get the arguments + reciever count.
+  __ mov(args_count,
+         Operand(ebp, InterpreterFrameConstants::kBytecodeArrayFromFp));
+  __ mov(args_count,
+         FieldOperand(args_count, BytecodeArray::kParameterSizeOffset));
+
+  // Leave the frame (also dropping the register file).
+  __ leave();
+
+  // Drop receiver + arguments.
+  __ pop(return_pc);
+  __ add(esp, args_count);
+  __ push(return_pc);
 }
 
 // Generate code for entering a JS function with the interpreter.
@@ -621,9 +653,11 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ mov(ebx, Operand(kInterpreterDispatchTableRegister, ebx,
                       times_pointer_size, 0));
   __ call(ebx);
+  masm->isolate()->heap()->SetInterpreterEntryReturnPCOffset(masm->pc_offset());
 
-  // Even though the first bytecode handler was called, we will never return.
-  __ Abort(kUnexpectedReturnFromBytecodeHandler);
+  // The return value is in eax.
+  LeaveInterpreterFrame(masm, ebx, ecx);
+  __ ret(0);
 
   // Load debug copy of the bytecode array.
   __ bind(&load_debug_bytecode_array);
@@ -649,26 +683,30 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   __ jmp(ecx);
 }
 
+void Builtins::Generate_InterpreterMarkBaselineOnReturn(MacroAssembler* masm) {
+  // Save the function and context for call to CompileBaseline.
+  __ mov(edi, Operand(ebp, StandardFrameConstants::kFunctionOffset));
+  __ mov(kContextRegister,
+         Operand(ebp, StandardFrameConstants::kContextOffset));
 
-void Builtins::Generate_InterpreterExitTrampoline(MacroAssembler* masm) {
-  // Interpreter handler is turbofanned code, need to reset the FPU before
-  // return
-  __ fninit();
+  // Leave the frame before recompiling for baseline so that we don't count as
+  // an activation on the stack.
+  LeaveInterpreterFrame(masm, ebx, ecx);
 
-  // The return value is in accumulator, which is already in eax.
+  {
+    FrameScope frame_scope(masm, StackFrame::INTERNAL);
+    // Push return value.
+    __ push(eax);
 
-  // Leave the frame (also dropping the register file).
-  __ leave();
+    // Push function as argument and compile for baseline.
+    __ push(edi);
+    __ CallRuntime(Runtime::kCompileBaseline);
 
-  // Drop receiver + arguments and return.
-  __ mov(ebx, FieldOperand(kInterpreterBytecodeArrayRegister,
-                           BytecodeArray::kParameterSizeOffset));
-  __ pop(ecx);
-  __ add(esp, ebx);
-  __ push(ecx);
+    // Restore return value.
+    __ pop(eax);
+  }
   __ ret(0);
 }
-
 
 static void Generate_InterpreterPushArgs(MacroAssembler* masm,
                                          Register array_limit) {
@@ -686,7 +724,6 @@ static void Generate_InterpreterPushArgs(MacroAssembler* masm,
   __ cmp(ebx, array_limit);
   __ j(greater, &loop_header, Label::kNear);
 }
-
 
 // static
 void Builtins::Generate_InterpreterPushArgsAndCallImpl(
@@ -756,8 +793,18 @@ void Builtins::Generate_InterpreterPushArgsAndConstruct(MacroAssembler* masm) {
   __ Jump(masm->isolate()->builtins()->Construct(), RelocInfo::CODE_TARGET);
 }
 
+void Builtins::Generate_InterpreterEnterBytecodeDispatch(MacroAssembler* masm) {
+  // Set the return address to the correct point in the interpreter entry
+  // trampoline.
+  Smi* interpreter_entry_return_pc_offset(
+      masm->isolate()->heap()->interpreter_entry_return_pc_offset());
+  DCHECK_NE(interpreter_entry_return_pc_offset, Smi::FromInt(0));
+  __ LoadHeapObject(ebx,
+                    masm->isolate()->builtins()->InterpreterEntryTrampoline());
+  __ add(ebx, Immediate(interpreter_entry_return_pc_offset->value() +
+                        Code::kHeaderSize - kHeapObjectTag));
+  __ push(ebx);
 
-static void Generate_EnterBytecodeDispatch(MacroAssembler* masm) {
   // Initialize the dispatch table register.
   __ mov(kInterpreterDispatchTableRegister,
          Immediate(ExternalReference::interpreter_dispatch_table_address(
@@ -787,58 +834,6 @@ static void Generate_EnterBytecodeDispatch(MacroAssembler* masm) {
                       times_pointer_size, 0));
   __ jmp(ebx);
 }
-
-
-static void Generate_InterpreterNotifyDeoptimizedHelper(
-    MacroAssembler* masm, Deoptimizer::BailoutType type) {
-  // Enter an internal frame.
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-
-    // Pass the deoptimization type to the runtime system.
-    __ Push(Smi::FromInt(static_cast<int>(type)));
-    __ CallRuntime(Runtime::kNotifyDeoptimized);
-    // Tear down internal frame.
-  }
-
-  // Drop state (we don't use these for interpreter deopts) and and pop the
-  // accumulator value into the accumulator register and push PC at top
-  // of stack (to simulate initial call to bytecode handler in interpreter entry
-  // trampoline).
-  __ Pop(ebx);
-  __ Drop(1);
-  __ Pop(kInterpreterAccumulatorRegister);
-  __ Push(ebx);
-
-  // Enter the bytecode dispatch.
-  Generate_EnterBytecodeDispatch(masm);
-}
-
-
-void Builtins::Generate_InterpreterNotifyDeoptimized(MacroAssembler* masm) {
-  Generate_InterpreterNotifyDeoptimizedHelper(masm, Deoptimizer::EAGER);
-}
-
-
-void Builtins::Generate_InterpreterNotifySoftDeoptimized(MacroAssembler* masm) {
-  Generate_InterpreterNotifyDeoptimizedHelper(masm, Deoptimizer::SOFT);
-}
-
-
-void Builtins::Generate_InterpreterNotifyLazyDeoptimized(MacroAssembler* masm) {
-  Generate_InterpreterNotifyDeoptimizedHelper(masm, Deoptimizer::LAZY);
-}
-
-void Builtins::Generate_InterpreterEnterBytecodeDispatch(MacroAssembler* masm) {
-  // Set the address of the interpreter entry trampoline as a return address.
-  // This simulates the initial call to bytecode handlers in interpreter entry
-  // trampoline. The return will never actually be taken, but our stack walker
-  // uses this address to determine whether a frame is interpreted.
-  __ Push(masm->isolate()->builtins()->InterpreterEntryTrampoline());
-
-  Generate_EnterBytecodeDispatch(masm);
-}
-
 
 void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   // ----------- S t a t e -------------
@@ -892,13 +887,30 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   const int bailout_id = BailoutId::None().ToInt();
   __ cmp(temp, Immediate(Smi::FromInt(bailout_id)));
   __ j(not_equal, &loop_bottom);
+
   // Literals available?
+  Label got_literals, maybe_cleared_weakcell;
   __ mov(temp, FieldOperand(map, index, times_half_pointer_size,
                             SharedFunctionInfo::kOffsetToPreviousLiterals));
+
+  // temp contains either a WeakCell pointing to the literals array or the
+  // literals array directly.
+  STATIC_ASSERT(WeakCell::kValueOffset == FixedArray::kLengthOffset);
+  __ JumpIfSmi(FieldOperand(temp, WeakCell::kValueOffset),
+               &maybe_cleared_weakcell);
+  // The WeakCell value is a pointer, therefore it's a valid literals array.
   __ mov(temp, FieldOperand(temp, WeakCell::kValueOffset));
-  __ JumpIfSmi(temp, &gotta_call_runtime);
+  __ jmp(&got_literals);
+
+  // We have a smi. If it's 0, then we are looking at a cleared WeakCell
+  // around the literals array, and we should visit the runtime. If it's > 0,
+  // then temp already contains the literals array.
+  __ bind(&maybe_cleared_weakcell);
+  __ cmp(FieldOperand(temp, WeakCell::kValueOffset), Immediate(0));
+  __ j(equal, &gotta_call_runtime);
 
   // Save the literals in the closure.
+  __ bind(&got_literals);
   __ mov(ecx, Operand(esp, 0));
   __ mov(FieldOperand(ecx, JSFunction::kLiteralsOffset), temp);
   __ push(index);
@@ -1006,6 +1018,46 @@ void Builtins::Generate_CompileOptimizedConcurrent(MacroAssembler* masm) {
   GenerateTailCallToReturnedCode(masm, Runtime::kCompileOptimized_Concurrent);
 }
 
+void Builtins::Generate_InstantiateAsmJs(MacroAssembler* masm) {
+  // ----------- S t a t e -------------
+  //  -- eax : argument count (preserved for callee)
+  //  -- edx : new target (preserved for callee)
+  //  -- edi : target function (preserved for callee)
+  // -----------------------------------
+  Label failed;
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+    // Push the number of arguments to the callee.
+    __ SmiTag(eax);
+    __ push(eax);
+    // Push a copy of the target function and the new target.
+    __ push(edi);
+    __ push(edx);
+
+    // The function.
+    __ push(edi);
+    // Copy arguments from caller (stdlib, foreign, heap).
+    for (int i = 2; i >= 0; --i) {
+      __ push(Operand(
+          ebp, StandardFrameConstants::kCallerSPOffset + i * kPointerSize));
+    }
+    // Call runtime, on success unwind frame, and parent frame.
+    __ CallRuntime(Runtime::kInstantiateAsmJs, 4);
+    // A smi 0 is returned on failure, an object on success.
+    __ JumpIfSmi(eax, &failed, Label::kNear);
+    scope.GenerateLeaveFrame();
+    __ ret(4 * kPointerSize);
+
+    __ bind(&failed);
+    // Restore target function and new target.
+    __ pop(edx);
+    __ pop(edi);
+    __ pop(eax);
+    __ SmiUntag(eax);
+  }
+  // On failure, tail call back to regular js.
+  GenerateTailCallToReturnedCode(masm, Runtime::kCompileLazy);
+}
 
 static void GenerateMakeCodeYoungAgainCommon(MacroAssembler* masm) {
   // For now, we are relying on the fact that make_code_young doesn't do any
@@ -1136,13 +1188,14 @@ static void Generate_NotifyDeoptimizedHelper(MacroAssembler* masm,
 
   // Switch on the state.
   Label not_no_registers, not_tos_eax;
-  __ cmp(ecx, FullCodeGenerator::NO_REGISTERS);
+  __ cmp(ecx, static_cast<int>(Deoptimizer::BailoutState::NO_REGISTERS));
   __ j(not_equal, &not_no_registers, Label::kNear);
   __ ret(1 * kPointerSize);  // Remove state.
 
   __ bind(&not_no_registers);
+  DCHECK_EQ(kInterpreterAccumulatorRegister.code(), eax.code());
   __ mov(eax, Operand(esp, 2 * kPointerSize));
-  __ cmp(ecx, FullCodeGenerator::TOS_REG);
+  __ cmp(ecx, static_cast<int>(Deoptimizer::BailoutState::TOS_REGISTER));
   __ j(not_equal, &not_tos_eax, Label::kNear);
   __ ret(2 * kPointerSize);  // Remove state, eax.
 
@@ -1170,6 +1223,9 @@ void Builtins::Generate_NotifyLazyDeoptimized(MacroAssembler* masm) {
 void Builtins::Generate_DatePrototype_GetField(MacroAssembler* masm,
                                                int field_index) {
   // ----------- S t a t e -------------
+  //  -- eax    : number of arguments
+  //  -- edi    : function
+  //  -- esi    : context
   //  -- esp[0] : return address
   //  -- esp[4] : receiver
   // -----------------------------------
@@ -1212,32 +1268,13 @@ void Builtins::Generate_DatePrototype_GetField(MacroAssembler* masm,
   __ bind(&receiver_not_date);
   {
     FrameScope scope(masm, StackFrame::MANUAL);
-    __ EnterFrame(StackFrame::INTERNAL);
+    __ Push(ebp);
+    __ Move(ebp, esp);
+    __ Push(esi);
+    __ Push(edi);
+    __ Push(Immediate(0));
     __ CallRuntime(Runtime::kThrowNotDateError);
   }
-}
-
-// static
-void Builtins::Generate_FunctionHasInstance(MacroAssembler* masm) {
-  // ----------- S t a t e -------------
-  //  -- eax    : argc
-  //  -- esp[0] : return address
-  //  -- esp[4] : first argument (left-hand side)
-  //  -- esp[8] : receiver (right-hand side)
-  // -----------------------------------
-
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    __ mov(InstanceOfDescriptor::LeftRegister(),
-           Operand(ebp, 2 * kPointerSize));  // Load left-hand side.
-    __ mov(InstanceOfDescriptor::RightRegister(),
-           Operand(ebp, 3 * kPointerSize));  // Load right-hand side.
-    InstanceOfStub stub(masm->isolate(), true);
-    __ CallStub(&stub);
-  }
-
-  // Pop the argument and the receiver.
-  __ ret(2 * kPointerSize);
 }
 
 // static
@@ -1569,6 +1606,8 @@ void Builtins::Generate_ArrayCode(MacroAssembler* masm) {
 void Builtins::Generate_MathMaxMin(MacroAssembler* masm, MathMaxMinKind kind) {
   // ----------- S t a t e -------------
   //  -- eax                 : number of arguments
+  //  -- edi                 : function
+  //  -- esi                 : context
   //  -- esp[0]              : return address
   //  -- esp[(argc - n) * 8] : arg[n] (zero-based)
   //  -- esp[(argc + 1) * 8] : receiver
@@ -1596,27 +1635,32 @@ void Builtins::Generate_MathMaxMin(MacroAssembler* masm, MathMaxMinKind kind) {
     __ mov(ebx, Operand(esp, ecx, times_pointer_size, 0));
 
     // Load the double value of the parameter into stx_1, maybe converting the
-    // parameter to a number first using the ToNumberStub if necessary.
+    // parameter to a number first using the ToNumber builtin if necessary.
     Label convert, convert_smi, convert_number, done_convert;
     __ bind(&convert);
     __ JumpIfSmi(ebx, &convert_smi);
     __ JumpIfRoot(FieldOperand(ebx, HeapObject::kMapOffset),
                   Heap::kHeapNumberMapRootIndex, &convert_number);
     {
-      // Parameter is not a Number, use the ToNumberStub to convert it.
-      FrameScope scope(masm, StackFrame::INTERNAL);
+      // Parameter is not a Number, use the ToNumber builtin to convert it.
+      FrameScope scope(masm, StackFrame::MANUAL);
+      __ Push(ebp);
+      __ Move(ebp, esp);
+      __ Push(esi);
+      __ Push(edi);
       __ SmiTag(eax);
       __ SmiTag(ecx);
       __ Push(eax);
       __ Push(ecx);
       __ Push(edx);
       __ mov(eax, ebx);
-      ToNumberStub stub(masm->isolate());
-      __ CallStub(&stub);
+      __ Call(masm->isolate()->builtins()->ToNumber(), RelocInfo::CODE_TARGET);
       __ mov(ebx, eax);
       __ Pop(edx);
       __ Pop(ecx);
       __ Pop(eax);
+      __ Pop(edi);
+      __ Pop(esi);
       {
         // Restore the double accumulator value (stX_0).
         Label restore_smi, done_restore;
@@ -1633,6 +1677,7 @@ void Builtins::Generate_MathMaxMin(MacroAssembler* masm, MathMaxMinKind kind) {
       }
       __ SmiUntag(ecx);
       __ SmiUntag(eax);
+      __ leave();
     }
     __ jmp(&convert);
     __ bind(&convert_number);
@@ -1723,8 +1768,7 @@ void Builtins::Generate_NumberConstructor(MacroAssembler* masm) {
   }
 
   // 2a. Convert the first argument to a number.
-  ToNumberStub stub(masm->isolate());
-  __ TailCallStub(&stub);
+  __ Jump(masm->isolate()->builtins()->ToNumber(), RelocInfo::CODE_TARGET);
 
   // 2b. No arguments, return +0 (already in eax).
   __ bind(&no_arguments);
@@ -1774,8 +1818,7 @@ void Builtins::Generate_NumberConstructor_ConstructStub(MacroAssembler* masm) {
       __ Push(edi);
       __ Push(edx);
       __ Move(eax, ebx);
-      ToNumberStub stub(masm->isolate());
-      __ CallStub(&stub);
+      __ Call(masm->isolate()->builtins()->ToNumber(), RelocInfo::CODE_TARGET);
       __ Move(ebx, eax);
       __ Pop(edx);
       __ Pop(edi);
@@ -2672,6 +2715,81 @@ void Builtins::Generate_AllocateInOldSpace(MacroAssembler* masm) {
   __ PushReturnAddressFrom(ecx);
   __ Move(esi, Smi::FromInt(0));
   __ TailCallRuntime(Runtime::kAllocateInTargetSpace);
+}
+
+// static
+void Builtins::Generate_StringToNumber(MacroAssembler* masm) {
+  // The StringToNumber stub takes one argument in eax.
+  __ AssertString(eax);
+
+  // Check if string has a cached array index.
+  Label runtime;
+  __ test(FieldOperand(eax, String::kHashFieldOffset),
+          Immediate(String::kContainsCachedArrayIndexMask));
+  __ j(not_zero, &runtime, Label::kNear);
+  __ mov(eax, FieldOperand(eax, String::kHashFieldOffset));
+  __ IndexFromHash(eax, eax);
+  __ Ret();
+
+  __ bind(&runtime);
+  {
+    FrameScope frame(masm, StackFrame::INTERNAL);
+    // Push argument.
+    __ push(eax);
+    // We cannot use a tail call here because this builtin can also be called
+    // from wasm.
+    __ CallRuntime(Runtime::kStringToNumber);
+  }
+  __ Ret();
+}
+
+// static
+void Builtins::Generate_ToNumber(MacroAssembler* masm) {
+  // The ToNumber stub takes one argument in eax.
+  Label not_smi;
+  __ JumpIfNotSmi(eax, &not_smi, Label::kNear);
+  __ Ret();
+  __ bind(&not_smi);
+
+  Label not_heap_number;
+  __ CompareMap(eax, masm->isolate()->factory()->heap_number_map());
+  __ j(not_equal, &not_heap_number, Label::kNear);
+  __ Ret();
+  __ bind(&not_heap_number);
+
+  __ Jump(masm->isolate()->builtins()->NonNumberToNumber(),
+          RelocInfo::CODE_TARGET);
+}
+
+// static
+void Builtins::Generate_NonNumberToNumber(MacroAssembler* masm) {
+  // The NonNumberToNumber stub takes one argument in eax.
+  __ AssertNotNumber(eax);
+
+  Label not_string;
+  __ CmpObjectType(eax, FIRST_NONSTRING_TYPE, edi);
+  // eax: object
+  // edi: object map
+  __ j(above_equal, &not_string, Label::kNear);
+  __ Jump(masm->isolate()->builtins()->StringToNumber(),
+          RelocInfo::CODE_TARGET);
+  __ bind(&not_string);
+
+  Label not_oddball;
+  __ CmpInstanceType(edi, ODDBALL_TYPE);
+  __ j(not_equal, &not_oddball, Label::kNear);
+  __ mov(eax, FieldOperand(eax, Oddball::kToNumberOffset));
+  __ Ret();
+  __ bind(&not_oddball);
+  {
+    FrameScope frame(masm, StackFrame::INTERNAL);
+    // Push argument.
+    __ push(eax);
+    // We cannot use a tail call here because this builtin can also be called
+    // from wasm.
+    __ CallRuntime(Runtime::kToNumber);
+  }
+  __ Ret();
 }
 
 void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {

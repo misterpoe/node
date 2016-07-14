@@ -22,19 +22,21 @@ ScopeIterator::ScopeIterator(Isolate* isolate, FrameInspector* frame_inspector,
       nested_scope_chain_(4),
       seen_script_scope_(false),
       failed_(false) {
-  if (!frame_inspector->GetContext()->IsContext() ||
-      !frame_inspector->GetFunction()->IsJSFunction()) {
+  if (!frame_inspector->GetContext()->IsContext()) {
     // Optimized frame, context or function cannot be materialized. Give up.
     return;
   }
 
   context_ = Handle<Context>::cast(frame_inspector->GetContext());
 
+  // We should not instantiate a ScopeIterator for wasm frames.
+  DCHECK(frame_inspector->GetScript()->type() != Script::TYPE_WASM);
+
   // Catch the case when the debugger stops in an internal function.
   Handle<JSFunction> function = GetFunction();
   Handle<SharedFunctionInfo> shared_info(function->shared());
   Handle<ScopeInfo> scope_info(shared_info->scope_info());
-  if (shared_info->script() == isolate->heap()->undefined_value()) {
+  if (shared_info->script()->IsUndefined(isolate)) {
     while (context_->closure() == *function) {
       context_ = Handle<Context>(context_->previous(), isolate_);
     }
@@ -494,7 +496,7 @@ MaybeHandle<JSObject> ScopeIterator::MaterializeLocalScope() {
   if (function_context->closure() == *function &&
       !function_context->IsNativeContext()) {
     CopyContextExtensionToScopeObject(function_context, local_scope,
-                                      INCLUDE_PROTOS);
+                                      KeyCollectionMode::kIncludePrototypes);
   }
 
   return local_scope;
@@ -520,7 +522,8 @@ Handle<JSObject> ScopeIterator::MaterializeClosure() {
 
   // Finally copy any properties from the function context extension. This will
   // be variables introduced by eval.
-  CopyContextExtensionToScopeObject(context, closure_scope, OWN_ONLY);
+  CopyContextExtensionToScopeObject(context, closure_scope,
+                                    KeyCollectionMode::kOwnOnly);
 
   return closure_scope;
 }
@@ -571,7 +574,8 @@ Handle<JSObject> ScopeIterator::MaterializeInnerScope() {
   if (!context.is_null()) {
     // Fill all context locals.
     CopyContextLocalsToScopeObject(CurrentScopeInfo(), context, inner_scope);
-    CopyContextExtensionToScopeObject(context, inner_scope, OWN_ONLY);
+    CopyContextExtensionToScopeObject(context, inner_scope,
+                                      KeyCollectionMode::kOwnOnly);
   }
   return inner_scope;
 }
@@ -612,9 +616,9 @@ bool ScopeIterator::SetParameterValue(Handle<ScopeInfo> scope_info,
 }
 
 bool ScopeIterator::SetStackVariableValue(Handle<ScopeInfo> scope_info,
-                                          JavaScriptFrame* frame,
                                           Handle<String> variable_name,
                                           Handle<Object> new_value) {
+  JavaScriptFrame* frame = GetFrame();
   // Setting stack locals of optimized frames is not supported.
   if (frame->is_optimized()) return false;
   HandleScope scope(isolate_);
@@ -670,7 +674,7 @@ bool ScopeIterator::SetLocalVariableValue(Handle<String> variable_name,
   bool result = SetParameterValue(scope_info, frame, variable_name, new_value);
 
   // Stack locals.
-  if (SetStackVariableValue(scope_info, frame, variable_name, new_value)) {
+  if (SetStackVariableValue(scope_info, variable_name, new_value)) {
     return true;
   }
 
@@ -688,10 +692,9 @@ bool ScopeIterator::SetInnerScopeVariableValue(Handle<String> variable_name,
   Handle<ScopeInfo> scope_info = CurrentScopeInfo();
   DCHECK(scope_info->scope_type() == BLOCK_SCOPE ||
          scope_info->scope_type() == EVAL_SCOPE);
-  JavaScriptFrame* frame = GetFrame();
 
   // Setting stack locals of optimized frames is not supported.
-  if (SetStackVariableValue(scope_info, frame, variable_name, new_value)) {
+  if (SetStackVariableValue(scope_info, variable_name, new_value)) {
     return true;
   }
 
@@ -754,7 +757,7 @@ void ScopeIterator::CopyContextLocalsToScopeObject(
     int context_index = Context::MIN_CONTEXT_SLOTS + i;
     Handle<Object> value = Handle<Object>(context->get(context_index), isolate);
     // Reflect variables under TDZ as undefined in scope object.
-    if (value->IsTheHole()) continue;
+    if (value->IsTheHole(isolate)) continue;
     // This should always succeed.
     // TODO(verwaest): Use AddDataProperty instead.
     JSObject::SetOwnPropertyIgnoreAttributes(scope_object, name, value, NONE)
@@ -764,11 +767,11 @@ void ScopeIterator::CopyContextLocalsToScopeObject(
 
 void ScopeIterator::CopyContextExtensionToScopeObject(
     Handle<Context> context, Handle<JSObject> scope_object,
-    KeyCollectionType type) {
+    KeyCollectionMode mode) {
   if (context->extension_object() == nullptr) return;
   Handle<JSObject> extension(context->extension_object());
   Handle<FixedArray> keys =
-      JSReceiver::GetKeys(extension, type, ENUMERABLE_STRINGS)
+      KeyAccumulator::GetKeys(extension, mode, ENUMERABLE_STRINGS)
           .ToHandleChecked();
 
   for (int i = 0; i < keys->length(); i++) {

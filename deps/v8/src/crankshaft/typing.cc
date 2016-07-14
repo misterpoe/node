@@ -24,7 +24,7 @@ AstTyper::AstTyper(Isolate* isolate, Zone* zone, Handle<JSFunction> closure,
       osr_ast_id_(osr_ast_id),
       root_(root),
       oracle_(isolate, zone, handle(closure->shared()->code()),
-              handle(closure->shared()->feedback_vector()),
+              handle(closure->feedback_vector()),
               handle(closure->context()->native_context())),
       store_(zone),
       bounds_(bounds) {
@@ -787,10 +787,6 @@ void AstTyper::VisitFunctionDeclaration(FunctionDeclaration* declaration) {
 
 
 void AstTyper::VisitImportDeclaration(ImportDeclaration* declaration) {
-}
-
-
-void AstTyper::VisitExportDeclaration(ExportDeclaration* declaration) {
 }
 
 
