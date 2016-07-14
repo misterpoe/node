@@ -52,6 +52,7 @@ recursedeps = [ 'v8/third_party/android_tools' ]
 include_rules = [
   # Everybody can use some things.
   "+include",
+  "+libplatform",
   "+unicode",
   "+third_party/fdlibm",
 ]

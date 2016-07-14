@@ -35,6 +35,7 @@
 #include "src/ostreams.h"
 
 #include "include/libplatform/libplatform.h"
+#include "include/libplatform/v8-tracing.h"
 #ifndef V8_SHARED
 #include "src/api.h"
 #include "src/base/cpu.h"
@@ -1997,6 +1998,12 @@ bool Shell::SetOptions(int argc, char* argv[]) {
         return false;
       }
       argv[i] = NULL;
+    } else if (strcmp(argv[i], "--enable-tracing") == 0) {
+      options.trace_enabled = true;
+      argv[i] = NULL;
+    } else if (strncmp(argv[i], "--trace-config=", 15) == 0) {
+      options.trace_config = argv[i] + 15;
+      argv[i] = NULL;
     }
   }
 
@@ -2413,6 +2420,7 @@ static void DumpHeapConstants(i::Isolate* isolate) {
 
 
 int Shell::Main(int argc, char* argv[]) {
+  std::ofstream trace_file;
 #if (defined(_WIN32) || defined(_WIN64))
   UINT new_flags =
       SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX;
@@ -2479,6 +2487,38 @@ int Shell::Main(int argc, char* argv[]) {
     Isolate::Scope scope(isolate);
     Initialize(isolate);
     PerIsolateData data(isolate);
+
+    if (options.trace_enabled) {
+      trace_file.open("v8_trace.json");
+      platform::tracing::TracingController* tracing_controller =
+          new platform::tracing::TracingController();
+      platform::tracing::TraceBuffer* trace_buffer =
+          platform::tracing::TraceBuffer::CreateTraceBufferRingBuffer(
+              platform::tracing::TraceBuffer::kRingBufferChunks,
+              platform::tracing::TraceWriter::CreateJSONTraceWriter(
+                  trace_file));
+      platform::tracing::TraceConfig* trace_config;
+      if (options.trace_config) {
+        int size = 0;
+        char* trace_config_str =
+            ReadChars(nullptr, options.trace_config, &size);
+        trace_config =
+            platform::tracing::TraceConfig::CreateTraceConfigFromJSON(
+                isolate, trace_config_str);
+      } else {
+        trace_config =
+            platform::tracing::TraceConfig::CreateDefaultTraceConfig();
+      }
+      tracing_controller->Initialize(trace_buffer);
+      tracing_controller->StartTracing(trace_config);
+#ifndef V8_SHARED
+      if (!i::FLAG_verify_predictable) {
+        platform::SetTracingController(g_platform, tracing_controller);
+      }
+#else
+      platform::SetTracingController(g_platform, tracing_controller);
+#endif
+    }
 
 #ifndef V8_SHARED
     if (options.dump_heap_constants) {
