@@ -19,15 +19,30 @@ JSONTraceWriter::~JSONTraceWriter() { stream_ << "]}"; }
 void JSONTraceWriter::AppendTraceEvent(TraceObject* trace_event) {
   if (append_comma_) stream_ << ",";
   append_comma_ = true;
-  stream_ << "{\"pid\":" << trace_event->pid()
-          << ",\"tid\":" << trace_event->tid()
-          << ",\"ts\":" << trace_event->ts()
-          << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
-          << trace_event->phase() << "\",\"cat\":\""
-          << trace_event->category_group() << "\",\"name\":\""
-          << trace_event->name()
-          << "\",\"args\":{},\"dur\":" << trace_event->duration()
-          << ",\"tdur\":" << trace_event->cpu_duration() << "}";
+  if (trace_event->scope() == NULL) {
+    stream_ << "{\"pid\":" << trace_event->pid()
+            << ",\"tid\":" << trace_event->tid()
+            << ",\"ts\":" << trace_event->ts()
+            << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
+            << trace_event->phase() << "\",\"cat\":\""
+            << TracingController::GetCategoryGroupName(
+                   trace_event->category_enabled_flag())
+            << "\",\"name\":\"" << trace_event->name()
+            << "\",\"args\":{},\"dur\":" << trace_event->duration()
+            << ",\"tdur\":" << trace_event->cpu_duration() << "}";
+  } else {
+    stream_ << "{\"pid\":" << trace_event->pid()
+            << ",\"tid\":" << trace_event->tid()
+            << ",\"ts\":" << trace_event->ts()
+            << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
+            << trace_event->phase() << "\",\"cat\":\""
+            << TracingController::GetCategoryGroupName(
+                   trace_event->category_enabled_flag())
+            << "\",\"name\":\"" << trace_event->name() << "\",\"scope\":\""
+            << trace_event->scope()
+            << "\",\"args\":{},\"dur\":" << trace_event->duration()
+            << ",\"tdur\":" << trace_event->cpu_duration() << "}";
+  }
 }
 
 void JSONTraceWriter::Flush() {}

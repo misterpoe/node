@@ -16,20 +16,28 @@ namespace tracing {
 
 class TraceObject {
  public:
-  void Initialize(char phase, std::string name, std::string category_group,
-                  uint64_t id, uint64_t bind_id, int num_args, int flags);
+  void Initialize(char phase, const uint8_t* category_enabled_flag,
+                  const char* name, const char* scope, uint64_t id,
+                  uint64_t bind_id, int num_args, const char** arg_names,
+                  const uint8_t* arg_types, const uint64_t* arg_values,
+                  int flags);
   void UpdateDuration();
-  void InitializeForTesting(char phase, std::string name,
-                            std::string category_group, uint64_t id,
-                            uint64_t bind_id, int num_args, int flags, int pid,
+  void InitializeForTesting(char phase, const uint8_t* category_enabled_flag,
+                            const char* name, const char* scope, uint64_t id,
+                            uint64_t bind_id, int num_args,
+                            const char** arg_names, const uint8_t* arg_types,
+                            const uint64_t* arg_values, int flags, int pid,
                             int tid, int64_t ts, int64_t tts, uint64_t duration,
                             uint64_t cpu_duration);
 
   int pid() const { return pid_; }
   int tid() const { return tid_; }
   char phase() const { return phase_; }
-  std::string name() const { return name_; }
-  std::string category_group() const { return category_group_; }
+  const uint8_t* category_enabled_flag() const {
+    return category_enabled_flag_;
+  }
+  const char* name() const { return name_; }
+  const char* scope() const { return scope_; }
   int64_t ts() { return ts_; }
   int64_t tts() { return tts_; }
   uint64_t duration() { return duration_; }
@@ -39,8 +47,9 @@ class TraceObject {
   int pid_;
   int tid_;
   char phase_;
-  std::string name_;
-  std::string category_group_;
+  const char* name_;
+  const char* scope_;
+  const uint8_t* category_enabled_flag_;
   uint64_t id_;
   uint64_t bind_id_;
   int num_args_;
@@ -76,7 +85,7 @@ class TraceBufferChunk {
   static const size_t kChunkSize = 64;
 
  private:
-  size_t next_free_;
+  size_t next_free_ = 0;
   TraceObject chunk_[kChunkSize];
   uint32_t seq_;
 };
@@ -167,7 +176,7 @@ class TracingController {
 
   void Initialize(TraceBuffer* trace_buffer);
   const uint8_t* GetCategoryGroupEnabled(const char* category_group);
-  const char* GetCategoryGroupName(const uint8_t* category_enabled_flag);
+  static const char* GetCategoryGroupName(const uint8_t* category_enabled_flag);
   uint64_t AddTraceEvent(char phase, const uint8_t* category_enabled_flag,
                          const char* name, const char* scope, uint64_t id,
                          uint64_t bind_id, int32_t num_args,

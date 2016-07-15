@@ -50,10 +50,9 @@ uint64_t TracingController::AddTraceEvent(
   uint64_t handle;
   TraceObject* trace_object = trace_buffer_->AddTraceEvent(&handle);
   if (trace_object) {
-    trace_object->Initialize(
-        phase, std::string(name),
-        std::string(GetCategoryGroupName(category_enabled_flag)), id, bind_id,
-        num_args, flags);
+    trace_object->Initialize(phase, category_enabled_flag, name, scope, id,
+                             bind_id, num_args, arg_names, arg_types,
+                             arg_values, flags);
   }
   return handle;
 }
@@ -97,9 +96,9 @@ void TracingController::StartTracing(TraceConfig* trace_config) {
 }
 
 void TracingController::StopTracing() {
-  trace_buffer_->Flush();
   mode_ = DISABLED;
   UpdateCategoryGroupEnabledFlags();
+  trace_buffer_->Flush();
 }
 
 void TracingController::UpdateCategoryGroupEnabledFlag(size_t category_index) {

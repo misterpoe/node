@@ -11,14 +11,17 @@ namespace v8 {
 namespace platform {
 namespace tracing {
 
-void TraceObject::Initialize(char phase, std::string name,
-                             std::string category_group, uint64_t id,
-                             uint64_t bind_id, int num_args, int flags) {
+void TraceObject::Initialize(char phase, const uint8_t* category_enabled_flag,
+                             const char* name, const char* scope, uint64_t id,
+                             uint64_t bind_id, int num_args,
+                             const char** arg_names, const uint8_t* arg_types,
+                             const uint64_t* arg_values, int flags) {
   pid_ = base::OS::GetCurrentProcessId();
   tid_ = base::OS::GetCurrentThreadId();
   phase_ = phase;
+  category_enabled_flag_ = category_enabled_flag;
   name_ = name;
-  category_group_ = category_group;
+  scope_ = scope;
   id_ = id;
   bind_id_ = bind_id;
   num_args_ = num_args;
@@ -34,17 +37,18 @@ void TraceObject::UpdateDuration() {
   cpu_duration_ = base::ThreadTicks::Now().ToInternalValue() - tts_;
 }
 
-void TraceObject::InitializeForTesting(char phase, std::string name,
-                                       std::string category_group, uint64_t id,
-                                       uint64_t bind_id, int num_args,
-                                       int flags, int pid, int tid, int64_t ts,
-                                       int64_t tts, uint64_t duration,
-                                       uint64_t cpu_duration) {
+void TraceObject::InitializeForTesting(
+    char phase, const uint8_t* category_enabled_flag, const char* name,
+    const char* scope, uint64_t id, uint64_t bind_id, int num_args,
+    const char** arg_names, const uint8_t* arg_types,
+    const uint64_t* arg_values, int flags, int pid, int tid, int64_t ts,
+    int64_t tts, uint64_t duration, uint64_t cpu_duration) {
   pid_ = pid;
   tid_ = tid;
   phase_ = phase;
+  category_enabled_flag_ = category_enabled_flag;
   name_ = name;
-  category_group_ = category_group;
+  scope_ = scope;
   id_ = id;
   bind_id_ = bind_id;
   num_args_ = num_args;

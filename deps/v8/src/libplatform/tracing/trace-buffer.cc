@@ -10,7 +10,7 @@ namespace tracing {
 
 TraceBufferRingBuffer::TraceBufferRingBuffer(size_t max_chunks,
                                              TraceWriter* trace_writer)
-    : max_chunks_(max_chunks), is_empty_(true), current_chunk_seq_(1) {
+    : max_chunks_(max_chunks) {
   trace_writer_.reset(trace_writer);
   chunks_.resize(max_chunks);
 }
@@ -18,6 +18,7 @@ TraceBufferRingBuffer::TraceBufferRingBuffer(size_t max_chunks,
 TraceBufferRingBuffer::~TraceBufferRingBuffer() {}
 
 TraceObject* TraceBufferRingBuffer::AddTraceEvent(uint64_t* handle) {
+  base::LockGuard<base::Mutex> guard(&mutex_);
   if (is_empty_ || chunks_[chunk_index_]->IsFull()) {
     chunk_index_ = is_empty_ ? 0 : NextChunkIndex(chunk_index_);
     is_empty_ = false;
@@ -36,6 +37,7 @@ TraceObject* TraceBufferRingBuffer::AddTraceEvent(uint64_t* handle) {
 }
 
 TraceObject* TraceBufferRingBuffer::GetEventByHandle(uint64_t handle) {
+  base::LockGuard<base::Mutex> guard(&mutex_);
   size_t chunk_index, event_index;
   uint32_t chunk_seq;
   ExtractHandle(handle, &chunk_index, &chunk_seq, &event_index);
@@ -46,6 +48,7 @@ TraceObject* TraceBufferRingBuffer::GetEventByHandle(uint64_t handle) {
 }
 
 bool TraceBufferRingBuffer::Flush() {
+  base::LockGuard<base::Mutex> guard(&mutex_);
   // This flushes all the traces stored in the buffer.
   if (!is_empty_) {
     for (size_t i = NextChunkIndex(chunk_index_);; i = NextChunkIndex(i)) {
@@ -84,7 +87,7 @@ size_t TraceBufferRingBuffer::NextChunkIndex(size_t index) const {
   return index;
 }
 
-TraceBufferChunk::TraceBufferChunk(uint32_t seq) : next_free_(0), seq_(seq) {}
+TraceBufferChunk::TraceBufferChunk(uint32_t seq) : seq_(seq) {}
 
 void TraceBufferChunk::Reset(uint32_t new_seq) {
   next_free_ = 0;

@@ -1,6 +1,7 @@
 // Copyright 2016 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+#include <stdio.h>
 
 #include "include/libplatform/v8-tracing.h"
 #include "src/tracing/trace-event.h"
@@ -47,10 +48,13 @@ TEST(TestTraceConfigConstructor) {
 
 TEST(TestTraceObject) {
   TraceObject trace_object;
-  trace_object.Initialize('X', "Test.Trace", "v8-cat", 42, 123, 0, 0);
+  uint8_t category_enabled_flag = 41;
+  trace_object.Initialize('X', &category_enabled_flag, "Test.Trace",
+                          "Test.Scope", 42, 123, 0, NULL, NULL, NULL, 0);
   CHECK_EQ('X', trace_object.phase());
+  CHECK_EQ(category_enabled_flag, *trace_object.category_enabled_flag());
   CHECK_EQ("Test.Trace", trace_object.name());
-  CHECK_EQ("v8-cat", trace_object.category_group());
+  CHECK_EQ("Test.Scope", trace_object.scope());
   CHECK_EQ(0, trace_object.duration());
   CHECK_EQ(0, trace_object.cpu_duration());
 }
@@ -70,22 +74,28 @@ class MockTraceWriter : public TraceWriter {
 };
 
 TEST(TestTraceBufferRingBuffer) {
+  // We should be able to add kChunkSize * 2 + 1 trace events.
+  const int HANDLES_COUNT = TraceBufferChunk::kChunkSize * 2 + 1;
   MockTraceWriter* writer = new MockTraceWriter();
   TraceBuffer* ring_buffer =
       TraceBuffer::CreateTraceBufferRingBuffer(2, writer);
+  std::string names[HANDLES_COUNT];
+  for (int i = 0; i < HANDLES_COUNT; ++i) {
+    names[i] = "Test.EventNo" + std::to_string(i);
+  }
 
-  // We should be able to add kChunkSize * 2 + 1 trace events.
-  std::vector<uint64_t> handles(TraceBufferChunk::kChunkSize * 2 + 1);
+  std::vector<uint64_t> handles(HANDLES_COUNT);
+  uint8_t category_enabled_flag = 41;
   for (size_t i = 0; i < handles.size(); ++i) {
     TraceObject* trace_object = ring_buffer->AddTraceEvent(&handles[i]);
     CHECK_NOT_NULL(trace_object);
-    std::string name = "Test.Trace" + std::to_string(i);
-    trace_object->Initialize('X', name, "v8-cat", 42, 123, 0, 0);
+    trace_object->Initialize('X', &category_enabled_flag, names[i].c_str(),
+                             "Test.Scope", 42, 123, 0, NULL, NULL, NULL, 0);
     trace_object = ring_buffer->GetEventByHandle(handles[i]);
     CHECK_NOT_NULL(trace_object);
     CHECK_EQ('X', trace_object->phase());
-    CHECK_EQ(name, trace_object->name());
-    CHECK_EQ("v8-cat", trace_object->category_group());
+    CHECK_EQ(names[i].c_str(), trace_object->name());
+    CHECK_EQ(category_enabled_flag, *trace_object->category_enabled_flag());
   }
 
   // We should only be able to retrieve the last kChunkSize + 1.
@@ -98,8 +108,8 @@ TEST(TestTraceBufferRingBuffer) {
     CHECK_NOT_NULL(trace_object);
     // The object properties should be correct.
     CHECK_EQ('X', trace_object->phase());
-    CHECK_EQ("Test.Trace" + std::to_string(i), trace_object->name());
-    CHECK_EQ("v8-cat", trace_object->category_group());
+    CHECK_EQ(names[i], std::string(trace_object->name()));
+    CHECK_EQ(category_enabled_flag, *trace_object->category_enabled_flag());
   }
 
   // Check Flush(), that the writer wrote the last kChunkSize  1 event names.
@@ -107,24 +117,40 @@ TEST(TestTraceBufferRingBuffer) {
   auto events = writer->events();
   CHECK_EQ(TraceBufferChunk::kChunkSize + 1, events.size());
   for (size_t i = TraceBufferChunk::kChunkSize; i < handles.size(); ++i) {
-    CHECK_EQ("Test.Trace" + std::to_string(i),
-             events[i - TraceBufferChunk::kChunkSize]);
+    CHECK_EQ(names[i], events[i - TraceBufferChunk::kChunkSize]);
   }
   delete ring_buffer;
 }
 
 TEST(TestJSONTraceWriter) {
   std::ostringstream stream;
-  TraceWriter* writer = TraceWriter::CreateJSONTraceWriter(stream);
-  TraceObject trace_object;
-  trace_object.InitializeForTesting('X', "Test0", "v8-cat", 42, 123, 0, 0, 11,
-                                    22, 100, 50, 33, 44);
-  writer->AppendTraceEvent(&trace_object);
-  trace_object.InitializeForTesting('Y', "Test1", "v8-cat", 43, 456, 0, 0, 55,
-                                    66, 110, 55, 77, 88);
-  writer->AppendTraceEvent(&trace_object);
-  writer->Flush();
-  delete writer;
+  v8::Platform* old_platform = i::V8::GetCurrentPlatform();
+  v8::Platform* default_platform = v8::platform::CreateDefaultPlatform();
+  i::V8::SetPlatformForTesting(default_platform);
+  // Create a scope for the tracing controller to terminate the trace writer.
+  {
+    TracingController tracing_controller;
+    platform::SetTracingController(default_platform, &tracing_controller);
+    TraceWriter* writer = TraceWriter::CreateJSONTraceWriter(stream);
+
+    TraceBuffer* ring_buffer =
+        TraceBuffer::CreateTraceBufferRingBuffer(1, writer);
+    tracing_controller.Initialize(ring_buffer);
+    tracing_controller.StartTracing(TraceConfig::CreateDefaultTraceConfig());
+
+    TraceObject trace_object;
+    trace_object.InitializeForTesting(
+        'X', tracing_controller.GetCategoryGroupEnabled("v8-cat"), "Test0",
+        v8::internal::tracing::kGlobalScope, 42, 123, 0, NULL, NULL, NULL, 0,
+        11, 22, 100, 50, 33, 44);
+    writer->AppendTraceEvent(&trace_object);
+    trace_object.InitializeForTesting(
+        'Y', tracing_controller.GetCategoryGroupEnabled("v8-cat"), "Test1",
+        v8::internal::tracing::kGlobalScope, 43, 456, 0, NULL, NULL, NULL, 0,
+        55, 66, 110, 55, 77, 88);
+    writer->AppendTraceEvent(&trace_object);
+    tracing_controller.StopTracing();
+  }
 
   std::string trace_str = stream.str();
   std::string expected_trace_str =
@@ -133,7 +159,10 @@ TEST(TestJSONTraceWriter) {
       "\"dur\":33,\"tdur\":44},{\"pid\":55,\"tid\":66,\"ts\":110,\"tts\":55,"
       "\"ph\":\"Y\",\"cat\":\"v8-cat\",\"name\":\"Test1\",\"args\":{},\"dur\":"
       "77,\"tdur\":88}]}";
+
   CHECK_EQ(expected_trace_str, trace_str);
+
+  i::V8::SetPlatformForTesting(old_platform);
 }
 
 TEST(TestTracingController) {
