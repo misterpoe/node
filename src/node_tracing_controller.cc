@@ -6,18 +6,6 @@
 
 namespace node {
 
-uint64_t NodeTracingController::AddTraceEvent(
-    char phase, const uint8_t* category_enabled_flag, const char* name,
-    const char* scope, uint64_t id, uint64_t bind_id, int num_args,
-    const char** arg_names, const uint8_t* arg_types,
-    const uint64_t* arg_values, unsigned int flags) {
-  if (strcmp(name, "V8.RecompileConcurrent") == 0) {
-    return 0;
-  }
-  return TracingController::AddTraceEvent(phase, category_enabled_flag, name,
-      scope, id, bind_id, num_args, arg_names, arg_types, arg_values, flags);
-}
-
 NodeTraceWriter::NodeTraceWriter() {
   write_req_.writer = this;
 }
@@ -96,21 +84,30 @@ const double TraceBufferStreamingBuffer::kFlushThreshold = 0.75;
 
 TraceBufferStreamingBuffer::TraceBufferStreamingBuffer(size_t max_chunks,
     TraceWriter* trace_writer) : max_chunks_(max_chunks) {
+  uv_mutex_init(&mutex_);
   trace_writer_.reset(trace_writer);
   chunks_.resize(max_chunks);
+}
+
+TraceBufferStreamingBuffer::~TraceBufferStreamingBuffer() {
+  uv_mutex_destroy(&mutex_);
 }
 
 TraceObject* TraceBufferStreamingBuffer::AddTraceEvent(uint64_t* handle) {
   // If the buffer usage exceeds kFlushThreshold, attempt to perform a flush.
   // This number should be customizable.
+  // Because there is no lock here, it is entirely possible that there are
+  // useless flushes due to two threads accessing this at the same time.
   if (total_chunks_ >= max_chunks_ * kFlushThreshold) {
     Flush();
   }
+  uv_mutex_lock(&mutex_);
   // Create new chunk if last chunk is full or there is no chunk.
   if (total_chunks_ == 0 || chunks_[total_chunks_ - 1]->IsFull()) {
     if (total_chunks_ == max_chunks_) {
       // There is no more space to store more trace events.
       *handle = MakeHandle(0, 0, 0);
+      uv_mutex_unlock(&mutex_);
       return NULL;
     }
     auto& chunk = chunks_[total_chunks_++];
@@ -124,6 +121,7 @@ TraceObject* TraceBufferStreamingBuffer::AddTraceEvent(uint64_t* handle) {
   size_t event_index;
   TraceObject* trace_object = chunk->AddTraceEvent(&event_index);
   *handle = MakeHandle(total_chunks_ - 1, chunk->seq(), event_index);
+  uv_mutex_unlock(&mutex_);
   return trace_object;
 }
 
@@ -131,17 +129,26 @@ TraceObject* TraceBufferStreamingBuffer::GetEventByHandle(uint64_t handle) {
   size_t chunk_index, event_index;
   uint32_t chunk_seq;
   ExtractHandle(handle, &chunk_index, &chunk_seq, &event_index);
-  if (chunk_index >= total_chunks_)
+  uv_mutex_lock(&mutex_);
+  if (chunk_index >= total_chunks_) {
+    uv_mutex_unlock(&mutex_);
     return NULL;
+  }
   auto& chunk = chunks_[chunk_index];
-  if (chunk->seq() != chunk_seq)
+  if (chunk->seq() != chunk_seq) {
+    uv_mutex_unlock(&mutex_);
     return NULL;
+  }
+  uv_mutex_unlock(&mutex_);
   return chunk->GetEventAt(event_index);
 }
 
 bool TraceBufferStreamingBuffer::Flush() {
-  if (!static_cast<NodeTraceWriter*>(trace_writer_.get())->IsReady())
+  uv_mutex_lock(&mutex_);
+  if (!static_cast<NodeTraceWriter*>(trace_writer_.get())->IsReady()) {
+    uv_mutex_unlock(&mutex_);
     return false;
+  }
   for (size_t i = 0; i < total_chunks_; ++i) {
     auto& chunk = chunks_[i];
     for (size_t j = 0; j < chunk->size(); ++j) {
@@ -150,6 +157,7 @@ bool TraceBufferStreamingBuffer::Flush() {
   }
   trace_writer_->Flush();
   total_chunks_ = 0;
+  uv_mutex_unlock(&mutex_);
   return true;
 }
 

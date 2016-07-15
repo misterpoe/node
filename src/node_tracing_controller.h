@@ -16,17 +16,12 @@ using v8::platform::tracing::TraceObject;
 using v8::platform::tracing::TraceWriter;
 
 class NodeTracingController : public TracingController {
- public:
-  uint64_t AddTraceEvent(char phase, const uint8_t* category_enabled_flag,
-                         const char* name, const char* scope, uint64_t id,
-                         uint64_t bind_id, int32_t num_args,
-                         const char** arg_names, const uint8_t* arg_types,
-                         const uint64_t* arg_values, unsigned int flags);
 };
 
 class TraceBufferStreamingBuffer : public TraceBuffer {
  public:
   TraceBufferStreamingBuffer(size_t max_chunks, TraceWriter* trace_writer);
+  ~TraceBufferStreamingBuffer();
 
   TraceObject* AddTraceEvent(uint64_t* handle) override;
   TraceObject* GetEventByHandle(uint64_t handle) override;
@@ -42,6 +37,7 @@ class TraceBufferStreamingBuffer : public TraceBuffer {
                      uint32_t* chunk_seq, size_t* event_index) const;
   size_t Capacity() const { return max_chunks_ * TraceBufferChunk::kChunkSize; }
 
+  uv_mutex_t mutex_;
   size_t max_chunks_;
   std::unique_ptr<TraceWriter> trace_writer_;
   std::vector<std::unique_ptr<TraceBufferChunk>> chunks_;
