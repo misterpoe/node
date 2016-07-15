@@ -23,6 +23,7 @@
 #endif
 
 #include <vector>
+#include <string>
 
 namespace node {
 
@@ -319,6 +320,8 @@ static void After(uv_fs_t *req) {
     }
   }
 
+  TRACE_EVENT_END0("node",
+      ("Node.FS." + std::string(req_wrap->syscall())).c_str());
   req_wrap->MakeCallback(env->oncomplete_string(), argc, argv);
 
   uv_fs_req_cleanup(&req_wrap->req_);
@@ -336,6 +339,7 @@ struct fs_req_wrap {
 
 
 #define ASYNC_DEST_CALL(func, req, dest, encoding, ...)                       \
+  TRACE_EVENT_BEGIN0("node", "Node.FS." #func);                               \
   Environment* env = Environment::GetCurrent(args);                           \
   CHECK(req->IsObject());                                                     \
   FSReqWrap* req_wrap = FSReqWrap::New(env, req.As<Object>(),                 \

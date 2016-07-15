@@ -1,0 +1,171 @@
+#include "node_tracing_controller.h"
+
+#include <string.h>
+#include <memory>
+#include <string>
+
+namespace node {
+
+uint64_t NodeTracingController::AddTraceEvent(
+    char phase, const uint8_t* category_enabled_flag, const char* name,
+    const char* scope, uint64_t id, uint64_t bind_id, int num_args,
+    const char** arg_names, const uint8_t* arg_types,
+    const uint64_t* arg_values, unsigned int flags) {
+  if (strcmp(name, "V8.RecompileConcurrent") == 0) {
+    return 0;
+  }
+  return TracingController::AddTraceEvent(phase, category_enabled_flag, name,
+      scope, id, bind_id, num_args, arg_names, arg_types, arg_values, flags);
+}
+
+NodeTraceWriter::NodeTraceWriter() {
+  write_req_.writer = this;
+}
+
+NodeTraceWriter::~NodeTraceWriter() {
+  // Note that this is only done when the Node event loop stops.
+  // If the current file is nonempty, then end the file appropriately.
+
+  // TODO: The file is not suffixed if there is a write going on at the moment.
+  // We need a way to queue a write.
+  if (total_traces_ > 0 && IsReady()) {
+    stream_ << "]}\n";
+    WriteStreamToFile();
+  }
+}
+
+void NodeTraceWriter::OpenNewFileForStreaming() {
+  ++file_num_;
+  uv_fs_t req;
+  std::string log_file = "node_trace.log." + std::to_string(file_num_);
+  int fd = uv_fs_open(uv_default_loop(), &req, log_file.c_str(),
+      O_CREAT | O_WRONLY | O_TRUNC, 0644, NULL);
+  uv_pipe_init(uv_default_loop(), &trace_file_pipe_, 0);
+  uv_pipe_open(&trace_file_pipe_, fd);
+  // Note that the following does not get flushed to file immediately.
+  stream_ << "{\"traceEvents\":[";
+}
+
+void NodeTraceWriter::AppendTraceEvent(TraceObject* trace_event) {
+  // If this is the first trace event, open a new file for streaming.
+  if (total_traces_ == 0) {
+    OpenNewFileForStreaming();
+  } else {
+    stream_ << ",\n";
+  }
+  ++total_traces_;
+  stream_ << "{\"pid\":" << trace_event->pid()
+          << ",\"tid\":" << trace_event->tid()
+          << ",\"ts\":" << trace_event->ts()
+          << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
+          << trace_event->phase() << "\",\"cat\":\""
+          << trace_event->category_group() << "\",\"name\":\""
+          << trace_event->name()
+          << "\",\"args\":{},\"dur\":" << trace_event->duration()
+          << ",\"tdur\":" << trace_event->cpu_duration() << "}";
+}
+
+void NodeTraceWriter::Flush() {
+  // Set a writing_ flag here so that we only do a single Flush at any one
+  // point in time. This is because we need the stream_ to be alive when we
+  // are flushing.
+  if (total_traces_ >= kTracesPerFile) {
+    total_traces_ = 0;
+    stream_ << "]}\n";
+  }
+  WriteStreamToFile();
+}
+
+void NodeTraceWriter::WriteStreamToFile() {
+  // Writes stream_ to file.
+  is_writing_ = true;
+  const std::string& str = stream_.str();
+  uv_buf_ = uv_buf_init(const_cast<char*>(str.c_str()), str.length());
+  uv_write(reinterpret_cast<uv_write_t*>(&write_req_),
+           reinterpret_cast<uv_stream_t*>(&trace_file_pipe_),
+           &uv_buf_, 1, OnWrite);
+}
+
+void NodeTraceWriter::OnWrite(uv_write_t* req, int status) {
+  NodeTraceWriter* writer = reinterpret_cast<WriteRequest*>(req)->writer;
+  writer->stream_.str("");
+  writer->is_writing_ = false;
+}
+
+const double TraceBufferStreamingBuffer::kFlushThreshold = 0.75;
+
+TraceBufferStreamingBuffer::TraceBufferStreamingBuffer(size_t max_chunks,
+    TraceWriter* trace_writer) : max_chunks_(max_chunks) {
+  trace_writer_.reset(trace_writer);
+  chunks_.resize(max_chunks);
+}
+
+TraceObject* TraceBufferStreamingBuffer::AddTraceEvent(uint64_t* handle) {
+  // If the buffer usage exceeds kFlushThreshold, attempt to perform a flush.
+  // This number should be customizable.
+  if (total_chunks_ >= max_chunks_ * kFlushThreshold) {
+    Flush();
+  }
+  // Create new chunk if last chunk is full or there is no chunk.
+  if (total_chunks_ == 0 || chunks_[total_chunks_ - 1]->IsFull()) {
+    if (total_chunks_ == max_chunks_) {
+      // There is no more space to store more trace events.
+      *handle = MakeHandle(0, 0, 0);
+      return NULL;
+    }
+    auto& chunk = chunks_[total_chunks_++];
+    if (chunk) {
+      chunk->Reset(current_chunk_seq_++);
+    } else {
+      chunk.reset(new TraceBufferChunk(current_chunk_seq_++));
+    }
+  }
+  auto& chunk = chunks_[total_chunks_ - 1];
+  size_t event_index;
+  TraceObject* trace_object = chunk->AddTraceEvent(&event_index);
+  *handle = MakeHandle(total_chunks_ - 1, chunk->seq(), event_index);
+  return trace_object;
+}
+
+TraceObject* TraceBufferStreamingBuffer::GetEventByHandle(uint64_t handle) {
+  size_t chunk_index, event_index;
+  uint32_t chunk_seq;
+  ExtractHandle(handle, &chunk_index, &chunk_seq, &event_index);
+  if (chunk_index >= total_chunks_)
+    return NULL;
+  auto& chunk = chunks_[chunk_index];
+  if (chunk->seq() != chunk_seq)
+    return NULL;
+  return chunk->GetEventAt(event_index);
+}
+
+bool TraceBufferStreamingBuffer::Flush() {
+  if (!static_cast<NodeTraceWriter*>(trace_writer_.get())->IsReady())
+    return false;
+  for (size_t i = 0; i < total_chunks_; ++i) {
+    auto& chunk = chunks_[i];
+    for (size_t j = 0; j < chunk->size(); ++j) {
+      trace_writer_->AppendTraceEvent(chunk->GetEventAt(j));
+    }
+  }
+  trace_writer_->Flush();
+  total_chunks_ = 0;
+  return true;
+}
+
+uint64_t TraceBufferStreamingBuffer::MakeHandle(
+    size_t chunk_index, uint32_t chunk_seq, size_t event_index) const {
+  return static_cast<uint64_t>(chunk_seq) * Capacity() +
+         chunk_index * TraceBufferChunk::kChunkSize + event_index;
+}
+
+void TraceBufferStreamingBuffer::ExtractHandle(
+    uint64_t handle, size_t* chunk_index,
+    uint32_t* chunk_seq, size_t* event_index) const {
+  *chunk_seq = static_cast<uint32_t>(handle / Capacity());
+  size_t indices = handle % Capacity();
+  *chunk_index = indices / TraceBufferChunk::kChunkSize;
+  *event_index = indices % TraceBufferChunk::kChunkSize;
+}
+
+}  // namespace node

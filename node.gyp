@@ -142,6 +142,7 @@
         'src/node_util.cc',
         'src/node_v8.cc',
         'src/node_stat_watcher.cc',
+        'src/node_tracing_controller.cc',
         'src/node_watchdog.cc',
         'src/node_zlib.cc',
         'src/node_i18n.cc',
