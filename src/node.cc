@@ -187,6 +187,7 @@ static uv_async_t dispatch_debug_messages_async;
 
 static node::atomic<Isolate*> node_isolate;
 static v8::Platform* default_platform;
+static NodeTraceWriter* trace_writer;
 
 static void PrintErrorString(const char* format, ...) {
   va_list ap;
@@ -4333,8 +4334,9 @@ static void StartNodeInstance(void* arg) {
     // Enable tracing.
     if (trace_enabled) {
       NodeTracingController* tracing_controller = new NodeTracingController();
+      trace_writer = new NodeTraceWriter();
       TraceBuffer* trace_buffer = new TraceBufferStreamingBuffer(
-          TraceBufferStreamingBuffer::kBufferChunks, new NodeTraceWriter());
+          TraceBufferStreamingBuffer::kBufferChunks, trace_writer);
       TraceConfig* trace_config;
       if (trace_config_file) {
         std::ifstream fin(trace_config_file);
@@ -4458,6 +4460,10 @@ int Start(int argc, char** argv) {
   }
   V8::Dispose();
 
+  // Ensure uv_writes are now synchronous.
+  // This is to allow the final Flush() and log suffix to be output to file
+  // even when no event loop is running.
+  trace_writer->MakeStreamBlocking();
   delete default_platform;
   default_platform = nullptr;
 

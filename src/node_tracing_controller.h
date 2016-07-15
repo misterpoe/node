@@ -53,6 +53,7 @@ class NodeTraceWriter : public TraceWriter {
   bool IsReady() { return !is_writing_; }
   void AppendTraceEvent(TraceObject* trace_event) override;
   void Flush() override;
+  void MakeStreamBlocking();
 
   static const int kTracesPerFile = 1 << 20;
 
@@ -64,13 +65,12 @@ class NodeTraceWriter : public TraceWriter {
 
   static void OnWrite(uv_write_t* req, int status);
   void OpenNewFileForStreaming();
-  void WriteStreamToFile();
+  void WriteToFile(const char* str);
 
   int total_traces_ = 0;
   int file_num_ = 0;
   WriteRequest write_req_;
   uv_pipe_t trace_file_pipe_;
-  uv_buf_t uv_buf_;
   bool is_writing_ = false;
   std::ostringstream stream_;
 };

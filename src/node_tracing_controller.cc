@@ -12,14 +12,19 @@ NodeTraceWriter::NodeTraceWriter() {
 
 NodeTraceWriter::~NodeTraceWriter() {
   // Note that this is only done when the Node event loop stops.
-  // If the current file is nonempty, then end the file appropriately.
-
-  // TODO: The file is not suffixed if there is a write going on at the moment.
-  // We need a way to queue a write.
-  if (total_traces_ > 0 && IsReady()) {
-    stream_ << "]}\n";
-    WriteStreamToFile();
+  // If our final log file has traces, then end the file appropriately.
+  // This means that if no trace events are recorded, then no trace file is
+  // produced.
+  if (total_traces_ > 0) {
+    WriteToFile("]}\n");
   }
+}
+
+void NodeTraceWriter::MakeStreamBlocking() {
+  // The following might not be safe.
+  // It is advised to set blocking mode of a pipe immediately after creation.
+  // So we might need to close the current pipe and start a new one here.
+  uv_stream_set_blocking(reinterpret_cast<uv_stream_t*>(&trace_file_pipe_), 1);
 }
 
 void NodeTraceWriter::OpenNewFileForStreaming() {
@@ -42,15 +47,30 @@ void NodeTraceWriter::AppendTraceEvent(TraceObject* trace_event) {
     stream_ << ",\n";
   }
   ++total_traces_;
-  stream_ << "{\"pid\":" << trace_event->pid()
-          << ",\"tid\":" << trace_event->tid()
-          << ",\"ts\":" << trace_event->ts()
-          << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
-          << trace_event->phase() << "\",\"cat\":\""
-          << trace_event->category_group() << "\",\"name\":\""
-          << trace_event->name()
-          << "\",\"args\":{},\"dur\":" << trace_event->duration()
-          << ",\"tdur\":" << trace_event->cpu_duration() << "}";
+  if (trace_event->scope() == NULL) {
+    stream_ << "{\"pid\":" << trace_event->pid()
+            << ",\"tid\":" << trace_event->tid()
+            << ",\"ts\":" << trace_event->ts()
+            << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
+            << trace_event->phase() << "\",\"cat\":\""
+            << TracingController::GetCategoryGroupName(
+                   trace_event->category_enabled_flag())
+            << "\",\"name\":\"" << trace_event->name()
+            << "\",\"args\":{},\"dur\":" << trace_event->duration()
+            << ",\"tdur\":" << trace_event->cpu_duration() << "}";
+  } else {
+    stream_ << "{\"pid\":" << trace_event->pid()
+            << ",\"tid\":" << trace_event->tid()
+            << ",\"ts\":" << trace_event->ts()
+            << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
+            << trace_event->phase() << "\",\"cat\":\""
+            << TracingController::GetCategoryGroupName(
+                   trace_event->category_enabled_flag())
+            << "\",\"name\":\"" << trace_event->name() << "\",\"scope\":\""
+            << trace_event->scope()
+            << "\",\"args\":{},\"dur\":" << trace_event->duration()
+            << ",\"tdur\":" << trace_event->cpu_duration() << "}";
+  }
 }
 
 void NodeTraceWriter::Flush() {
@@ -61,17 +81,20 @@ void NodeTraceWriter::Flush() {
     total_traces_ = 0;
     stream_ << "]}\n";
   }
-  WriteStreamToFile();
+  WriteToFile(stream_.str().c_str());
 }
 
-void NodeTraceWriter::WriteStreamToFile() {
+void NodeTraceWriter::WriteToFile(const char* str) {
   // Writes stream_ to file.
   is_writing_ = true;
-  const std::string& str = stream_.str();
-  uv_buf_ = uv_buf_init(const_cast<char*>(str.c_str()), str.length());
+  uv_buf_t uv_buf = uv_buf_init(const_cast<char*>(str), strlen(str));
+  // We can reuse write_req_ here because we are assured that no other
+  // uv_write using write_req_ is ongoing. In the case of synchronous writes
+  // where the callback has not been fired, it is unclear whether it is OK
+  // to reuse write_req_.
   uv_write(reinterpret_cast<uv_write_t*>(&write_req_),
            reinterpret_cast<uv_stream_t*>(&trace_file_pipe_),
-           &uv_buf_, 1, OnWrite);
+           &uv_buf, 1, OnWrite);
 }
 
 void NodeTraceWriter::OnWrite(uv_write_t* req, int status) {
