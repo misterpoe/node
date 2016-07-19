@@ -1,4 +1,5 @@
 #include "node_tracing_controller.h"
+#include "base/trace_event/common/trace_event_common.h"
 
 #include <string.h>
 #include <memory>
@@ -47,30 +48,23 @@ void NodeTraceWriter::AppendTraceEvent(TraceObject* trace_event) {
     stream_ << ",\n";
   }
   ++total_traces_;
-  if (trace_event->scope() == NULL) {
-    stream_ << "{\"pid\":" << trace_event->pid()
-            << ",\"tid\":" << trace_event->tid()
-            << ",\"ts\":" << trace_event->ts()
-            << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
-            << trace_event->phase() << "\",\"cat\":\""
-            << TracingController::GetCategoryGroupName(
-                   trace_event->category_enabled_flag())
-            << "\",\"name\":\"" << trace_event->name()
-            << "\",\"args\":{},\"dur\":" << trace_event->duration()
-            << ",\"tdur\":" << trace_event->cpu_duration() << "}";
-  } else {
-    stream_ << "{\"pid\":" << trace_event->pid()
-            << ",\"tid\":" << trace_event->tid()
-            << ",\"ts\":" << trace_event->ts()
-            << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
-            << trace_event->phase() << "\",\"cat\":\""
-            << TracingController::GetCategoryGroupName(
-                   trace_event->category_enabled_flag())
-            << "\",\"name\":\"" << trace_event->name() << "\",\"scope\":\""
-            << trace_event->scope()
-            << "\",\"args\":{},\"dur\":" << trace_event->duration()
-            << ",\"tdur\":" << trace_event->cpu_duration() << "}";
+  stream_ << "{\"pid\":" << trace_event->pid()
+          << ",\"tid\":" << trace_event->tid()
+          << ",\"ts\":" << trace_event->ts()
+          << ",\"tts\":" << trace_event->tts() << ",\"ph\":\""
+          << trace_event->phase() << "\",\"cat\":\""
+          << TracingController::GetCategoryGroupName(
+                 trace_event->category_enabled_flag())
+          << "\",\"name\":\"" << trace_event->name()
+          << "\",\"args\":{},\"dur\":" << trace_event->duration()
+          << ",\"tdur\":" << trace_event->cpu_duration();
+  if (trace_event->flags() & TRACE_EVENT_FLAG_HAS_ID) {
+    if (trace_event->scope() != NULL) {
+      stream_ << ",\"scope\":\"" << trace_event->scope() << "\"";
+    }
+    stream_ << ",\"id\":" << trace_event->id();
   }
+  stream_ << "}";
 }
 
 void NodeTraceWriter::Flush() {
