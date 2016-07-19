@@ -20,15 +20,15 @@ class TraceObject {
                   const char* name, const char* scope, uint64_t id,
                   uint64_t bind_id, int num_args, const char** arg_names,
                   const uint8_t* arg_types, const uint64_t* arg_values,
-                  int flags);
+                  unsigned int flags);
   void UpdateDuration();
   void InitializeForTesting(char phase, const uint8_t* category_enabled_flag,
                             const char* name, const char* scope, uint64_t id,
                             uint64_t bind_id, int num_args,
                             const char** arg_names, const uint8_t* arg_types,
-                            const uint64_t* arg_values, int flags, int pid,
-                            int tid, int64_t ts, int64_t tts, uint64_t duration,
-                            uint64_t cpu_duration);
+                            const uint64_t* arg_values, unsigned int flags,
+                            int pid, int tid, int64_t ts, int64_t tts,
+                            uint64_t duration, uint64_t cpu_duration);
 
   int pid() const { return pid_; }
   int tid() const { return tid_; }
@@ -38,6 +38,9 @@ class TraceObject {
   }
   const char* name() const { return name_; }
   const char* scope() const { return scope_; }
+  uint64_t id() const { return id_; }
+  uint64_t bind_id() const { return bind_id_; }
+  unsigned int flags() const { return flags_; }
   int64_t ts() { return ts_; }
   int64_t tts() { return tts_; }
   uint64_t duration() { return duration_; }

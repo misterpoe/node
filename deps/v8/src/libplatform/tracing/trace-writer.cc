@@ -43,6 +43,7 @@ void JSONTraceWriter::AppendTraceEvent(TraceObject* trace_event) {
             << "\",\"args\":{},\"dur\":" << trace_event->duration()
             << ",\"tdur\":" << trace_event->cpu_duration() << "}";
   }
+  // TODO(fmeawad): Add support for Flow Events.
 }
 
 void JSONTraceWriter::Flush() {}
