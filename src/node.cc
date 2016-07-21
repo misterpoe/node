@@ -8,6 +8,7 @@
 #include "node_internals.h"
 #include "node_revert.h"
 #include "node_tracing_controller.h"
+#include "node_trace_config_parser.h"
 
 #if defined HAVE_PERFCTR
 #include "node_counters.h"
@@ -4337,17 +4338,15 @@ static void StartNodeInstance(void* arg) {
       trace_writer = new NodeTraceWriter();
       TraceBuffer* trace_buffer = new TraceBufferStreamingBuffer(
           TraceBufferStreamingBuffer::kBufferChunks, trace_writer);
-      TraceConfig* trace_config;
+      TraceConfig* trace_config = new TraceConfig();
       if (trace_config_file) {
         std::ifstream fin(trace_config_file);
         std::string str((std::istreambuf_iterator<char>(fin)),
                         std::istreambuf_iterator<char>());
-        trace_config = TraceConfig::CreateTraceConfigFromJSON(
-            isolate, str.c_str());
+        TraceConfigParser::FillTraceConfig(isolate, trace_config, str.c_str());
       } else {
         const char* config_str = "{\"included_categories\":[\"v8\",\"node\"]}";
-        trace_config = TraceConfig::CreateTraceConfigFromJSON(
-            isolate, config_str);
+        TraceConfigParser::FillTraceConfig(isolate, trace_config, config_str);
       }
       tracing_controller->Initialize(trace_buffer);
       tracing_controller->StartTracing(trace_config);

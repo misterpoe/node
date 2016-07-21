@@ -144,9 +144,6 @@ class TraceConfig {
 
   bool IsCategoryGroupEnabled(const char* category_group) const;
 
- private:
-  friend class TraceConfigParser;
-
   TraceConfig()
       : enable_sampling_(false),
         enable_systrace_(false),
