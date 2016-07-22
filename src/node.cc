@@ -4459,10 +4459,13 @@ int Start(int argc, char** argv) {
   }
   V8::Dispose();
 
-  // Ensure uv_writes are now synchronous.
-  // This is to allow the final Flush() and log suffix to be output to file
-  // even when no event loop is running.
-  trace_writer->MakeStreamBlocking();
+  if (trace_enabled) {
+    // Ensure uv_writes are now synchronous.
+    // This is to allow the final Flush() and log suffix to be output to file
+    // even when no event loop is running.
+    trace_writer->MakeStreamBlocking();
+  }
+
   delete default_platform;
   default_platform = nullptr;
 
