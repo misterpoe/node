@@ -2150,6 +2150,13 @@ static void InitGroups(const FunctionCallbackInfo<Value>& args) {
 
 
 void Exit(const FunctionCallbackInfo<Value>& args) {
+  if (trace_enabled) {
+    // Ensure uv_writes are now synchronous.
+    // This is to allow the final Flush() and log suffix to be output to file
+    // even when no event loop is running.
+    trace_writer->MakeStreamBlocking();
+    delete default_platform;
+  }
   exit(args[0]->Int32Value());
 }
 
