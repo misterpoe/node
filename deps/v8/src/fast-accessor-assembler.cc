@@ -5,12 +5,12 @@
 #include "src/fast-accessor-assembler.h"
 
 #include "src/base/logging.h"
+#include "src/code-stub-assembler.h"
 #include "src/code-stubs.h"  // For CallApiCallbackStub.
-#include "src/compiler/code-stub-assembler.h"
 #include "src/handles-inl.h"
 #include "src/objects.h"  // For FAA::LoadInternalField impl.
 
-using v8::internal::compiler::CodeStubAssembler;
+using v8::internal::CodeStubAssembler;
 using v8::internal::compiler::Node;
 
 namespace v8 {
@@ -56,12 +56,13 @@ FastAccessorAssembler::ValueId FastAccessorAssembler::LoadInternalField(
   CodeStubAssembler::Variable result(assembler_.get(),
                                      MachineRepresentation::kTagged);
   CodeStubAssembler::Label is_jsobject(assembler_.get());
+  CodeStubAssembler::Label maybe_api_object(assembler_.get());
   CodeStubAssembler::Label is_not_jsobject(assembler_.get());
   CodeStubAssembler::Label merge(assembler_.get(), &result);
   assembler_->Branch(
       assembler_->WordEqual(
           instance_type, assembler_->IntPtrConstant(Internals::kJSObjectType)),
-      &is_jsobject, &is_not_jsobject);
+      &is_jsobject, &maybe_api_object);
 
   // JSObject? Then load the internal field field_no.
   assembler_->Bind(&is_jsobject);
@@ -70,6 +71,12 @@ FastAccessorAssembler::ValueId FastAccessorAssembler::LoadInternalField(
       MachineType::Pointer());
   result.Bind(internal_field);
   assembler_->Goto(&merge);
+
+  assembler_->Bind(&maybe_api_object);
+  assembler_->Branch(
+      assembler_->WordEqual(instance_type, assembler_->IntPtrConstant(
+                                               Internals::kJSApiObjectType)),
+      &is_jsobject, &is_not_jsobject);
 
   // No JSObject? Return undefined.
   // TODO(vogelheim): Check whether this is the appropriate action, or whether
@@ -113,7 +120,7 @@ void FastAccessorAssembler::CheckFlagSetOrReturnNull(ValueId value, int mask) {
       assembler_->Word32Equal(
           assembler_->Word32And(FromId(value), assembler_->Int32Constant(mask)),
           assembler_->Int32Constant(0)),
-      &pass, &fail);
+      &fail, &pass);
   assembler_->Bind(&fail);
   assembler_->Return(assembler_->NullConstant());
   assembler_->Bind(&pass);
@@ -147,7 +154,7 @@ void FastAccessorAssembler::CheckNotZeroOrJump(ValueId value_id,
   CodeStubAssembler::Label pass(assembler_.get());
   assembler_->Branch(
       assembler_->WordEqual(FromId(value_id), assembler_->IntPtrConstant(0)),
-      &pass, FromId(label_id));
+      FromId(label_id), &pass);
   assembler_->Bind(&pass);
 }
 
@@ -161,23 +168,23 @@ FastAccessorAssembler::ValueId FastAccessorAssembler::Call(
                              ExternalReference::DIRECT_API_CALL, isolate());
 
   // Create & call API callback via stub.
-  CallApiCallbackStub stub(isolate(), 1, true);
+  CallApiCallbackStub stub(isolate(), 1, true, true);
   DCHECK_EQ(5, stub.GetCallInterfaceDescriptor().GetParameterCount());
   DCHECK_EQ(1, stub.GetCallInterfaceDescriptor().GetStackParameterCount());
   // TODO(vogelheim): There is currently no clean way to retrieve the context
   //     parameter for a stub and the implementation details are hidden in
   //     compiler/*. The context_paramter is computed as:
   //       Linkage::GetJSCallContextParamIndex(descriptor->JSParameterCount())
-  const int context_parameter = 2;
+  const int context_parameter = 3;
   Node* call = assembler_->CallStub(
       stub.GetCallInterfaceDescriptor(),
       assembler_->HeapConstant(stub.GetCode()),
       assembler_->Parameter(context_parameter),
 
       // Stub/register parameters:
-      assembler_->Parameter(0),               /* receiver (use accessor's) */
-      assembler_->UndefinedConstant(),        /* call_data (undefined) */
-      assembler_->NullConstant(),             /* holder (null) */
+      assembler_->UndefinedConstant(), /* callee (there's no JSFunction) */
+      assembler_->UndefinedConstant(), /* call_data (undefined) */
+      assembler_->Parameter(0), /* receiver (same as holder in this case) */
       assembler_->ExternalConstant(callback), /* API callback function */
 
       // JS arguments, on stack:

@@ -9,6 +9,7 @@
 #include "src/execution.h"
 #include "src/heap/heap.h"
 #include "src/heap/incremental-marking-job.h"
+#include "src/heap/mark-compact.h"
 #include "src/heap/spaces.h"
 #include "src/objects.h"
 
@@ -67,6 +68,8 @@ class IncrementalMarking {
   }
 
   inline bool IsStopped() { return state() == STOPPED; }
+
+  inline bool IsSweeping() { return state() == SWEEPING; }
 
   INLINE(bool IsMarking()) { return state() >= MARKING; }
 
@@ -135,6 +138,8 @@ class IncrementalMarking {
   // incremental marking to be postponed.
   static const size_t kMaxIdleMarkingDelayCounter = 3;
 
+  void FinalizeSweeping();
+
   void OldSpaceStep(intptr_t allocated);
 
   intptr_t Step(intptr_t allocated, CompletionAction action,
@@ -181,7 +186,7 @@ class IncrementalMarking {
     SetOldSpacePageFlags(chunk, IsMarking(), IsCompacting());
   }
 
-  inline void SetNewSpacePageFlags(MemoryChunk* chunk) {
+  inline void SetNewSpacePageFlags(Page* chunk) {
     SetNewSpacePageFlags(chunk, IsMarking());
   }
 
@@ -201,6 +206,25 @@ class IncrementalMarking {
 
   static void MarkObject(Heap* heap, HeapObject* object);
 
+  static void TransferMark(Heap* heap, Address old_start, Address new_start);
+
+  // Returns true if the transferred color is black.
+  INLINE(static bool TransferColor(HeapObject* from, HeapObject* to)) {
+    if (Page::FromAddress(to->address())->IsFlagSet(Page::BLACK_PAGE))
+      return true;
+    MarkBit from_mark_bit = ObjectMarking::MarkBitFrom(from);
+    MarkBit to_mark_bit = ObjectMarking::MarkBitFrom(to);
+    DCHECK(Marking::IsWhite(to_mark_bit));
+    if (from_mark_bit.Get()) {
+      to_mark_bit.Set();
+      if (from_mark_bit.Next().Get()) {
+        to_mark_bit.Next().Set();
+        return true;
+      }
+    }
+    return false;
+  }
+
   void IterateBlackObject(HeapObject* object);
 
   Heap* heap() const { return heap_; }
@@ -210,6 +234,8 @@ class IncrementalMarking {
   }
 
   bool black_allocation() { return black_allocation_; }
+
+  void StartBlackAllocationForTesting() { StartBlackAllocation(); }
 
  private:
   class Observer : public AllocationObserver {

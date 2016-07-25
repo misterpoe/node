@@ -43,10 +43,14 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 ARCHIVE = DATA + ".tar"
 
 TEST_262_HARNESS_FILES = ["sta.js", "assert.js"]
+TEST_262_NATIVE_FILES = ["detachArrayBuffer.js"]
 
 TEST_262_SUITE_PATH = ["data", "test"]
 TEST_262_HARNESS_PATH = ["data", "harness"]
-TEST_262_TOOLS_PATH = ["data", "tools", "packaging"]
+TEST_262_TOOLS_PATH = ["harness", "src"]
+
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             *TEST_262_TOOLS_PATH))
 
 ALL_VARIANT_FLAGS_STRICT = dict(
     (v, [flags + ["--use-strict"] for flags in flag_sets])
@@ -129,8 +133,14 @@ class Test262TestSuite(testsuite.TestSuite):
   def GetFlagsForTestCase(self, testcase, context):
     return (testcase.flags + context.mode_flags + self.harness +
             self.GetIncludesForTest(testcase) + ["--harmony"] +
+            (["--module"] if "module" in self.GetTestRecord(testcase) else []) +
             [os.path.join(self.testroot, testcase.path + ".js")] +
-            (["--throws"] if "negative" in self.GetTestRecord(testcase) else []))
+            (["--throws"] if "negative" in self.GetTestRecord(testcase)
+                          else []) +
+            (["--allow-natives-syntax"]
+             if "detachArrayBuffer.js" in
+                self.GetTestRecord(testcase).get("includes", [])
+             else []))
 
   def _VariantGeneratorFactory(self):
     return Test262VariantGenerator
@@ -158,11 +168,14 @@ class Test262TestSuite(testsuite.TestSuite):
                                              testcase.path)
     return testcase.test_record
 
+  def BasePath(self, filename):
+    return self.root if filename in TEST_262_NATIVE_FILES else self.harnesspath
+
   def GetIncludesForTest(self, testcase):
     test_record = self.GetTestRecord(testcase)
     if "includes" in test_record:
-      includes = [os.path.join(self.harnesspath, f)
-                  for f in test_record["includes"]]
+      return [os.path.join(self.BasePath(filename), filename)
+              for filename in test_record.get("includes", [])]
     else:
       includes = []
     return includes

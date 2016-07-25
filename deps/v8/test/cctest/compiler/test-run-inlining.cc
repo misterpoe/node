@@ -14,7 +14,7 @@ namespace {
 // Helper to determine inline count via JavaScriptFrame::GetFunctions.
 // Note that a count of 1 indicates that no inlining has occured.
 void AssertInlineCount(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  StackTraceFrameIterator it(CcTest::i_isolate());
+  JavaScriptFrameIterator it(CcTest::i_isolate());
   int frames_seen = 0;
   JavaScriptFrame* topmost = it.frame();
   while (!it.done()) {
@@ -47,14 +47,11 @@ void InstallAssertInlineCountHelper(v8::Isolate* isolate) {
             .FromJust());
 }
 
-
 const uint32_t kRestrictedInliningFlags =
-    CompilationInfo::kFunctionContextSpecializing |
-    CompilationInfo::kTypingEnabled;
+    CompilationInfo::kFunctionContextSpecializing;
 
 const uint32_t kInlineFlags = CompilationInfo::kInliningEnabled |
-                              CompilationInfo::kFunctionContextSpecializing |
-                              CompilationInfo::kTypingEnabled;
+                              CompilationInfo::kFunctionContextSpecializing;
 
 }  // namespace
 

@@ -64,8 +64,6 @@ namespace compiler {
   V(SSEFloat32Abs)                 \
   V(SSEFloat32Neg)                 \
   V(SSEFloat32Sqrt)                \
-  V(SSEFloat32Max)                 \
-  V(SSEFloat32Min)                 \
   V(SSEFloat32ToFloat64)           \
   V(SSEFloat32ToInt32)             \
   V(SSEFloat32ToUint32)            \
@@ -102,20 +100,17 @@ namespace compiler {
   V(SSEFloat64InsertLowWord32)     \
   V(SSEFloat64InsertHighWord32)    \
   V(SSEFloat64LoadLowWord32)       \
+  V(SSEFloat64SilenceNaN)          \
   V(AVXFloat32Cmp)                 \
   V(AVXFloat32Add)                 \
   V(AVXFloat32Sub)                 \
   V(AVXFloat32Mul)                 \
   V(AVXFloat32Div)                 \
-  V(AVXFloat32Max)                 \
-  V(AVXFloat32Min)                 \
   V(AVXFloat64Cmp)                 \
   V(AVXFloat64Add)                 \
   V(AVXFloat64Sub)                 \
   V(AVXFloat64Mul)                 \
   V(AVXFloat64Div)                 \
-  V(AVXFloat64Max)                 \
-  V(AVXFloat64Min)                 \
   V(AVXFloat64Abs)                 \
   V(AVXFloat64Neg)                 \
   V(AVXFloat32Abs)                 \
@@ -141,7 +136,10 @@ namespace compiler {
   V(X64Inc32)                      \
   V(X64Push)                       \
   V(X64Poke)                       \
-  V(X64StackCheck)
+  V(X64StackCheck)                 \
+  V(X64Xchgb)                      \
+  V(X64Xchgw)                      \
+  V(X64Xchgl)
 
 // Addressing modes represent the "shape" of inputs to an instruction.
 // Many instructions support multiple addressing modes. Addressing modes

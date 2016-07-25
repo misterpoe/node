@@ -5,6 +5,7 @@
 #include "src/runtime/runtime-utils.h"
 
 #include "src/arguments.h"
+#include "src/asmjs/asm-js.h"
 #include "src/compiler.h"
 #include "src/deoptimizer.h"
 #include "src/frames-inl.h"
@@ -19,7 +20,7 @@ namespace internal {
 
 RUNTIME_FUNCTION(Runtime_CompileLazy) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
 
 #ifdef DEBUG
@@ -39,10 +40,22 @@ RUNTIME_FUNCTION(Runtime_CompileLazy) {
   return function->code();
 }
 
+RUNTIME_FUNCTION(Runtime_CompileBaseline) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
+  StackLimitCheck check(isolate);
+  if (check.JsHasOverflowed(1 * KB)) return isolate->StackOverflow();
+  if (!Compiler::CompileBaseline(function)) {
+    return isolate->heap()->exception();
+  }
+  DCHECK(function->is_compiled());
+  return function->code();
+}
 
 RUNTIME_FUNCTION(Runtime_CompileOptimized_Concurrent) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
   StackLimitCheck check(isolate);
   if (check.JsHasOverflowed(1 * KB)) return isolate->StackOverflow();
@@ -56,7 +69,7 @@ RUNTIME_FUNCTION(Runtime_CompileOptimized_Concurrent) {
 
 RUNTIME_FUNCTION(Runtime_CompileOptimized_NotConcurrent) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
   StackLimitCheck check(isolate);
   if (check.JsHasOverflowed(1 * KB)) return isolate->StackOverflow();
@@ -67,6 +80,31 @@ RUNTIME_FUNCTION(Runtime_CompileOptimized_NotConcurrent) {
   return function->code();
 }
 
+RUNTIME_FUNCTION(Runtime_InstantiateAsmJs) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(args.length(), 4);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
+
+  Handle<JSObject> foreign;
+  if (args[2]->IsJSObject()) {
+    foreign = args.at<i::JSObject>(2);
+  }
+  Handle<JSArrayBuffer> memory;
+  if (args[3]->IsJSArrayBuffer()) {
+    memory = args.at<i::JSArrayBuffer>(3);
+  }
+  if (args[1]->IsJSObject()) {
+    MaybeHandle<Object> result;
+    result = AsmJs::InstantiateAsmWasm(
+        isolate, handle(function->shared()->asm_wasm_data()), memory, foreign);
+    if (!result.is_null()) {
+      return *result.ToHandleChecked();
+    }
+  }
+  // Remove wasm data and return a smi 0 to indicate failure.
+  function->shared()->ClearAsmWasmData();
+  return Smi::FromInt(0);
+}
 
 RUNTIME_FUNCTION(Runtime_NotifyStubFailure) {
   HandleScope scope(isolate);
@@ -76,7 +114,6 @@ RUNTIME_FUNCTION(Runtime_NotifyStubFailure) {
   delete deoptimizer;
   return isolate->heap()->undefined_value();
 }
-
 
 class ActivationsFinder : public ThreadVisitor {
  public:
@@ -190,7 +227,7 @@ RUNTIME_FUNCTION(Runtime_CompileForOnStackReplacement) {
   // We're not prepared to handle a function with arguments object.
   DCHECK(!function->shared()->uses_arguments());
 
-  RUNTIME_ASSERT(FLAG_use_osr);
+  CHECK(FLAG_use_osr);
 
   // Passing the PC in the javascript frame from the caller directly is
   // not GC safe, so we walk the stack to get it.
@@ -291,7 +328,7 @@ RUNTIME_FUNCTION(Runtime_TryInstallOptimizedCode) {
 
 bool CodeGenerationFromStringsAllowed(Isolate* isolate,
                                       Handle<Context> context) {
-  DCHECK(context->allow_code_gen_from_strings()->IsFalse());
+  DCHECK(context->allow_code_gen_from_strings()->IsFalse(isolate));
   // Check with callback if set.
   AllowCodeGenerationFromStringsCallback callback =
       isolate->allow_code_gen_callback();
@@ -305,17 +342,16 @@ bool CodeGenerationFromStringsAllowed(Isolate* isolate,
   }
 }
 
-
 static Object* CompileGlobalEval(Isolate* isolate, Handle<String> source,
                                  Handle<SharedFunctionInfo> outer_info,
                                  LanguageMode language_mode,
-                                 int scope_position) {
+                                 int eval_scope_position, int eval_position) {
   Handle<Context> context = Handle<Context>(isolate->context());
   Handle<Context> native_context = Handle<Context>(context->native_context());
 
   // Check if native context allows code generation from
   // strings. Throw an exception if it doesn't.
-  if (native_context->allow_code_gen_from_strings()->IsFalse() &&
+  if (native_context->allow_code_gen_from_strings()->IsFalse(isolate) &&
       !CodeGenerationFromStringsAllowed(isolate, native_context)) {
     Handle<Object> error_message =
         native_context->ErrorMessageForCodeGenerationFromStrings();
@@ -331,9 +367,9 @@ static Object* CompileGlobalEval(Isolate* isolate, Handle<String> source,
   static const ParseRestriction restriction = NO_PARSE_RESTRICTION;
   Handle<JSFunction> compiled;
   ASSIGN_RETURN_ON_EXCEPTION_VALUE(
-      isolate, compiled,
-      Compiler::GetFunctionFromEval(source, outer_info, context, language_mode,
-                                    restriction, scope_position),
+      isolate, compiled, Compiler::GetFunctionFromEval(
+                             source, outer_info, context, language_mode,
+                             restriction, eval_scope_position, eval_position),
       isolate->heap()->exception());
   return *compiled;
 }
@@ -341,7 +377,7 @@ static Object* CompileGlobalEval(Isolate* isolate, Handle<String> source,
 
 RUNTIME_FUNCTION(Runtime_ResolvePossiblyDirectEval) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 5);
+  DCHECK(args.length() == 6);
 
   Handle<Object> callee = args.at<Object>(0);
 
@@ -362,7 +398,7 @@ RUNTIME_FUNCTION(Runtime_ResolvePossiblyDirectEval) {
   Handle<SharedFunctionInfo> outer_info(args.at<JSFunction>(2)->shared(),
                                         isolate);
   return CompileGlobalEval(isolate, args.at<String>(1), outer_info,
-                           language_mode, args.smi_at(4));
+                           language_mode, args.smi_at(4), args.smi_at(5));
 }
 }  // namespace internal
 }  // namespace v8

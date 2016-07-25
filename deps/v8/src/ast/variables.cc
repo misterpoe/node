@@ -6,6 +6,7 @@
 
 #include "src/ast/ast.h"
 #include "src/ast/scopes.h"
+#include "src/globals.h"
 
 namespace v8 {
 namespace internal {
@@ -29,7 +30,6 @@ const char* Variable::Mode2String(VariableMode mode) {
   return NULL;
 }
 
-
 Variable::Variable(Scope* scope, const AstRawString* name, VariableMode mode,
                    Kind kind, InitializationFlag initialization_flag,
                    MaybeAssignedFlag maybe_assigned_flag)
@@ -39,9 +39,8 @@ Variable::Variable(Scope* scope, const AstRawString* name, VariableMode mode,
       kind_(kind),
       location_(VariableLocation::UNALLOCATED),
       index_(-1),
-      initializer_position_(RelocInfo::kNoPosition),
+      initializer_position_(kNoSourcePosition),
       local_if_not_shadowed_(NULL),
-      is_from_eval_(false),
       force_context_allocation_(false),
       is_used_(false),
       initialization_flag_(initialization_flag),

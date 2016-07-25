@@ -8,6 +8,7 @@
 #include "src/handles.h"
 #include "src/interpreter/bytecode-array-builder.h"
 #include "src/interpreter/bytecode-array-iterator.h"
+#include "src/interpreter/bytecode-label.h"
 #include "src/interpreter/interpreter.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/interpreter/interpreter-tester.h"
@@ -138,6 +139,7 @@ TEST(InterpreterLoadLiteral) {
   {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, 0);
+
     builder.LoadLiteral(Smi::FromInt(0x12345678)).Return();
     Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
 
@@ -151,6 +153,7 @@ TEST(InterpreterLoadLiteral) {
   {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, 0);
+
     builder.LoadLiteral(factory->NewHeapNumber(-2.1e19)).Return();
     Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
 
@@ -164,6 +167,7 @@ TEST(InterpreterLoadLiteral) {
   {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, 0);
+
     Handle<i::String> string = factory->NewStringFromAsciiChecked("String");
     builder.LoadLiteral(string).Return();
     Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
@@ -182,6 +186,7 @@ TEST(InterpreterLoadStoreRegisters) {
   for (int i = 0; i <= kMaxInt8; i++) {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, i + 1);
+
     Register reg(i);
     builder.LoadTrue()
         .StoreAccumulatorInRegister(reg)
@@ -297,6 +302,7 @@ TEST(InterpreterBinaryOpsSmi) {
         i::Factory* factory = handles.main_isolate()->factory();
         BytecodeArrayBuilder builder(handles.main_isolate(),
                                      handles.main_zone(), 1, 0, 1);
+
         Register reg(0);
         int lhs = lhs_inputs[l];
         int rhs = rhs_inputs[r];
@@ -387,6 +393,7 @@ TEST(InterpreterStringAdd) {
   for (size_t i = 0; i < arraysize(test_cases); i++) {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, 1);
+
     Register reg(0);
     builder.LoadLiteral(test_cases[i].lhs)
         .StoreAccumulatorInRegister(reg)
@@ -407,6 +414,7 @@ TEST(InterpreterParameter1) {
   HandleAndZoneScope handles;
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 0);
+
   builder.LoadAccumulatorWithRegister(builder.Parameter(0)).Return();
   Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
 
@@ -429,6 +437,7 @@ TEST(InterpreterParameter8) {
   HandleAndZoneScope handles;
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 8,
                                0, 0);
+
   builder.LoadAccumulatorWithRegister(builder.Parameter(0))
       .BinaryOperation(Token::Value::ADD, builder.Parameter(1))
       .BinaryOperation(Token::Value::ADD, builder.Parameter(2))
@@ -464,6 +473,7 @@ TEST(InterpreterParameter1Assign) {
   HandleAndZoneScope handles;
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 0);
+
   builder.LoadLiteral(Smi::FromInt(5))
       .StoreAccumulatorInRegister(builder.Parameter(0))
       .LoadAccumulatorWithRegister(builder.Parameter(0))
@@ -592,6 +602,7 @@ TEST(InterpreterLoadNamedProperty) {
 
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 0);
+
   builder.LoadNamedProperty(builder.Parameter(0), name, vector->GetIndex(slot))
       .Return();
   Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
@@ -645,6 +656,7 @@ TEST(InterpreterLoadKeyedProperty) {
 
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 1);
+
   builder.LoadLiteral(key)
       .LoadKeyedProperty(builder.Parameter(0), vector->GetIndex(slot))
       .Return();
@@ -687,6 +699,7 @@ TEST(InterpreterStoreNamedProperty) {
 
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 0);
+
   builder.LoadLiteral(Smi::FromInt(999))
       .StoreNamedProperty(builder.Parameter(0), name, vector->GetIndex(slot),
                           i::STRICT)
@@ -746,6 +759,7 @@ TEST(InterpreterStoreKeyedProperty) {
 
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 1);
+
   builder.LoadLiteral(name)
       .StoreAccumulatorInRegister(Register(0))
       .LoadLiteral(Smi::FromInt(999))
@@ -784,10 +798,13 @@ static void TestInterpreterCall(TailCallMode tail_call_mode) {
 
   i::FeedbackVectorSpec feedback_spec(&zone);
   i::FeedbackVectorSlot slot = feedback_spec.AddLoadICSlot();
+  i::FeedbackVectorSlot call_slot = feedback_spec.AddCallICSlot();
 
   Handle<i::TypeFeedbackVector> vector =
       i::NewTypeFeedbackVector(isolate, &feedback_spec);
   int slot_index = vector->GetIndex(slot);
+  int call_slot_index = -1;
+  call_slot_index = vector->GetIndex(call_slot);
 
   Handle<i::String> name = factory->NewStringFromAsciiChecked("func");
   name = factory->string_table()->LookupString(isolate, name);
@@ -796,10 +813,14 @@ static void TestInterpreterCall(TailCallMode tail_call_mode) {
   {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, 1);
+
     builder.LoadNamedProperty(builder.Parameter(0), name, slot_index)
-        .StoreAccumulatorInRegister(Register(0))
-        .Call(Register(0), builder.Parameter(0), 1, 0, tail_call_mode)
-        .Return();
+        .StoreAccumulatorInRegister(Register(0));
+
+    builder.Call(Register(0), builder.Parameter(0), 1, call_slot_index,
+                 tail_call_mode);
+
+    builder.Return();
     Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
 
     InterpreterTester tester(handles.main_isolate(), bytecode_array, vector);
@@ -815,10 +836,12 @@ static void TestInterpreterCall(TailCallMode tail_call_mode) {
   {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, 1);
+
     builder.LoadNamedProperty(builder.Parameter(0), name, slot_index)
-        .StoreAccumulatorInRegister(Register(0))
-        .Call(Register(0), builder.Parameter(0), 1, 0, tail_call_mode)
-        .Return();
+        .StoreAccumulatorInRegister(Register(0));
+    builder.Call(Register(0), builder.Parameter(0), 1, call_slot_index,
+                 tail_call_mode);
+    builder.Return();
     Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
 
     InterpreterTester tester(handles.main_isolate(), bytecode_array, vector);
@@ -837,6 +860,7 @@ static void TestInterpreterCall(TailCallMode tail_call_mode) {
   {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, 4);
+
     builder.LoadNamedProperty(builder.Parameter(0), name, slot_index)
         .StoreAccumulatorInRegister(Register(0))
         .LoadAccumulatorWithRegister(builder.Parameter(0))
@@ -844,9 +868,12 @@ static void TestInterpreterCall(TailCallMode tail_call_mode) {
         .LoadLiteral(Smi::FromInt(51))
         .StoreAccumulatorInRegister(Register(2))
         .LoadLiteral(Smi::FromInt(11))
-        .StoreAccumulatorInRegister(Register(3))
-        .Call(Register(0), Register(1), 3, 0, tail_call_mode)
-        .Return();
+        .StoreAccumulatorInRegister(Register(3));
+
+    builder.Call(Register(0), Register(1), 3, call_slot_index, tail_call_mode);
+
+    builder.Return();
+
     Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
 
     InterpreterTester tester(handles.main_isolate(), bytecode_array, vector);
@@ -864,6 +891,7 @@ static void TestInterpreterCall(TailCallMode tail_call_mode) {
   {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                  0, 12);
+
     builder.LoadNamedProperty(builder.Parameter(0), name, slot_index)
         .StoreAccumulatorInRegister(Register(0))
         .LoadAccumulatorWithRegister(builder.Parameter(0))
@@ -887,9 +915,12 @@ static void TestInterpreterCall(TailCallMode tail_call_mode) {
         .LoadLiteral(factory->NewStringFromAsciiChecked("i"))
         .StoreAccumulatorInRegister(Register(10))
         .LoadLiteral(factory->NewStringFromAsciiChecked("j"))
-        .StoreAccumulatorInRegister(Register(11))
-        .Call(Register(0), Register(1), 11, 0, tail_call_mode)
-        .Return();
+        .StoreAccumulatorInRegister(Register(11));
+
+    builder.Call(Register(0), Register(1), 11, call_slot_index, tail_call_mode);
+
+    builder.Return();
+
     Handle<BytecodeArray> bytecode_array = builder.ToBytecodeArray();
 
     InterpreterTester tester(handles.main_isolate(), bytecode_array, vector);
@@ -938,6 +969,7 @@ TEST(InterpreterJumps) {
   HandleAndZoneScope handles;
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 0,
                                0, 2);
+
   Register reg(0), scratch(1);
   BytecodeLabel label[3];
 
@@ -965,6 +997,7 @@ TEST(InterpreterConditionalJumps) {
   HandleAndZoneScope handles;
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 0,
                                0, 2);
+
   Register reg(0), scratch(1);
   BytecodeLabel label[2];
   BytecodeLabel done, done1;
@@ -998,6 +1031,7 @@ TEST(InterpreterConditionalJumps2) {
   HandleAndZoneScope handles;
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 0,
                                0, 2);
+
   Register reg(0), scratch(1);
   BytecodeLabel label[2];
   BytecodeLabel done, done1;
@@ -1030,8 +1064,9 @@ TEST(InterpreterJumpConstantWith16BitOperand) {
   HandleAndZoneScope handles;
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 257);
+
   Register reg(0), scratch(256);
-  BytecodeLabel done;
+  BytecodeLabel done, fake;
 
   builder.LoadLiteral(Smi::FromInt(0));
   builder.StoreAccumulatorInRegister(reg);
@@ -1044,6 +1079,7 @@ TEST(InterpreterJumpConstantWith16BitOperand) {
   builder.Jump(&done);
 
   // Emit more than 16-bit immediate operands worth of code to jump over.
+  builder.Bind(&fake);
   for (int i = 0; i < 6600; i++) {
     builder.LoadLiteral(Smi::FromInt(0));                 // 1-byte
     builder.BinaryOperation(Token::Value::ADD, scratch);  // 4-bytes
@@ -1167,6 +1203,7 @@ TEST(InterpreterSmiComparisons) {
         HandleAndZoneScope handles;
         BytecodeArrayBuilder builder(handles.main_isolate(),
                                      handles.main_zone(), 0, 0, 1);
+
         Register r0(0);
         builder.LoadLiteral(Smi::FromInt(inputs[i]))
             .StoreAccumulatorInRegister(r0)
@@ -1203,6 +1240,7 @@ TEST(InterpreterHeapNumberComparisons) {
         i::Factory* factory = handles.main_isolate()->factory();
         BytecodeArrayBuilder builder(handles.main_isolate(),
                                      handles.main_zone(), 0, 0, 1);
+
         Register r0(0);
         builder.LoadLiteral(factory->NewHeapNumber(inputs[i]))
             .StoreAccumulatorInRegister(r0)
@@ -1236,6 +1274,7 @@ TEST(InterpreterStringComparisons) {
         i::Factory* factory = handles.main_isolate()->factory();
         BytecodeArrayBuilder builder(handles.main_isolate(),
                                      handles.main_zone(), 0, 0, 1);
+
         Register r0(0);
         builder.LoadLiteral(factory->NewStringFromAsciiChecked(lhs))
             .StoreAccumulatorInRegister(r0)
@@ -1280,6 +1319,7 @@ TEST(InterpreterMixedComparisons) {
           i::Factory* factory = handles.main_isolate()->factory();
           BytecodeArrayBuilder builder(handles.main_isolate(),
                                        handles.main_zone(), 0, 0, 1);
+
           Register r0(0);
           if (pass == 0) {
             // Comparison with HeapNumber on the lhs and String on the rhs
@@ -1383,11 +1423,6 @@ TEST(InterpreterStrictNotEqual) {
 
 TEST(InterpreterInstanceOf) {
   HandleAndZoneScope handles;
-  // TODO(4447): The new ES6 'instanceof' operator is fully desugared in the
-  // parser and the Token::INSTANCEOF is not needed anymore. This test only
-  // makes sense with --no-harmony-instanceof and can be removed once we
-  // deprecate the ability to switch to old skool ES5 'instanceof' for good.
-  FLAG_harmony_instanceof = false;
   i::Factory* factory = handles.main_isolate()->factory();
   Handle<i::String> name = factory->NewStringFromAsciiChecked("cons");
   Handle<i::JSFunction> func = factory->NewFunction(name);
@@ -1398,6 +1433,7 @@ TEST(InterpreterInstanceOf) {
     bool expected_value = (i == 0);
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 0,
                                  0, 1);
+
     Register r0(0);
     builder.LoadLiteral(cases[i]);
     builder.StoreAccumulatorInRegister(r0)
@@ -1427,6 +1463,7 @@ TEST(InterpreterTestIn) {
     bool expected_value = (i == 0);
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 0,
                                  0, 1);
+
     Register r0(0);
     builder.LoadLiteral(factory->NewStringFromAsciiChecked(properties[i]))
         .StoreAccumulatorInRegister(r0)
@@ -1450,6 +1487,7 @@ TEST(InterpreterUnaryNot) {
     bool expected_value = ((i & 1) == 1);
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 0,
                                  0, 0);
+
     Register r0(0);
     builder.LoadFalse();
     for (size_t j = 0; j < i; j++) {
@@ -1511,6 +1549,7 @@ TEST(InterpreterUnaryNotNonBoolean) {
   for (size_t i = 0; i < arraysize(object_type_tuples); i++) {
     BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 0,
                                  0, 0);
+
     Register r0(0);
     LoadAny(&builder, factory, object_type_tuples[i].first);
     builder.LogicalNot();
@@ -1557,6 +1596,7 @@ TEST(InterpreterCallRuntime) {
 
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 2);
+
   builder.LoadLiteral(Smi::FromInt(15))
       .StoreAccumulatorInRegister(Register(0))
       .LoadLiteral(Smi::FromInt(40))
@@ -1577,6 +1617,7 @@ TEST(InterpreterInvokeIntrinsic) {
 
   BytecodeArrayBuilder builder(handles.main_isolate(), handles.main_zone(), 1,
                                0, 2);
+
   builder.LoadLiteral(Smi::FromInt(15))
       .StoreAccumulatorInRegister(Register(0))
       .CallRuntime(Runtime::kInlineIsArray, Register(0), 1)
@@ -2259,6 +2300,8 @@ TEST(InterpreterCreateArguments) {
       std::make_pair("function f(a, b, c, d) {"
                      "  'use strict'; c = b; return arguments[2]; }",
                      2),
+      // Check arguments for duplicate parameters in sloppy mode.
+      std::make_pair("function f(a, a, b) { return arguments[1]; }", 1),
       // check rest parameters
       std::make_pair("function f(...restArray) { return restArray[0]; }", 0),
       std::make_pair("function f(a, ...restArray) { return restArray[0]; }", 1),
@@ -4136,6 +4179,30 @@ TEST(InterpreterIllegalConstDeclaration) {
     CHECK(
         message->Equals(CcTest::isolate()->GetCurrentContext(), expected_string)
             .FromJust());
+  }
+}
+
+TEST(InterpreterGenerators) {
+  HandleAndZoneScope handles;
+  i::Isolate* isolate = handles.main_isolate();
+  i::Factory* factory = isolate->factory();
+
+  std::pair<const char*, Handle<Object>> tests[] = {
+      {"function* f() { }; return f().next().value",
+       factory->undefined_value()},
+      {"function* f() { yield 42 }; return f().next().value",
+       factory->NewNumberFromInt(42)},
+      {"function* f() { for (let x of [42]) yield x}; return f().next().value",
+       factory->NewNumberFromInt(42)},
+  };
+
+  for (size_t i = 0; i < arraysize(tests); i++) {
+    std::string source(InterpreterTester::SourceForBody(tests[i].first));
+    InterpreterTester tester(handles.main_isolate(), source.c_str());
+    auto callable = tester.GetCallable<>();
+
+    Handle<i::Object> return_value = callable().ToHandleChecked();
+    CHECK(return_value->SameValue(*tests[i].second));
   }
 }
 

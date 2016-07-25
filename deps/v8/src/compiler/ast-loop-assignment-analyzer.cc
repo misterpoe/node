@@ -55,8 +55,6 @@ void ALAA::Exit(IterationStatement* loop) {
 
 void ALAA::VisitVariableDeclaration(VariableDeclaration* leaf) {}
 void ALAA::VisitFunctionDeclaration(FunctionDeclaration* leaf) {}
-void ALAA::VisitImportDeclaration(ImportDeclaration* leaf) {}
-void ALAA::VisitExportDeclaration(ExportDeclaration* leaf) {}
 void ALAA::VisitEmptyStatement(EmptyStatement* leaf) {}
 void ALAA::VisitContinueStatement(ContinueStatement* leaf) {}
 void ALAA::VisitBreakStatement(BreakStatement* leaf) {}
@@ -265,8 +263,9 @@ void ALAA::VisitForInStatement(ForInStatement* loop) {
 void ALAA::VisitForOfStatement(ForOfStatement* loop) {
   Visit(loop->assign_iterator());
   Enter(loop);
+  Visit(loop->next_result());
+  Visit(loop->result_done());
   Visit(loop->assign_each());
-  Visit(loop->subject());
   Visit(loop->body());
   Exit(loop);
 }

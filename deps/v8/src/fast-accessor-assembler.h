@@ -6,15 +6,15 @@
 #define V8_FAST_ACCESSOR_ASSEMBLER_H_
 
 #include <stdint.h>
+#include <memory>
 #include <vector>
 
 #include "include/v8-experimental.h"
 #include "src/base/macros.h"
-#include "src/base/smart-pointers.h"
 #include "src/handles.h"
 
 // For CodeStubAssembler::Label. (We cannot forward-declare inner classes.)
-#include "src/compiler/code-stub-assembler.h"
+#include "src/code-stub-assembler.h"
 
 namespace v8 {
 namespace internal {
@@ -73,9 +73,9 @@ class FastAccessorAssembler {
 
  private:
   ValueId FromRaw(compiler::Node* node);
-  LabelId FromRaw(compiler::CodeStubAssembler::Label* label);
+  LabelId FromRaw(CodeStubAssembler::Label* label);
   compiler::Node* FromId(ValueId value) const;
-  compiler::CodeStubAssembler::Label* FromId(LabelId value) const;
+  CodeStubAssembler::Label* FromId(LabelId value) const;
 
   void Clear();
   Zone* zone() { return &zone_; }
@@ -83,13 +83,13 @@ class FastAccessorAssembler {
 
   Zone zone_;
   Isolate* isolate_;
-  base::SmartPointer<compiler::CodeStubAssembler> assembler_;
+  std::unique_ptr<CodeStubAssembler> assembler_;
 
   // To prevent exposing the RMA internals to the outside world, we'll map
   // Node + Label pointers integers wrapped in ValueId and LabelId instances.
   // These vectors maintain this mapping.
   std::vector<compiler::Node*> nodes_;
-  std::vector<compiler::CodeStubAssembler::Label*> labels_;
+  std::vector<CodeStubAssembler::Label*> labels_;
 
   // Remember the current state for easy error checking. (We prefer to be
   // strict as this class will be exposed at the API.)

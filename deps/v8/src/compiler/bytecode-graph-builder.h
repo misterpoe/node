@@ -9,6 +9,7 @@
 #include "src/compiler/bytecode-branch-analysis.h"
 #include "src/compiler/js-graph.h"
 #include "src/interpreter/bytecode-array-iterator.h"
+#include "src/interpreter/bytecode-flags.h"
 #include "src/interpreter/bytecodes.h"
 
 namespace v8 {
@@ -112,20 +113,21 @@ class BytecodeGraphBuilder {
 
   void BuildCreateLiteral(const Operator* op);
   void BuildCreateArguments(CreateArgumentsType type);
-  void BuildLoadGlobal(TypeofMode typeof_mode);
+  Node* BuildLoadContextSlot();
+  Node* BuildLoadGlobal(TypeofMode typeof_mode);
   void BuildStoreGlobal(LanguageMode language_mode);
-  void BuildNamedLoad();
-  void BuildKeyedLoad();
+  Node* BuildNamedLoad();
   void BuildNamedStore(LanguageMode language_mode);
+  Node* BuildKeyedLoad();
   void BuildKeyedStore(LanguageMode language_mode);
   void BuildLdaLookupSlot(TypeofMode typeof_mode);
   void BuildStaLookupSlot(LanguageMode language_mode);
   void BuildCall(TailCallMode tail_call_mode);
   void BuildThrow();
   void BuildBinaryOp(const Operator* op);
+  void BuildBinaryOpWithImmediate(const Operator* op);
   void BuildCompareOp(const Operator* op);
   void BuildDelete(LanguageMode language_mode);
-  void BuildCastOperator(const Operator* op);
   void BuildForInPrepare();
   void BuildForInNext();
   void BuildInvokeIntrinsic();
@@ -217,10 +219,6 @@ class BytecodeGraphBuilder {
   const interpreter::BytecodeArrayIterator* bytecode_iterator_;
   const BytecodeBranchAnalysis* branch_analysis_;
   Environment* environment_;
-
-  // Indicates whether deoptimization support is enabled for this compilation
-  // and whether valid frame states need to be attached to deoptimizing nodes.
-  bool deoptimization_enabled_;
 
   // Merge environments are snapshots of the environment at points where the
   // control flow merges. This models a forward data flow propagation of all

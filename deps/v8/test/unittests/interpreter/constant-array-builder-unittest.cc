@@ -89,7 +89,7 @@ TEST_F(ConstantArrayBuilderTest, AllocateEntriesWithIdx8Reservations) {
     }
     for (size_t i = 0; i < reserved; i++) {
       size_t index = k8BitCapacity - reserved + i;
-      CHECK(builder.At(index)->IsTheHole());
+      CHECK(builder.At(index)->IsTheHole(isolate()));
     }
 
     // Now make reservations, and commit them with unique entries.
@@ -280,6 +280,40 @@ TEST_F(ConstantArrayBuilderTest, ReservationsAtAllScales) {
       expected = isolate()->factory()->the_hole_value();
     }
     CHECK(constant_array->get(i)->SameValue(*expected));
+  }
+}
+
+TEST_F(ConstantArrayBuilderTest, AllocateEntriesWithFixedReservations) {
+  ConstantArrayBuilder builder(isolate(), zone());
+  for (size_t i = 0; i < k16BitCapacity; i++) {
+    if ((i % 2) == 0) {
+      CHECK_EQ(i, builder.AllocateEntry());
+    } else {
+      builder.Insert(handle(Smi::FromInt(static_cast<int>(i)), isolate()));
+    }
+  }
+  CHECK_EQ(builder.size(), k16BitCapacity);
+
+  // Check values before reserved entries are inserted.
+  for (size_t i = 0; i < k16BitCapacity; i++) {
+    if ((i % 2) == 0) {
+      // Check reserved values are the hole.
+      Handle<Object> empty = builder.At(i);
+      CHECK(empty->SameValue(isolate()->heap()->the_hole_value()));
+    } else {
+      CHECK_EQ(Handle<Smi>::cast(builder.At(i))->value(), i);
+    }
+  }
+
+  // Insert reserved entries.
+  for (size_t i = 0; i < k16BitCapacity; i += 2) {
+    builder.InsertAllocatedEntry(
+        i, handle(Smi::FromInt(static_cast<int>(i)), isolate()));
+  }
+
+  // Check values after reserved entries are inserted.
+  for (size_t i = 0; i < k16BitCapacity; i++) {
+    CHECK_EQ(Handle<Smi>::cast(builder.At(i))->value(), i);
   }
 }
 

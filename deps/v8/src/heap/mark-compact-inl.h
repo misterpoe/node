@@ -12,38 +12,29 @@
 namespace v8 {
 namespace internal {
 
-inline std::vector<Page*>& MarkCompactCollector::sweeping_list(Space* space) {
-  if (space == heap()->old_space()) {
-    return sweeping_list_old_space_;
-  } else if (space == heap()->code_space()) {
-    return sweeping_list_code_space_;
-  }
-  DCHECK_EQ(space, heap()->map_space());
-  return sweeping_list_map_space_;
-}
-
-
 void MarkCompactCollector::PushBlack(HeapObject* obj) {
-  DCHECK(Marking::IsBlack(Marking::MarkBitFrom(obj)));
+  DCHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(obj)));
   if (marking_deque_.Push(obj)) {
     MemoryChunk::IncrementLiveBytesFromGC(obj, obj->Size());
   } else {
-    Marking::BlackToGrey(obj);
+    MarkBit mark_bit = ObjectMarking::MarkBitFrom(obj);
+    Marking::BlackToGrey(mark_bit);
   }
 }
 
 
 void MarkCompactCollector::UnshiftBlack(HeapObject* obj) {
-  DCHECK(Marking::IsBlack(Marking::MarkBitFrom(obj)));
+  DCHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(obj)));
   if (!marking_deque_.Unshift(obj)) {
     MemoryChunk::IncrementLiveBytesFromGC(obj, -obj->Size());
-    Marking::BlackToGrey(obj);
+    MarkBit mark_bit = ObjectMarking::MarkBitFrom(obj);
+    Marking::BlackToGrey(mark_bit);
   }
 }
 
 
 void MarkCompactCollector::MarkObject(HeapObject* obj, MarkBit mark_bit) {
-  DCHECK(Marking::MarkBitFrom(obj) == mark_bit);
+  DCHECK(ObjectMarking::MarkBitFrom(obj) == mark_bit);
   if (Marking::IsWhite(mark_bit)) {
     Marking::WhiteToBlack(mark_bit);
     DCHECK(obj->GetIsolate()->heap()->Contains(obj));
@@ -54,7 +45,7 @@ void MarkCompactCollector::MarkObject(HeapObject* obj, MarkBit mark_bit) {
 
 void MarkCompactCollector::SetMark(HeapObject* obj, MarkBit mark_bit) {
   DCHECK(Marking::IsWhite(mark_bit));
-  DCHECK(Marking::MarkBitFrom(obj) == mark_bit);
+  DCHECK(ObjectMarking::MarkBitFrom(obj) == mark_bit);
   Marking::WhiteToBlack(mark_bit);
   MemoryChunk::IncrementLiveBytesFromGC(obj, obj->Size());
 }
@@ -63,7 +54,7 @@ void MarkCompactCollector::SetMark(HeapObject* obj, MarkBit mark_bit) {
 bool MarkCompactCollector::IsMarked(Object* obj) {
   DCHECK(obj->IsHeapObject());
   HeapObject* heap_object = HeapObject::cast(obj);
-  return Marking::IsBlackOrGrey(Marking::MarkBitFrom(heap_object));
+  return Marking::IsBlackOrGrey(ObjectMarking::MarkBitFrom(heap_object));
 }
 
 
@@ -73,7 +64,7 @@ void MarkCompactCollector::RecordSlot(HeapObject* object, Object** slot,
   Page* source_page = Page::FromAddress(reinterpret_cast<Address>(object));
   if (target_page->IsEvacuationCandidate() &&
       !ShouldSkipEvacuationSlotRecording(object)) {
-    DCHECK(Marking::IsBlackOrGrey(Marking::MarkBitFrom(object)));
+    DCHECK(Marking::IsBlackOrGrey(ObjectMarking::MarkBitFrom(object)));
     RememberedSet<OLD_TO_OLD>::Insert(source_page,
                                       reinterpret_cast<Address>(slot));
   }
@@ -90,7 +81,7 @@ void CodeFlusher::AddCandidate(SharedFunctionInfo* shared_info) {
 
 void CodeFlusher::AddCandidate(JSFunction* function) {
   DCHECK(function->code() == function->shared()->code());
-  if (function->next_function_link()->IsUndefined()) {
+  if (function->next_function_link()->IsUndefined(isolate_)) {
     SetNextCandidate(function, jsfunction_candidates_head_);
     jsfunction_candidates_head_ = function;
   }
@@ -116,7 +107,7 @@ void CodeFlusher::SetNextCandidate(JSFunction* candidate,
 
 
 void CodeFlusher::ClearNextCandidate(JSFunction* candidate, Object* undefined) {
-  DCHECK(undefined->IsUndefined());
+  DCHECK(undefined->IsUndefined(candidate->GetIsolate()));
   candidate->set_next_function_link(undefined, SKIP_WRITE_BARRIER);
 }
 

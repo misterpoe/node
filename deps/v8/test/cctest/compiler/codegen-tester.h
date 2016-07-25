@@ -38,7 +38,8 @@ class RawMachineAssemblerTester : public HandleAndZoneScope,
                                 p1, p2, p3, p4),
                 true),
             MachineType::PointerRepresentation(),
-            InstructionSelector::SupportedMachineOperatorFlags()) {}
+            InstructionSelector::SupportedMachineOperatorFlags(),
+            InstructionSelector::AlignmentRequirements()) {}
 
   virtual ~RawMachineAssemblerTester() {}
 
@@ -65,7 +66,7 @@ class RawMachineAssemblerTester : public HandleAndZoneScope,
       Schedule* schedule = this->Export();
       CallDescriptor* call_descriptor = this->call_descriptor();
       Graph* graph = this->graph();
-      CompilationInfo info("testing", main_isolate(), main_zone());
+      CompilationInfo info(ArrayVector("testing"), main_isolate(), main_zone());
       code_ = Pipeline::GenerateCodeForTesting(&info, call_descriptor, graph,
                                                schedule);
     }
@@ -256,7 +257,7 @@ class BufferedRawMachineAssemblerTester<void>
   // parameters from memory. Thereby it is possible to pass 64 bit parameters
   // to the IR graph.
   Node* Parameter(size_t index) {
-    CHECK(index >= 0 && index < 4);
+    CHECK(index < 4);
     return parameter_nodes_[index];
   }
 

@@ -217,6 +217,33 @@ bool RelocInfo::IsCodedSpecially() {
 
 bool RelocInfo::IsInConstantPool() { return false; }
 
+Address RelocInfo::wasm_memory_reference() {
+  DCHECK(IsWasmMemoryReference(rmode_));
+  return Assembler::target_address_at(pc_, host_);
+}
+
+uint32_t RelocInfo::wasm_memory_size_reference() {
+  DCHECK(IsWasmMemorySizeReference(rmode_));
+  return static_cast<uint32_t>(
+      reinterpret_cast<intptr_t>(Assembler::target_address_at(pc_, host_)));
+}
+
+Address RelocInfo::wasm_global_reference() {
+  DCHECK(IsWasmGlobalReference(rmode_));
+  return Assembler::target_address_at(pc_, host_);
+}
+
+void RelocInfo::unchecked_update_wasm_memory_reference(
+    Address address, ICacheFlushMode flush_mode) {
+  Assembler::set_target_address_at(isolate_, pc_, host_, address, flush_mode);
+}
+
+void RelocInfo::unchecked_update_wasm_memory_size(uint32_t size,
+                                                  ICacheFlushMode flush_mode) {
+  Assembler::set_target_address_at(isolate_, pc_, host_,
+                                   reinterpret_cast<Address>(size), flush_mode);
+}
+
 // -----------------------------------------------------------------------------
 // Implementation of Operand and MemOperand
 // See assembler-s390-inl.h for inlined constructors
@@ -227,7 +254,6 @@ Operand::Operand(Handle<Object> handle) {
   // Verify all Objects referred by code are NOT in new space.
   Object* obj = *handle;
   if (obj->IsHeapObject()) {
-    DCHECK(!HeapObject::cast(obj)->GetHeap()->InNewSpace(obj));
     imm_ = reinterpret_cast<intptr_t>(handle.location());
     rmode_ = RelocInfo::EMBEDDED_OBJECT;
   } else {
@@ -255,8 +281,7 @@ MemOperand::MemOperand(Register rx, Register rb, int32_t offset) {
 Assembler::Assembler(Isolate* isolate, void* buffer, int buffer_size)
     : AssemblerBase(isolate, buffer, buffer_size),
       recorded_ast_id_(TypeFeedbackId::None()),
-      code_targets_(100),
-      positions_recorder_(this) {
+      code_targets_(100) {
   reloc_info_writer.Reposition(buffer_ + buffer_size_, pc_);
 
   last_bound_pos_ = 0;
@@ -273,6 +298,8 @@ void Assembler::GetCode(CodeDesc* desc) {
   desc->instr_size = pc_offset();
   desc->reloc_size = (buffer_ + buffer_size_) - reloc_info_writer.pos();
   desc->origin = this;
+  desc->unwinding_info_size = 0;
+  desc->unwinding_info = nullptr;
 }
 
 void Assembler::Align(int m) {
@@ -1379,7 +1406,6 @@ void Assembler::rrfe_form(Opcode op, Condition m3, Condition m4, Register r1,
 RX_FORM_EMIT(bc, BC)
 RR_FORM_EMIT(bctr, BCTR)
 RXE_FORM_EMIT(ceb, CEB)
-RRE_FORM_EMIT(cefbr, CEFBR)
 SS1_FORM_EMIT(ed, ED)
 RX_FORM_EMIT(ex, EX)
 RRE_FORM_EMIT(flogr, FLOGR)
@@ -2466,7 +2492,6 @@ void Assembler::srdl(Register r1, const Operand& opnd) {
 
 void Assembler::call(Handle<Code> target, RelocInfo::Mode rmode,
                      TypeFeedbackId ast_id) {
-  positions_recorder()->WriteRecordedPositions();
   EnsureSpace ensure_space(this);
 
   int32_t target_index = emit_code_target(target, rmode, ast_id);
@@ -2862,10 +2887,8 @@ void Assembler::celgbr(Condition m3, Condition m4, DoubleRegister r1,
 // Convert from Fixed Logical (F32<-32)
 void Assembler::celfbr(Condition m3, Condition m4, DoubleRegister r1,
                        Register r2) {
-  DCHECK_EQ(m3, Condition(0));
   DCHECK_EQ(m4, Condition(0));
-  rrfe_form(CELFBR, Condition(0), Condition(0), Register::from_code(r1.code()),
-            r2);
+  rrfe_form(CELFBR, m3, Condition(0), Register::from_code(r1.code()), r2);
 }
 
 // Convert from Fixed Logical (L<-64)
@@ -2885,8 +2908,8 @@ void Assembler::cdlfbr(Condition m3, Condition m4, DoubleRegister r1,
 }
 
 // Convert from Fixed point (S<-32)
-void Assembler::cefbr(DoubleRegister r1, Register r2) {
-  rre_form(CEFBR, Register::from_code(r1.code()), r2);
+void Assembler::cefbr(Condition m3, DoubleRegister r1, Register r2) {
+  rrfe_form(CEFBR, m3, Condition(0), Register::from_code(r1.code()), r2);
 }
 
 // Convert to Fixed point (32<-S)
@@ -3052,8 +3075,6 @@ void Assembler::EmitRelocations() {
 
     reloc_info_writer.Write(&rinfo);
   }
-
-  reloc_info_writer.Finish();
 }
 
 }  // namespace internal

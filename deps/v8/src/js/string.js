@@ -13,8 +13,6 @@ var ArrayIndexOf;
 var ArrayJoin;
 var GlobalRegExp = global.RegExp;
 var GlobalString = global.String;
-var InternalArray = utils.InternalArray;
-var InternalPackedArray = utils.InternalPackedArray;
 var IsRegExp;
 var MakeRangeError;
 var MakeTypeError;
@@ -38,48 +36,6 @@ utils.Import(function(from) {
 });
 
 //-------------------------------------------------------------------
-
-// ECMA-262 section 15.5.4.2
-function StringToString() {
-  if (!IS_STRING(this) && !IS_STRING_WRAPPER(this)) {
-    throw MakeTypeError(kNotGeneric, 'String.prototype.toString');
-  }
-  return %_ValueOf(this);
-}
-
-
-// ECMA-262 section 15.5.4.3
-function StringValueOf() {
-  if (!IS_STRING(this) && !IS_STRING_WRAPPER(this)) {
-    throw MakeTypeError(kNotGeneric, 'String.prototype.valueOf');
-  }
-  return %_ValueOf(this);
-}
-
-
-// ECMA-262, section 15.5.4.4
-function StringCharAtJS(pos) {
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.charAt");
-
-  var result = %_StringCharAt(this, pos);
-  if (%_IsSmi(result)) {
-    result = %_StringCharAt(TO_STRING(this), TO_INTEGER(pos));
-  }
-  return result;
-}
-
-
-// ECMA-262 section 15.5.4.5
-function StringCharCodeAtJS(pos) {
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.charCodeAt");
-
-  var result = %_StringCharCodeAt(this, pos);
-  if (!%_IsSmi(result)) {
-    result = %_StringCharCodeAt(TO_STRING(this), TO_INTEGER(pos));
-  }
-  return result;
-}
-
 
 // ECMA-262, section 15.5.4.6
 function StringConcat(other /* and more */) {  // length == 1
@@ -473,43 +429,19 @@ function StringSubstring(start, end) {
 }
 
 
-// ES6 draft, revision 26 (2014-07-18), section B.2.3.1
-function StringSubstr(start, n) {
+// ecma262/#sec-string.prototype.substr
+function StringSubstr(start, length) {
   CHECK_OBJECT_COERCIBLE(this, "String.prototype.substr");
-
   var s = TO_STRING(this);
-  var len;
+  var size = s.length;
+  start = TO_INTEGER(start);
+  length = IS_UNDEFINED(length) ? size : TO_INTEGER(length);
 
-  // Correct n: If not given, set to string length; if explicitly
-  // set to undefined, zero, or negative, returns empty string.
-  if (IS_UNDEFINED(n)) {
-    len = s.length;
-  } else {
-    len = TO_INTEGER(n);
-    if (len <= 0) return '';
-  }
+  if (start < 0) start = MaxSimple(size + start, 0);
+  length = MinSimple(MaxSimple(length, 0), size - start);
 
-  // Correct start: If not given (or undefined), set to zero; otherwise
-  // convert to integer and handle negative case.
-  if (IS_UNDEFINED(start)) {
-    start = 0;
-  } else {
-    start = TO_INTEGER(start);
-    // If positive, and greater than or equal to the string length,
-    // return empty string.
-    if (start >= s.length) return '';
-    // If negative and absolute value is larger than the string length,
-    // use zero.
-    if (start < 0) {
-      start += s.length;
-      if (start < 0) start = 0;
-    }
-  }
-
-  var end = start + len;
-  if (end > s.length) end = s.length;
-
-  return %_SubString(s, start, end);
+  if (length <= 0) return '';
+  return %_SubString(s, start, start + length);
 }
 
 
@@ -542,25 +474,6 @@ function StringToLocaleUpperCase() {
   CHECK_OBJECT_COERCIBLE(this, "String.prototype.toLocaleUpperCase");
 
   return %StringToUpperCase(TO_STRING(this));
-}
-
-// ES5, 15.5.4.20
-function StringTrimJS() {
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.trim");
-
-  return %StringTrim(TO_STRING(this), true, true);
-}
-
-function StringTrimLeft() {
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.trimLeft");
-
-  return %StringTrim(TO_STRING(this), true, false);
-}
-
-function StringTrimRight() {
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.trimRight");
-
-  return %StringTrim(TO_STRING(this), false, true);
 }
 
 
@@ -792,33 +705,6 @@ function StringCodePointAt(pos) {
 }
 
 
-// ES6 Draft 05-22-2014, section 21.1.2.2
-function StringFromCodePoint(_) {  // length = 1
-  "use strict";
-  var code;
-  var length = arguments.length;
-  var index;
-  var result = "";
-  for (index = 0; index < length; index++) {
-    code = arguments[index];
-    if (!%_IsSmi(code)) {
-      code = TO_NUMBER(code);
-    }
-    if (code < 0 || code > 0x10FFFF || code !== TO_INTEGER(code)) {
-      throw MakeRangeError(kInvalidCodePoint, code);
-    }
-    if (code <= 0xFFFF) {
-      result += %_StringCharFromCode(code);
-    } else {
-      code -= 0x10000;
-      result += %_StringCharFromCode((code >>> 10) & 0x3FF | 0xD800);
-      result += %_StringCharFromCode(code & 0x3FF | 0xDC00);
-    }
-  }
-  return result;
-}
-
-
 // -------------------------------------------------------------------
 // String methods related to templates
 
@@ -845,25 +731,13 @@ function StringRaw(callSite) {
 
 // -------------------------------------------------------------------
 
-// Set the String function and constructor.
-%FunctionSetPrototype(GlobalString, new GlobalString());
-
-// Set up the constructor property on the String prototype object.
-%AddNamedProperty(
-    GlobalString.prototype, "constructor", GlobalString, DONT_ENUM);
-
 // Set up the non-enumerable functions on the String object.
 utils.InstallFunctions(GlobalString, DONT_ENUM, [
-  "fromCodePoint", StringFromCodePoint,
   "raw", StringRaw
 ]);
 
 // Set up the non-enumerable functions on the String prototype object.
 utils.InstallFunctions(GlobalString.prototype, DONT_ENUM, [
-  "valueOf", StringValueOf,
-  "toString", StringToString,
-  "charAt", StringCharAtJS,
-  "charCodeAt", StringCharCodeAtJS,
   "codePointAt", StringCodePointAt,
   "concat", StringConcat,
   "endsWith", StringEndsWith,
@@ -885,9 +759,6 @@ utils.InstallFunctions(GlobalString.prototype, DONT_ENUM, [
   "toLocaleLowerCase", StringToLocaleLowerCase,
   "toUpperCase", StringToUpperCaseJS,
   "toLocaleUpperCase", StringToLocaleUpperCase,
-  "trim", StringTrimJS,
-  "trimLeft", StringTrimLeft,
-  "trimRight", StringTrimRight,
 
   "link", StringLink,
   "anchor", StringAnchor,
@@ -909,7 +780,6 @@ utils.InstallFunctions(GlobalString.prototype, DONT_ENUM, [
 
 utils.Export(function(to) {
   to.ExpandReplacement = ExpandReplacement;
-  to.StringCharAt = StringCharAtJS;
   to.StringIndexOf = StringIndexOf;
   to.StringLastIndexOf = StringLastIndexOf;
   to.StringMatch = StringMatchJS;

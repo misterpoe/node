@@ -10,8 +10,9 @@
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph-reducer.h"
 #include "src/compiler/js-operator.h"
-#include "src/compiler/node.h"
 #include "src/compiler/node-properties.h"
+#include "src/compiler/node.h"
+#include "src/compiler/operation-typer.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/objects-inl.h"
 #include "src/type-cache.h"
@@ -30,21 +31,21 @@ class Typer::Decorator final : public GraphDecorator {
 };
 
 Typer::Typer(Isolate* isolate, Graph* graph, Flags flags,
-             CompilationDependencies* dependencies, FunctionType* function_type)
+             CompilationDependencies* dependencies)
     : isolate_(isolate),
       graph_(graph),
       flags_(flags),
       dependencies_(dependencies),
-      function_type_(function_type),
       decorator_(nullptr),
-      cache_(TypeCache::Get()) {
+      cache_(TypeCache::Get()),
+      operation_typer_(isolate, zone()) {
   Zone* zone = this->zone();
   Factory* const factory = isolate->factory();
 
   Type* infinity = Type::Constant(factory->infinity_value(), zone);
   Type* minus_infinity = Type::Constant(factory->minus_infinity_value(), zone);
-  // TODO(neis): Unfortunately, the infinities created in other places might
-  // be different ones (eg the result of NewNumber in TypeNumberConstant).
+  // Unfortunately, the infinities created in other places might be different
+  // ones (eg the result of NewNumber in TypeNumberConstant).
   Type* truncating_to_zero =
       Type::Union(Type::Union(infinity, minus_infinity, zone),
                   Type::MinusZeroOrNaN(), zone);
@@ -95,8 +96,10 @@ class Typer::Visitor : public Reducer {
       DECLARE_CASE(IfException)
       // VALUE_OP_LIST without JS_SIMPLE_BINOP_LIST:
       COMMON_OP_LIST(DECLARE_CASE)
-      SIMPLIFIED_OP_LIST(DECLARE_CASE)
+      SIMPLIFIED_COMPARE_BINOP_LIST(DECLARE_CASE)
+      SIMPLIFIED_OTHER_OP_LIST(DECLARE_CASE)
       MACHINE_OP_LIST(DECLARE_CASE)
+      MACHINE_SIMD_OP_LIST(DECLARE_CASE)
       JS_SIMPLE_UNOP_LIST(DECLARE_CASE)
       JS_OBJECT_OP_LIST(DECLARE_CASE)
       JS_CONTEXT_OP_LIST(DECLARE_CASE)
@@ -123,6 +126,8 @@ class Typer::Visitor : public Reducer {
       DECLARE_CASE(OsrLoopEntry)
       DECLARE_CASE(Throw)
       DECLARE_CASE(End)
+      SIMPLIFIED_CHANGE_OP_LIST(DECLARE_CASE)
+      SIMPLIFIED_CHECKED_OP_LIST(DECLARE_CASE)
 #undef DECLARE_CASE
       break;
     }
@@ -141,8 +146,10 @@ class Typer::Visitor : public Reducer {
       DECLARE_CASE(IfException)
       // VALUE_OP_LIST without JS_SIMPLE_BINOP_LIST:
       COMMON_OP_LIST(DECLARE_CASE)
-      SIMPLIFIED_OP_LIST(DECLARE_CASE)
+      SIMPLIFIED_COMPARE_BINOP_LIST(DECLARE_CASE)
+      SIMPLIFIED_OTHER_OP_LIST(DECLARE_CASE)
       MACHINE_OP_LIST(DECLARE_CASE)
+      MACHINE_SIMD_OP_LIST(DECLARE_CASE)
       JS_SIMPLE_UNOP_LIST(DECLARE_CASE)
       JS_OBJECT_OP_LIST(DECLARE_CASE)
       JS_CONTEXT_OP_LIST(DECLARE_CASE)
@@ -169,6 +176,8 @@ class Typer::Visitor : public Reducer {
       DECLARE_CASE(OsrLoopEntry)
       DECLARE_CASE(Throw)
       DECLARE_CASE(End)
+      SIMPLIFIED_CHANGE_OP_LIST(DECLARE_CASE)
+      SIMPLIFIED_CHECKED_OP_LIST(DECLARE_CASE)
 #undef DECLARE_CASE
       break;
     }
@@ -185,7 +194,12 @@ class Typer::Visitor : public Reducer {
 #define DECLARE_METHOD(x) inline Type* Type##x(Node* node);
   DECLARE_METHOD(Start)
   DECLARE_METHOD(IfException)
-  VALUE_OP_LIST(DECLARE_METHOD)
+  COMMON_OP_LIST(DECLARE_METHOD)
+  SIMPLIFIED_COMPARE_BINOP_LIST(DECLARE_METHOD)
+  SIMPLIFIED_OTHER_OP_LIST(DECLARE_METHOD)
+  MACHINE_OP_LIST(DECLARE_METHOD)
+  MACHINE_SIMD_OP_LIST(DECLARE_METHOD)
+  JS_OP_LIST(DECLARE_METHOD)
 #undef DECLARE_METHOD
 
   Type* TypeOrNone(Node* node) {
@@ -230,7 +244,6 @@ class Typer::Visitor : public Reducer {
   static ComparisonOutcome Invert(ComparisonOutcome, Typer*);
   static Type* Invert(Type*, Typer*);
   static Type* FalsifyUndefined(ComparisonOutcome, Typer*);
-  static Type* Rangify(Type*, Typer*);
 
   static Type* ToPrimitive(Type*, Typer*);
   static Type* ToBoolean(Type*, Typer*);
@@ -242,20 +255,20 @@ class Typer::Visitor : public Reducer {
   static Type* ToString(Type*, Typer*);
   static Type* NumberCeil(Type*, Typer*);
   static Type* NumberFloor(Type*, Typer*);
+  static Type* NumberMax(Type*, Type*, Typer*);
+  static Type* NumberMin(Type*, Type*, Typer*);
   static Type* NumberRound(Type*, Typer*);
+  static Type* NumberSign(Type*, Typer*);
   static Type* NumberTrunc(Type*, Typer*);
   static Type* NumberToInt32(Type*, Typer*);
   static Type* NumberToUint32(Type*, Typer*);
 
+  static Type* ObjectIsCallable(Type*, Typer*);
   static Type* ObjectIsNumber(Type*, Typer*);
   static Type* ObjectIsReceiver(Type*, Typer*);
   static Type* ObjectIsSmi(Type*, Typer*);
+  static Type* ObjectIsString(Type*, Typer*);
   static Type* ObjectIsUndetectable(Type*, Typer*);
-
-  static Type* JSAddRanger(RangeType*, RangeType*, Typer*);
-  static Type* JSSubtractRanger(RangeType*, RangeType*, Typer*);
-  static Type* JSDivideRanger(RangeType*, RangeType*, Typer*);
-  static Type* JSModulusRanger(RangeType*, RangeType*, Typer*);
 
   static ComparisonOutcome JSCompareTyper(Type*, Type*, Typer*);
 
@@ -268,6 +281,7 @@ class Typer::Visitor : public Reducer {
   static Type* JSCallFunctionTyper(Type*, Typer*);
 
   static Type* ReferenceEqualTyper(Type*, Type*, Typer*);
+  static Type* StringFromCharCodeTyper(Type*, Typer*);
 
   Reduction UpdateType(Node* node, Type* current) {
     if (NodeProperties::IsTyped(node)) {
@@ -376,26 +390,7 @@ Type* Typer::Visitor::FalsifyUndefined(ComparisonOutcome outcome, Typer* t) {
   return t->singleton_true_;
 }
 
-
-Type* Typer::Visitor::Rangify(Type* type, Typer* t) {
-  if (type->IsRange()) return type;        // Shortcut.
-  if (!type->Is(t->cache_.kInteger)) {
-    return type;  // Give up on non-integer types.
-  }
-  double min = type->Min();
-  double max = type->Max();
-  // Handle the degenerate case of empty bitset types (such as
-  // OtherUnsigned31 and OtherSigned32 on 64-bit architectures).
-  if (std::isnan(min)) {
-    DCHECK(std::isnan(max));
-    return type;
-  }
-  return Type::Range(min, max, t->zone());
-}
-
-
 // Type conversion.
-
 
 Type* Typer::Visitor::ToPrimitive(Type* type, Typer* t) {
   if (type->Is(Type::Primitive()) && !type->Maybe(Type::Receiver())) {
@@ -513,11 +508,86 @@ Type* Typer::Visitor::NumberFloor(Type* type, Typer* t) {
 }
 
 // static
+Type* Typer::Visitor::NumberMax(Type* lhs, Type* rhs, Typer* t) {
+  DCHECK(lhs->Is(Type::Number()));
+  DCHECK(rhs->Is(Type::Number()));
+  if (lhs->Is(Type::NaN()) || rhs->Is(Type::NaN())) {
+    return Type::NaN();
+  }
+  Type* type = Type::None();
+  // TODO(turbofan): Improve minus zero handling here.
+  if (lhs->Maybe(Type::NaN()) || rhs->Maybe(Type::NaN())) {
+    type = Type::Union(type, Type::NaN(), t->zone());
+  }
+  lhs = Type::Intersect(lhs, Type::OrderedNumber(), t->zone());
+  rhs = Type::Intersect(rhs, Type::OrderedNumber(), t->zone());
+  if (lhs->Is(t->cache_.kInteger) && rhs->Is(t->cache_.kInteger)) {
+    double max = std::max(lhs->Max(), rhs->Max());
+    double min = std::max(lhs->Min(), rhs->Min());
+    type = Type::Union(type, Type::Range(min, max, t->zone()), t->zone());
+  } else {
+    type = Type::Union(type, Type::Union(lhs, rhs, t->zone()), t->zone());
+  }
+  return type;
+}
+
+// static
+Type* Typer::Visitor::NumberMin(Type* lhs, Type* rhs, Typer* t) {
+  DCHECK(lhs->Is(Type::Number()));
+  DCHECK(rhs->Is(Type::Number()));
+  if (lhs->Is(Type::NaN()) || rhs->Is(Type::NaN())) {
+    return Type::NaN();
+  }
+  Type* type = Type::None();
+  // TODO(turbofan): Improve minus zero handling here.
+  if (lhs->Maybe(Type::NaN()) || rhs->Maybe(Type::NaN())) {
+    type = Type::Union(type, Type::NaN(), t->zone());
+  }
+  lhs = Type::Intersect(lhs, Type::OrderedNumber(), t->zone());
+  rhs = Type::Intersect(rhs, Type::OrderedNumber(), t->zone());
+  if (lhs->Is(t->cache_.kInteger) && rhs->Is(t->cache_.kInteger)) {
+    double max = std::min(lhs->Max(), rhs->Max());
+    double min = std::min(lhs->Min(), rhs->Min());
+    type = Type::Union(type, Type::Range(min, max, t->zone()), t->zone());
+  } else {
+    type = Type::Union(type, Type::Union(lhs, rhs, t->zone()), t->zone());
+  }
+  return type;
+}
+
+// static
 Type* Typer::Visitor::NumberRound(Type* type, Typer* t) {
   DCHECK(type->Is(Type::Number()));
   if (type->Is(t->cache_.kIntegerOrMinusZeroOrNaN)) return type;
   // TODO(bmeurer): We could infer a more precise type here.
   return t->cache_.kIntegerOrMinusZeroOrNaN;
+}
+
+// static
+Type* Typer::Visitor::NumberSign(Type* type, Typer* t) {
+  DCHECK(type->Is(Type::Number()));
+  if (type->Is(t->cache_.kZeroish)) return type;
+  bool maybe_minuszero = type->Maybe(Type::MinusZero());
+  bool maybe_nan = type->Maybe(Type::NaN());
+  type = Type::Intersect(type, Type::PlainNumber(), t->zone());
+  if (type->Max() < 0.0) {
+    type = t->cache_.kSingletonMinusOne;
+  } else if (type->Max() <= 0.0) {
+    type = t->cache_.kMinusOneOrZero;
+  } else if (type->Min() > 0.0) {
+    type = t->cache_.kSingletonOne;
+  } else if (type->Min() >= 0.0) {
+    type = t->cache_.kZeroOrOne;
+  } else {
+    type = Type::Range(-1.0, 1.0, t->zone());
+  }
+  if (maybe_minuszero) {
+    type = Type::Union(type, Type::MinusZero(), t->zone());
+  }
+  if (maybe_nan) {
+    type = Type::Union(type, Type::NaN(), t->zone());
+  }
+  return type;
 }
 
 // static
@@ -529,7 +599,6 @@ Type* Typer::Visitor::NumberTrunc(Type* type, Typer* t) {
 }
 
 Type* Typer::Visitor::NumberToInt32(Type* type, Typer* t) {
-  // TODO(neis): DCHECK(type->Is(Type::Number()));
   if (type->Is(Type::Signed32())) return type;
   if (type->Is(t->cache_.kZeroish)) return t->cache_.kSingletonZero;
   if (type->Is(t->signed32ish_)) {
@@ -542,7 +611,6 @@ Type* Typer::Visitor::NumberToInt32(Type* type, Typer* t) {
 
 
 Type* Typer::Visitor::NumberToUint32(Type* type, Typer* t) {
-  // TODO(neis): DCHECK(type->Is(Type::Number()));
   if (type->Is(Type::Unsigned32())) return type;
   if (type->Is(t->cache_.kZeroish)) return t->cache_.kSingletonZero;
   if (type->Is(t->unsigned32ish_)) {
@@ -553,9 +621,13 @@ Type* Typer::Visitor::NumberToUint32(Type* type, Typer* t) {
   return Type::Unsigned32();
 }
 
-
 // Type checks.
 
+Type* Typer::Visitor::ObjectIsCallable(Type* type, Typer* t) {
+  if (type->Is(Type::Function())) return t->singleton_true_;
+  if (type->Is(Type::Primitive())) return t->singleton_false_;
+  return Type::Boolean();
+}
 
 Type* Typer::Visitor::ObjectIsNumber(Type* type, Typer* t) {
   if (type->Is(Type::Number())) return t->singleton_true_;
@@ -577,6 +649,11 @@ Type* Typer::Visitor::ObjectIsSmi(Type* type, Typer* t) {
   return Type::Boolean();
 }
 
+Type* Typer::Visitor::ObjectIsString(Type* type, Typer* t) {
+  if (type->Is(Type::String())) return t->singleton_true_;
+  if (!type->Maybe(Type::String())) return t->singleton_false_;
+  return Type::Boolean();
+}
 
 Type* Typer::Visitor::ObjectIsUndetectable(Type* type, Typer* t) {
   if (type->Is(Type::Undetectable())) return t->singleton_true_;
@@ -597,17 +674,7 @@ Type* Typer::Visitor::TypeIfException(Node* node) { return Type::Any(); }
 
 // Common operators.
 
-
-Type* Typer::Visitor::TypeParameter(Node* node) {
-  if (FunctionType* function_type = typer_->function_type()) {
-    int const index = ParameterIndexOf(node->op());
-    if (index >= 0 && index < function_type->Arity()) {
-      return function_type->Parameter(index);
-    }
-  }
-  return Type::Any();
-}
-
+Type* Typer::Visitor::TypeParameter(Node* node) { return Type::Any(); }
 
 Type* Typer::Visitor::TypeOsrValue(Node* node) { return Type::Any(); }
 
@@ -624,6 +691,14 @@ Type* Typer::Visitor::TypeInt64Constant(Node* node) {
   return Type::Internal();  // TODO(rossberg): Add int64 bitset type?
 }
 
+// TODO(gdeepti) : Fix this to do something meaningful.
+Type* Typer::Visitor::TypeRelocatableInt32Constant(Node* node) {
+  return Type::Internal();
+}
+
+Type* Typer::Visitor::TypeRelocatableInt64Constant(Node* node) {
+  return Type::Internal();
+}
 
 Type* Typer::Visitor::TypeFloat32Constant(Node* node) {
   return Type::Intersect(Type::Of(OpParameter<float>(node), zone()),
@@ -677,19 +752,27 @@ Type* Typer::Visitor::TypeEffectPhi(Node* node) {
   return nullptr;
 }
 
-
-Type* Typer::Visitor::TypeEffectSet(Node* node) {
+Type* Typer::Visitor::TypeLoopExit(Node* node) {
   UNREACHABLE();
   return nullptr;
 }
 
+Type* Typer::Visitor::TypeLoopExitValue(Node* node) { return Operand(node, 0); }
 
-Type* Typer::Visitor::TypeGuard(Node* node) {
-  Type* input_type = Operand(node, 0);
-  Type* guard_type = OpParameter<Type*>(node);
-  return Type::Intersect(input_type, guard_type, zone());
+Type* Typer::Visitor::TypeLoopExitEffect(Node* node) {
+  UNREACHABLE();
+  return nullptr;
 }
 
+Type* Typer::Visitor::TypeTransitionElementsKind(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
+
+Type* Typer::Visitor::TypeCheckpoint(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
 
 Type* Typer::Visitor::TypeBeginRegion(Node* node) {
   UNREACHABLE();
@@ -746,7 +829,6 @@ Type* Typer::Visitor::JSEqualTyper(Type* lhs, Type* rhs, Typer* t) {
   if (lhs->IsConstant() && rhs->Is(lhs)) {
     // Types are equal and are inhabited only by a single semantic value,
     // which is not nan due to the earlier check.
-    // TODO(neis): Extend this to Range(x,x), MinusZero, ...?
     return t->singleton_true_;
   }
   return Type::Boolean();
@@ -857,7 +939,6 @@ Type* Typer::Visitor::JSGreaterThanOrEqualTyper(
   return FalsifyUndefined(Invert(JSCompareTyper(lhs, rhs, t), t), t);
 }
 
-
 // JS bitwise operators.
 
 
@@ -890,7 +971,6 @@ Type* Typer::Visitor::JSBitwiseOrTyper(Type* lhs, Type* rhs, Typer* t) {
     max = std::min(max, -1.0);
   }
   return Type::Range(min, max, t->zone());
-  // TODO(neis): Be precise for singleton inputs, here and elsewhere.
 }
 
 
@@ -991,64 +1071,6 @@ Type* Typer::Visitor::JSShiftRightLogicalTyper(Type* lhs, Type* rhs, Typer* t) {
 
 // JS arithmetic operators.
 
-
-// Returns the array's least element, ignoring NaN.
-// There must be at least one non-NaN element.
-// Any -0 is converted to 0.
-static double array_min(double a[], size_t n) {
-  DCHECK(n != 0);
-  double x = +V8_INFINITY;
-  for (size_t i = 0; i < n; ++i) {
-    if (!std::isnan(a[i])) {
-      x = std::min(a[i], x);
-    }
-  }
-  DCHECK(!std::isnan(x));
-  return x == 0 ? 0 : x;  // -0 -> 0
-}
-
-
-// Returns the array's greatest element, ignoring NaN.
-// There must be at least one non-NaN element.
-// Any -0 is converted to 0.
-static double array_max(double a[], size_t n) {
-  DCHECK(n != 0);
-  double x = -V8_INFINITY;
-  for (size_t i = 0; i < n; ++i) {
-    if (!std::isnan(a[i])) {
-      x = std::max(a[i], x);
-    }
-  }
-  DCHECK(!std::isnan(x));
-  return x == 0 ? 0 : x;  // -0 -> 0
-}
-
-Type* Typer::Visitor::JSAddRanger(RangeType* lhs, RangeType* rhs, Typer* t) {
-  double results[4];
-  results[0] = lhs->Min() + rhs->Min();
-  results[1] = lhs->Min() + rhs->Max();
-  results[2] = lhs->Max() + rhs->Min();
-  results[3] = lhs->Max() + rhs->Max();
-  // Since none of the inputs can be -0, the result cannot be -0 either.
-  // However, it can be nan (the sum of two infinities of opposite sign).
-  // On the other hand, if none of the "results" above is nan, then the actual
-  // result cannot be nan either.
-  int nans = 0;
-  for (int i = 0; i < 4; ++i) {
-    if (std::isnan(results[i])) ++nans;
-  }
-  if (nans == 4) return Type::NaN();  // [-inf..-inf] + [inf..inf] or vice versa
-  Type* range =
-      Type::Range(array_min(results, 4), array_max(results, 4), t->zone());
-  return nans == 0 ? range : Type::Union(range, Type::NaN(), t->zone());
-  // Examples:
-  //   [-inf, -inf] + [+inf, +inf] = NaN
-  //   [-inf, -inf] + [n, +inf] = [-inf, -inf] \/ NaN
-  //   [-inf, +inf] + [n, +inf] = [-inf, +inf] \/ NaN
-  //   [-inf, m] + [n, +inf] = [-inf, +inf] \/ NaN
-}
-
-
 Type* Typer::Visitor::JSAddTyper(Type* lhs, Type* rhs, Typer* t) {
   lhs = ToPrimitive(lhs, t);
   rhs = ToPrimitive(rhs, t);
@@ -1059,154 +1081,27 @@ Type* Typer::Visitor::JSAddTyper(Type* lhs, Type* rhs, Typer* t) {
       return Type::NumberOrString();
     }
   }
-  lhs = Rangify(ToNumber(lhs, t), t);
-  rhs = Rangify(ToNumber(rhs, t), t);
-  if (lhs->Is(Type::NaN()) || rhs->Is(Type::NaN())) return Type::NaN();
-  if (lhs->IsRange() && rhs->IsRange()) {
-    return JSAddRanger(lhs->AsRange(), rhs->AsRange(), t);
-  }
-  // TODO(neis): Deal with numeric bitsets here and elsewhere.
-  return Type::Number();
+  // The addition must be numeric.
+  return t->operation_typer()->NumberAdd(ToNumber(lhs, t), ToNumber(rhs, t));
 }
-
-Type* Typer::Visitor::JSSubtractRanger(RangeType* lhs, RangeType* rhs,
-                                       Typer* t) {
-  double results[4];
-  results[0] = lhs->Min() - rhs->Min();
-  results[1] = lhs->Min() - rhs->Max();
-  results[2] = lhs->Max() - rhs->Min();
-  results[3] = lhs->Max() - rhs->Max();
-  // Since none of the inputs can be -0, the result cannot be -0.
-  // However, it can be nan (the subtraction of two infinities of same sign).
-  // On the other hand, if none of the "results" above is nan, then the actual
-  // result cannot be nan either.
-  int nans = 0;
-  for (int i = 0; i < 4; ++i) {
-    if (std::isnan(results[i])) ++nans;
-  }
-  if (nans == 4) return Type::NaN();  // [inf..inf] - [inf..inf] (all same sign)
-  Type* range =
-      Type::Range(array_min(results, 4), array_max(results, 4), t->zone());
-  return nans == 0 ? range : Type::Union(range, Type::NaN(), t->zone());
-  // Examples:
-  //   [-inf, +inf] - [-inf, +inf] = [-inf, +inf] \/ NaN
-  //   [-inf, -inf] - [-inf, -inf] = NaN
-  //   [-inf, -inf] - [n, +inf] = [-inf, -inf] \/ NaN
-  //   [m, +inf] - [-inf, n] = [-inf, +inf] \/ NaN
-}
-
 
 Type* Typer::Visitor::JSSubtractTyper(Type* lhs, Type* rhs, Typer* t) {
-  lhs = Rangify(ToNumber(lhs, t), t);
-  rhs = Rangify(ToNumber(rhs, t), t);
-  if (lhs->Is(Type::NaN()) || rhs->Is(Type::NaN())) return Type::NaN();
-  if (lhs->IsRange() && rhs->IsRange()) {
-    return JSSubtractRanger(lhs->AsRange(), rhs->AsRange(), t);
-  }
-  return Type::Number();
+  return t->operation_typer()->NumberSubtract(ToNumber(lhs, t),
+                                              ToNumber(rhs, t));
 }
-
 
 Type* Typer::Visitor::JSMultiplyTyper(Type* lhs, Type* rhs, Typer* t) {
-  lhs = Rangify(ToNumber(lhs, t), t);
-  rhs = Rangify(ToNumber(rhs, t), t);
-  if (lhs->Is(Type::NaN()) || rhs->Is(Type::NaN())) return Type::NaN();
-  if (lhs->IsRange() && rhs->IsRange()) {
-    double results[4];
-    double lmin = lhs->AsRange()->Min();
-    double lmax = lhs->AsRange()->Max();
-    double rmin = rhs->AsRange()->Min();
-    double rmax = rhs->AsRange()->Max();
-    results[0] = lmin * rmin;
-    results[1] = lmin * rmax;
-    results[2] = lmax * rmin;
-    results[3] = lmax * rmax;
-    // If the result may be nan, we give up on calculating a precise type,
-    // because
-    // the discontinuity makes it too complicated.  Note that even if none of
-    // the
-    // "results" above is nan, the actual result may still be, so we have to do
-    // a
-    // different check:
-    bool maybe_nan = (lhs->Maybe(t->cache_.kSingletonZero) &&
-                      (rmin == -V8_INFINITY || rmax == +V8_INFINITY)) ||
-                     (rhs->Maybe(t->cache_.kSingletonZero) &&
-                      (lmin == -V8_INFINITY || lmax == +V8_INFINITY));
-    if (maybe_nan) return t->cache_.kIntegerOrMinusZeroOrNaN;  // Giving up.
-    bool maybe_minuszero = (lhs->Maybe(t->cache_.kSingletonZero) && rmin < 0) ||
-                           (rhs->Maybe(t->cache_.kSingletonZero) && lmin < 0);
-    Type* range =
-        Type::Range(array_min(results, 4), array_max(results, 4), t->zone());
-    return maybe_minuszero ? Type::Union(range, Type::MinusZero(), t->zone())
-                           : range;
-  }
-  return Type::Number();
+  return t->operation_typer()->NumberMultiply(ToNumber(lhs, t),
+                                              ToNumber(rhs, t));
 }
-
 
 Type* Typer::Visitor::JSDivideTyper(Type* lhs, Type* rhs, Typer* t) {
-  lhs = ToNumber(lhs, t);
-  rhs = ToNumber(rhs, t);
-  if (lhs->Is(Type::NaN()) || rhs->Is(Type::NaN())) return Type::NaN();
-  // Division is tricky, so all we do is try ruling out nan.
-  // TODO(neis): try ruling out -0 as well?
-  bool maybe_nan =
-      lhs->Maybe(Type::NaN()) || rhs->Maybe(t->cache_.kZeroish) ||
-      ((lhs->Min() == -V8_INFINITY || lhs->Max() == +V8_INFINITY) &&
-       (rhs->Min() == -V8_INFINITY || rhs->Max() == +V8_INFINITY));
-  return maybe_nan ? Type::Number() : Type::OrderedNumber();
+  return t->operation_typer()->NumberDivide(ToNumber(lhs, t), ToNumber(rhs, t));
 }
-
-Type* Typer::Visitor::JSModulusRanger(RangeType* lhs, RangeType* rhs,
-                                      Typer* t) {
-  double lmin = lhs->Min();
-  double lmax = lhs->Max();
-  double rmin = rhs->Min();
-  double rmax = rhs->Max();
-
-  double labs = std::max(std::abs(lmin), std::abs(lmax));
-  double rabs = std::max(std::abs(rmin), std::abs(rmax)) - 1;
-  double abs = std::min(labs, rabs);
-  bool maybe_minus_zero = false;
-  double omin = 0;
-  double omax = 0;
-  if (lmin >= 0) {  // {lhs} positive.
-    omin = 0;
-    omax = abs;
-  } else if (lmax <= 0) {  // {lhs} negative.
-    omin = 0 - abs;
-    omax = 0;
-    maybe_minus_zero = true;
-  } else {
-    omin = 0 - abs;
-    omax = abs;
-    maybe_minus_zero = true;
-  }
-
-  Type* result = Type::Range(omin, omax, t->zone());
-  if (maybe_minus_zero)
-    result = Type::Union(result, Type::MinusZero(), t->zone());
-  return result;
-}
-
 
 Type* Typer::Visitor::JSModulusTyper(Type* lhs, Type* rhs, Typer* t) {
-  lhs = ToNumber(lhs, t);
-  rhs = ToNumber(rhs, t);
-  if (lhs->Is(Type::NaN()) || rhs->Is(Type::NaN())) return Type::NaN();
-
-  if (lhs->Maybe(Type::NaN()) || rhs->Maybe(t->cache_.kZeroish) ||
-      lhs->Min() == -V8_INFINITY || lhs->Max() == +V8_INFINITY) {
-    // Result maybe NaN.
-    return Type::Number();
-  }
-
-  lhs = Rangify(lhs, t);
-  rhs = Rangify(rhs, t);
-  if (lhs->IsRange() && rhs->IsRange()) {
-    return JSModulusRanger(lhs->AsRange(), rhs->AsRange(), t);
-  }
-  return Type::OrderedNumber();
+  return t->operation_typer()->NumberModulus(ToNumber(lhs, t),
+                                             ToNumber(rhs, t));
 }
 
 
@@ -1331,34 +1226,6 @@ Type* Typer::Visitor::TypeJSLoadProperty(Node* node) {
 
 
 Type* Typer::Visitor::TypeJSLoadNamed(Node* node) {
-  Factory* const f = isolate()->factory();
-  Handle<Name> name = NamedAccessOf(node->op()).name();
-  if (name.is_identical_to(f->prototype_string())) {
-    Type* receiver = Operand(node, 0);
-    if (receiver->Is(Type::None())) return Type::None();
-    if (receiver->IsConstant() &&
-        receiver->AsConstant()->Value()->IsJSFunction()) {
-      Handle<JSFunction> function =
-          Handle<JSFunction>::cast(receiver->AsConstant()->Value());
-      if (function->has_prototype()) {
-        // We need to add a code dependency on the initial map of the {function}
-        // in order to be notified about changes to "prototype" of {function},
-        // so we can only infer a constant type if deoptimization is enabled.
-        if (flags() & kDeoptimizationEnabled) {
-          JSFunction::EnsureHasInitialMap(function);
-          Handle<Map> initial_map(function->initial_map(), isolate());
-          dependencies()->AssumeInitialMapCantChange(initial_map);
-          return Type::Constant(handle(initial_map->prototype(), isolate()),
-                                zone());
-        }
-      }
-    } else if (receiver->IsClass() &&
-               receiver->AsClass()->Map()->IsJSFunctionMap()) {
-      Handle<Map> map = receiver->AsClass()->Map();
-      return map->has_non_instance_prototype() ? Type::Primitive()
-                                               : Type::Receiver();
-    }
-  }
   return Type::Any();
 }
 
@@ -1523,21 +1390,12 @@ Type* Typer::Visitor::TypeJSCreateBlockContext(Node* node) {
 }
 
 
-Type* Typer::Visitor::TypeJSCreateModuleContext(Node* node) {
-  // TODO(rossberg): this is probably incorrect
-  return WrapContextTypeForInput(node);
-}
-
-
 Type* Typer::Visitor::TypeJSCreateScriptContext(Node* node) {
   return WrapContextTypeForInput(node);
 }
 
 
 // JS other operators.
-
-
-Type* Typer::Visitor::TypeJSYield(Node* node) { return Type::Any(); }
 
 
 Type* Typer::Visitor::TypeJSCallConstruct(Node* node) {
@@ -1563,16 +1421,21 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
           return t->cache_.kIntegerOrMinusZeroOrNaN;
         // Unary math functions.
         case kMathAbs:
-        case kMathLog:
         case kMathExp:
+          return Type::Union(Type::PlainNumber(), Type::NaN(), t->zone());
+        case kMathLog:
         case kMathSqrt:
         case kMathCos:
         case kMathSin:
         case kMathTan:
         case kMathAcos:
+        case kMathAcosh:
         case kMathAsin:
+        case kMathAsinh:
         case kMathAtan:
+        case kMathAtanh:
         case kMathFround:
+        case kMathSign:
           return Type::Number();
         // Binary math functions.
         case kMathAtan2:
@@ -1625,12 +1488,6 @@ Type* Typer::Visitor::TypeJSCallRuntime(Node* node) {
     case Runtime::kInlineIsTypedArray:
     case Runtime::kInlineIsRegExp:
       return Type::Boolean();
-    case Runtime::kInlineDoubleLo:
-    case Runtime::kInlineDoubleHi:
-      return Type::Signed32();
-    case Runtime::kInlineConstructDouble:
-    case Runtime::kInlineMathAtan2:
-      return Type::Number();
     case Runtime::kInlineCreateIterResultObject:
     case Runtime::kInlineRegExpConstructResult:
       return Type::OtherObject();
@@ -1641,16 +1498,10 @@ Type* Typer::Visitor::TypeJSCallRuntime(Node* node) {
       return TypeUnaryOp(node, ToInteger);
     case Runtime::kInlineToLength:
       return TypeUnaryOp(node, ToLength);
-    case Runtime::kInlineToName:
-      return TypeUnaryOp(node, ToName);
     case Runtime::kInlineToNumber:
       return TypeUnaryOp(node, ToNumber);
     case Runtime::kInlineToObject:
       return TypeUnaryOp(node, ToObject);
-    case Runtime::kInlineToPrimitive:
-    case Runtime::kInlineToPrimitive_Number:
-    case Runtime::kInlineToPrimitive_String:
-      return TypeUnaryOp(node, ToPrimitive);
     case Runtime::kInlineToString:
       return TypeUnaryOp(node, ToString);
     case Runtime::kHasInPrototypeChain:
@@ -1698,17 +1549,24 @@ Type* Typer::Visitor::TypeJSStoreMessage(Node* node) {
   return nullptr;
 }
 
+Type* Typer::Visitor::TypeJSGeneratorStore(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
+
+Type* Typer::Visitor::TypeJSGeneratorRestoreContinuation(Node* node) {
+  return typer_->cache_.kSmi;
+}
+
+Type* Typer::Visitor::TypeJSGeneratorRestoreRegister(Node* node) {
+  return Type::Any();
+}
 
 Type* Typer::Visitor::TypeJSStackCheck(Node* node) { return Type::Any(); }
-
 
 // Simplified operators.
 
 Type* Typer::Visitor::TypeBooleanNot(Node* node) { return Type::Boolean(); }
-
-Type* Typer::Visitor::TypeBooleanToNumber(Node* node) {
-  return TypeUnaryOp(node, ToNumber);
-}
 
 Type* Typer::Visitor::TypeNumberEqual(Node* node) { return Type::Boolean(); }
 
@@ -1718,9 +1576,45 @@ Type* Typer::Visitor::TypeNumberLessThanOrEqual(Node* node) {
   return Type::Boolean();
 }
 
+Type* Typer::Visitor::TypeSpeculativeNumberEqual(Node* node) {
+  return Type::Boolean();
+}
+
+Type* Typer::Visitor::TypeSpeculativeNumberLessThan(Node* node) {
+  return Type::Boolean();
+}
+
+Type* Typer::Visitor::TypeSpeculativeNumberLessThanOrEqual(Node* node) {
+  return Type::Boolean();
+}
+
 Type* Typer::Visitor::TypeNumberAdd(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeNumberSubtract(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeSpeculativeNumberAdd(Node* node) {
+  return Type::Number();
+}
+
+Type* Typer::Visitor::TypeSpeculativeNumberSubtract(Node* node) {
+  return Type::Number();
+}
+
+Type* Typer::Visitor::TypeSpeculativeNumberMultiply(Node* node) {
+  return Type::Number();
+}
+
+Type* Typer::Visitor::TypeSpeculativeNumberDivide(Node* node) {
+  return Type::Number();
+}
+
+Type* Typer::Visitor::TypeSpeculativeNumberModulus(Node* node) {
+  return Type::Number();
+}
+
+Type* Typer::Visitor::TypeSpeculativeNumberShiftLeft(Node* node) {
+  return Type::Signed32();
+}
 
 Type* Typer::Visitor::TypeNumberMultiply(Node* node) { return Type::Number(); }
 
@@ -1757,7 +1651,23 @@ Type* Typer::Visitor::TypeNumberShiftRightLogical(Node* node) {
   return Type::Unsigned32();
 }
 
+Type* Typer::Visitor::TypePlainPrimitiveToNumber(Node* node) {
+  return TypeUnaryOp(node, ToNumber);
+}
+
+Type* Typer::Visitor::TypePlainPrimitiveToWord32(Node* node) {
+  return Type::Integral32();
+}
+
+Type* Typer::Visitor::TypePlainPrimitiveToFloat64(Node* node) {
+  return Type::Number();
+}
+
 Type* Typer::Visitor::TypeNumberImul(Node* node) { return Type::Signed32(); }
+
+Type* Typer::Visitor::TypeNumberAbs(Node* node) {
+  return typer_->operation_typer()->NumberAbs(Operand(node, 0));
+}
 
 Type* Typer::Visitor::TypeNumberClz32(Node* node) {
   return typer_->cache_.kZeroToThirtyTwo;
@@ -1771,9 +1681,70 @@ Type* Typer::Visitor::TypeNumberFloor(Node* node) {
   return TypeUnaryOp(node, NumberFloor);
 }
 
+Type* Typer::Visitor::TypeNumberFround(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberSign(Node* node) {
+  return TypeUnaryOp(node, NumberSign);
+}
+
+Type* Typer::Visitor::TypeNumberAcos(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberAcosh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberAsin(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberAsinh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberAtan(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberAtanh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberAtan2(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberCos(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberCosh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberExp(Node* node) {
+  return Type::Union(Type::PlainNumber(), Type::NaN(), zone());
+}
+
+// TODO(mvstanton): Is this type sufficient, or should it look like Exp()?
+Type* Typer::Visitor::TypeNumberExpm1(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberLog(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberLog1p(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberLog2(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberLog10(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberCbrt(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberMax(Node* node) {
+  return TypeBinaryOp(node, NumberMax);
+}
+
+Type* Typer::Visitor::TypeNumberMin(Node* node) {
+  return TypeBinaryOp(node, NumberMin);
+}
+
+Type* Typer::Visitor::TypeNumberPow(Node* node) { return Type::Number(); }
+
 Type* Typer::Visitor::TypeNumberRound(Node* node) {
   return TypeUnaryOp(node, NumberRound);
 }
+
+Type* Typer::Visitor::TypeNumberSin(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberSinh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberSqrt(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberTan(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeNumberTanh(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeNumberTrunc(Node* node) {
   return TypeUnaryOp(node, NumberTrunc);
@@ -1786,16 +1757,6 @@ Type* Typer::Visitor::TypeNumberToInt32(Node* node) {
 
 Type* Typer::Visitor::TypeNumberToUint32(Node* node) {
   return TypeUnaryOp(node, NumberToUint32);
-}
-
-
-Type* Typer::Visitor::TypeNumberIsHoleNaN(Node* node) {
-  return Type::Boolean();
-}
-
-
-Type* Typer::Visitor::TypePlainPrimitiveToNumber(Node* node) {
-  return TypeUnaryOp(node, ToNumber);
 }
 
 
@@ -1820,77 +1781,70 @@ Type* Typer::Visitor::TypeStringLessThanOrEqual(Node* node) {
   return Type::Boolean();
 }
 
-Type* Typer::Visitor::TypeStringToNumber(Node* node) {
-  return TypeUnaryOp(node, ToNumber);
+Type* Typer::Visitor::StringFromCharCodeTyper(Type* type, Typer* t) {
+  type = NumberToUint32(ToNumber(type, t), t);
+  Factory* f = t->isolate()->factory();
+  double min = type->Min();
+  double max = type->Max();
+  if (min == max) {
+    uint32_t code = static_cast<uint32_t>(min) & String::kMaxUtf16CodeUnitU;
+    Handle<String> string = f->LookupSingleCharacterStringFromCode(code);
+    return Type::Constant(string, t->zone());
+  }
+  return Type::String();
 }
 
-namespace {
-
-Type* ChangeRepresentation(Type* type, Type* rep, Zone* zone) {
-  return Type::Union(Type::Semantic(type, zone),
-                     Type::Representation(rep, zone), zone);
+Type* Typer::Visitor::TypeStringFromCharCode(Node* node) {
+  return TypeUnaryOp(node, StringFromCharCodeTyper);
 }
 
-}  // namespace
+Type* Typer::Visitor::TypeCheckBounds(Node* node) {
+  // TODO(bmeurer): We could do better here based on the limit.
+  return Type::Unsigned31();
+}
 
-
-Type* Typer::Visitor::TypeChangeTaggedToInt32(Node* node) {
+Type* Typer::Visitor::TypeCheckNumber(Node* node) {
   Type* arg = Operand(node, 0);
-  // TODO(neis): DCHECK(arg->Is(Type::Signed32()));
-  return ChangeRepresentation(arg, Type::UntaggedIntegral32(), zone());
+  return Type::Intersect(arg, Type::Number(), zone());
 }
 
+Type* Typer::Visitor::TypeCheckIf(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
 
-Type* Typer::Visitor::TypeChangeTaggedToUint32(Node* node) {
+Type* Typer::Visitor::TypeCheckTaggedPointer(Node* node) {
   Type* arg = Operand(node, 0);
-  // TODO(neis): DCHECK(arg->Is(Type::Unsigned32()));
-  return ChangeRepresentation(arg, Type::UntaggedIntegral32(), zone());
+  return Type::Intersect(arg, Type::TaggedPointer(), zone());
 }
 
-
-Type* Typer::Visitor::TypeChangeTaggedToFloat64(Node* node) {
+Type* Typer::Visitor::TypeCheckTaggedSigned(Node* node) {
   Type* arg = Operand(node, 0);
-  // TODO(neis): DCHECK(arg->Is(Type::Number()));
-  return ChangeRepresentation(arg, Type::UntaggedFloat64(), zone());
+  return Type::Intersect(arg, typer_->cache_.kSmi, zone());
 }
 
-
-Type* Typer::Visitor::TypeChangeInt32ToTagged(Node* node) {
-  Type* arg = Operand(node, 0);
-  // TODO(neis): DCHECK(arg->Is(Type::Signed32()));
-  Type* rep =
-      arg->Is(Type::SignedSmall()) ? Type::TaggedSigned() : Type::Tagged();
-  return ChangeRepresentation(arg, rep, zone());
+Type* Typer::Visitor::TypeCheckFloat64Hole(Node* node) {
+  Type* type = Operand(node, 0);
+  return type;
 }
 
-
-Type* Typer::Visitor::TypeChangeUint32ToTagged(Node* node) {
-  Type* arg = Operand(node, 0);
-  // TODO(neis): DCHECK(arg->Is(Type::Unsigned32()));
-  return ChangeRepresentation(arg, Type::Tagged(), zone());
+Type* Typer::Visitor::TypeCheckTaggedHole(Node* node) {
+  CheckTaggedHoleMode mode = CheckTaggedHoleModeOf(node->op());
+  Type* type = Operand(node, 0);
+  type = Type::Intersect(type, Type::NonInternal(), zone());
+  switch (mode) {
+    case CheckTaggedHoleMode::kConvertHoleToUndefined: {
+      // The hole is turned into undefined.
+      type = Type::Union(type, Type::Undefined(), zone());
+      break;
+    }
+    case CheckTaggedHoleMode::kNeverReturnHole: {
+      // We deoptimize in case of the hole.
+      break;
+    }
+  }
+  return type;
 }
-
-
-Type* Typer::Visitor::TypeChangeFloat64ToTagged(Node* node) {
-  Type* arg = Operand(node, 0);
-  // TODO(neis): CHECK(arg.upper->Is(Type::Number()));
-  return ChangeRepresentation(arg, Type::Tagged(), zone());
-}
-
-
-Type* Typer::Visitor::TypeChangeBoolToBit(Node* node) {
-  Type* arg = Operand(node, 0);
-  // TODO(neis): DCHECK(arg.upper->Is(Type::Boolean()));
-  return ChangeRepresentation(arg, Type::UntaggedBit(), zone());
-}
-
-
-Type* Typer::Visitor::TypeChangeBitToBool(Node* node) {
-  Type* arg = Operand(node, 0);
-  // TODO(neis): DCHECK(arg.upper->Is(Type::Boolean()));
-  return ChangeRepresentation(arg, Type::TaggedPointer(), zone());
-}
-
 
 Type* Typer::Visitor::TypeAllocate(Node* node) { return Type::TaggedPointer(); }
 
@@ -1949,9 +1903,9 @@ Type* Typer::Visitor::TypeLoadBuffer(Node* node) {
   // TODO(bmeurer): This typing is not yet correct. Since we can still access
   // out of bounds, the type in the general case has to include Undefined.
   switch (BufferAccessOf(node->op()).external_array_type()) {
-#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype, size) \
-  case kExternal##Type##Array:                          \
-    return typer_->cache_.k##Type;
+#define TYPED_ARRAY_CASE(ElemType, type, TYPE, ctype, size) \
+  case kExternal##ElemType##Array:                          \
+    return Type::Union(typer_->cache_.k##ElemType, Type::Undefined(), zone());
     TYPED_ARRAYS(TYPED_ARRAY_CASE)
 #undef TYPED_ARRAY_CASE
   }
@@ -1982,6 +1936,9 @@ Type* Typer::Visitor::TypeStoreElement(Node* node) {
   return nullptr;
 }
 
+Type* Typer::Visitor::TypeObjectIsCallable(Node* node) {
+  return TypeUnaryOp(node, ObjectIsCallable);
+}
 
 Type* Typer::Visitor::TypeObjectIsNumber(Node* node) {
   return TypeUnaryOp(node, ObjectIsNumber);
@@ -1997,6 +1954,9 @@ Type* Typer::Visitor::TypeObjectIsSmi(Node* node) {
   return TypeUnaryOp(node, ObjectIsSmi);
 }
 
+Type* Typer::Visitor::TypeObjectIsString(Node* node) {
+  return TypeUnaryOp(node, ObjectIsString);
+}
 
 Type* Typer::Visitor::TypeObjectIsUndetectable(Node* node) {
   return TypeUnaryOp(node, ObjectIsUndetectable);
@@ -2004,6 +1964,10 @@ Type* Typer::Visitor::TypeObjectIsUndetectable(Node* node) {
 
 
 // Machine operators.
+
+Type* Typer::Visitor::TypeDebugBreak(Node* node) { return Type::None(); }
+
+Type* Typer::Visitor::TypeComment(Node* node) { return Type::None(); }
 
 Type* Typer::Visitor::TypeLoad(Node* node) { return Type::Any(); }
 
@@ -2111,6 +2075,9 @@ Type* Typer::Visitor::TypeInt32SubWithOverflow(Node* node) {
 
 Type* Typer::Visitor::TypeInt32Mul(Node* node) { return Type::Integral32(); }
 
+Type* Typer::Visitor::TypeInt32MulWithOverflow(Node* node) {
+  return Type::Internal();
+}
 
 Type* Typer::Visitor::TypeInt32MulHigh(Node* node) { return Type::Signed32(); }
 
@@ -2166,7 +2133,6 @@ Type* Typer::Visitor::TypeInt64SubWithOverflow(Node* node) {
 
 Type* Typer::Visitor::TypeInt64Mul(Node* node) { return Type::Internal(); }
 
-
 Type* Typer::Visitor::TypeInt64Div(Node* node) { return Type::Internal(); }
 
 
@@ -2194,6 +2160,9 @@ Type* Typer::Visitor::TypeUint64LessThanOrEqual(Node* node) {
 
 Type* Typer::Visitor::TypeUint64Mod(Node* node) { return Type::Internal(); }
 
+Type* Typer::Visitor::TypeBitcastWordToTagged(Node* node) {
+  return Type::TaggedPointer();
+}
 
 Type* Typer::Visitor::TypeChangeFloat32ToFloat64(Node* node) {
   return Type::Intersect(Type::Number(), Type::UntaggedFloat64(), zone());
@@ -2204,6 +2173,9 @@ Type* Typer::Visitor::TypeChangeFloat64ToInt32(Node* node) {
   return Type::Intersect(Type::Signed32(), Type::UntaggedIntegral32(), zone());
 }
 
+Type* Typer::Visitor::TypeNumberSilenceNaN(Node* node) {
+  return Type::Number();
+}
 
 Type* Typer::Visitor::TypeChangeFloat64ToUint32(Node* node) {
   return Type::Intersect(Type::Unsigned32(), Type::UntaggedIntegral32(),
@@ -2250,36 +2222,60 @@ Type* Typer::Visitor::TypeChangeInt32ToFloat64(Node* node) {
   return Type::Intersect(Type::Signed32(), Type::UntaggedFloat64(), zone());
 }
 
+Type* Typer::Visitor::TypeFloat64SilenceNaN(Node* node) {
+  return Type::UntaggedFloat64();
+}
 
 Type* Typer::Visitor::TypeChangeInt32ToInt64(Node* node) {
   return Type::Internal();
 }
 
-
 Type* Typer::Visitor::TypeChangeUint32ToFloat64(Node* node) {
   return Type::Intersect(Type::Unsigned32(), Type::UntaggedFloat64(), zone());
 }
-
 
 Type* Typer::Visitor::TypeChangeUint32ToUint64(Node* node) {
   return Type::Internal();
 }
 
+Type* Typer::Visitor::TypeImpossibleToWord32(Node* node) {
+  return Type::None();
+}
+
+Type* Typer::Visitor::TypeImpossibleToWord64(Node* node) {
+  return Type::None();
+}
+
+Type* Typer::Visitor::TypeImpossibleToFloat32(Node* node) {
+  return Type::None();
+}
+
+Type* Typer::Visitor::TypeImpossibleToFloat64(Node* node) {
+  return Type::None();
+}
+
+Type* Typer::Visitor::TypeImpossibleToTagged(Node* node) {
+  return Type::None();
+}
+
+Type* Typer::Visitor::TypeImpossibleToBit(Node* node) { return Type::None(); }
 
 Type* Typer::Visitor::TypeTruncateFloat64ToFloat32(Node* node) {
   return Type::Intersect(Type::Number(), Type::UntaggedFloat32(), zone());
 }
 
-
-Type* Typer::Visitor::TypeTruncateFloat64ToInt32(Node* node) {
-  return Type::Intersect(Type::Signed32(), Type::UntaggedIntegral32(), zone());
+Type* Typer::Visitor::TypeTruncateFloat64ToWord32(Node* node) {
+  return Type::Intersect(Type::Integral32(), Type::UntaggedIntegral32(),
+                         zone());
 }
-
 
 Type* Typer::Visitor::TypeTruncateInt64ToInt32(Node* node) {
   return Type::Intersect(Type::Signed32(), Type::UntaggedIntegral32(), zone());
 }
 
+Type* Typer::Visitor::TypeRoundFloat64ToInt32(Node* node) {
+  return Type::Intersect(Type::Signed32(), Type::UntaggedIntegral32(), zone());
+}
 
 Type* Typer::Visitor::TypeRoundInt32ToFloat32(Node* node) {
   return Type::Intersect(Type::PlainNumber(), Type::UntaggedFloat32(), zone());
@@ -2336,17 +2332,16 @@ Type* Typer::Visitor::TypeFloat32Add(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat32Sub(Node* node) { return Type::Number(); }
 
+Type* Typer::Visitor::TypeFloat32SubPreserveNan(Node* node) {
+  return Type::Number();
+}
+
+Type* Typer::Visitor::TypeFloat32Neg(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat32Mul(Node* node) { return Type::Number(); }
 
 
 Type* Typer::Visitor::TypeFloat32Div(Node* node) { return Type::Number(); }
-
-
-Type* Typer::Visitor::TypeFloat32Max(Node* node) { return Type::Number(); }
-
-
-Type* Typer::Visitor::TypeFloat32Min(Node* node) { return Type::Number(); }
 
 
 Type* Typer::Visitor::TypeFloat32Abs(Node* node) {
@@ -2376,6 +2371,11 @@ Type* Typer::Visitor::TypeFloat64Add(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat64Sub(Node* node) { return Type::Number(); }
 
+Type* Typer::Visitor::TypeFloat64SubPreserveNan(Node* node) {
+  return Type::Number();
+}
+
+Type* Typer::Visitor::TypeFloat64Neg(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat64Mul(Node* node) { return Type::Number(); }
 
@@ -2397,9 +2397,49 @@ Type* Typer::Visitor::TypeFloat64Abs(Node* node) {
   return Type::Number();
 }
 
+Type* Typer::Visitor::TypeFloat64Acos(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Acosh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Asin(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Asinh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Atan(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Atanh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Atan2(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Cbrt(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Cos(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Cosh(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Exp(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Expm1(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Log(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Log1p(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Log10(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Log2(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Pow(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Sin(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Sinh(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat64Sqrt(Node* node) { return Type::Number(); }
 
+Type* Typer::Visitor::TypeFloat64Tan(Node* node) { return Type::Number(); }
+
+Type* Typer::Visitor::TypeFloat64Tanh(Node* node) { return Type::Number(); }
 
 Type* Typer::Visitor::TypeFloat64Equal(Node* node) { return Type::Boolean(); }
 
@@ -2501,10 +2541,23 @@ Type* Typer::Visitor::TypeLoadParentFramePointer(Node* node) {
   return Type::Internal();
 }
 
+Type* Typer::Visitor::TypeUnalignedLoad(Node* node) { return Type::Any(); }
+
+Type* Typer::Visitor::TypeUnalignedStore(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
+
 Type* Typer::Visitor::TypeCheckedLoad(Node* node) { return Type::Any(); }
 
-
 Type* Typer::Visitor::TypeCheckedStore(Node* node) {
+  UNREACHABLE();
+  return nullptr;
+}
+
+Type* Typer::Visitor::TypeAtomicLoad(Node* node) { return Type::Any(); }
+
+Type* Typer::Visitor::TypeAtomicStore(Node* node) {
   UNREACHABLE();
   return nullptr;
 }
@@ -2521,8 +2574,25 @@ Type* Typer::Visitor::TypeWord32PairShr(Node* node) { return Type::Internal(); }
 
 Type* Typer::Visitor::TypeWord32PairSar(Node* node) { return Type::Internal(); }
 
-// Heap constants.
+// SIMD type methods.
 
+#define SIMD_RETURN_SIMD(Name) \
+  Type* Typer::Visitor::Type##Name(Node* node) { return Type::Simd(); }
+MACHINE_SIMD_RETURN_SIMD_OP_LIST(SIMD_RETURN_SIMD)
+MACHINE_SIMD_GENERIC_OP_LIST(SIMD_RETURN_SIMD)
+#undef SIMD_RETURN_SIMD
+
+#define SIMD_RETURN_NUM(Name) \
+  Type* Typer::Visitor::Type##Name(Node* node) { return Type::Number(); }
+MACHINE_SIMD_RETURN_NUM_OP_LIST(SIMD_RETURN_NUM)
+#undef SIMD_RETURN_NUM
+
+#define SIMD_RETURN_BOOL(Name) \
+  Type* Typer::Visitor::Type##Name(Node* node) { return Type::Boolean(); }
+MACHINE_SIMD_RETURN_BOOL_OP_LIST(SIMD_RETURN_BOOL)
+#undef SIMD_RETURN_BOOL
+
+// Heap constants.
 
 Type* Typer::Visitor::TypeConstant(Handle<Object> value) {
   if (value->IsJSTypedArray()) {

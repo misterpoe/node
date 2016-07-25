@@ -14,6 +14,7 @@ namespace v8 {
 namespace internal {
 
 CallPrinter::CallPrinter(Isolate* isolate, bool is_builtin) {
+  isolate_ = isolate;
   output_ = NULL;
   size_ = 0;
   pos_ = 0;
@@ -98,13 +99,6 @@ void CallPrinter::VisitVariableDeclaration(VariableDeclaration* node) {}
 
 
 void CallPrinter::VisitFunctionDeclaration(FunctionDeclaration* node) {}
-
-
-void CallPrinter::VisitImportDeclaration(ImportDeclaration* node) {
-}
-
-
-void CallPrinter::VisitExportDeclaration(ExportDeclaration* node) {}
 
 
 void CallPrinter::VisitExpressionStatement(ExpressionStatement* node) {
@@ -192,10 +186,11 @@ void CallPrinter::VisitForInStatement(ForInStatement* node) {
 
 
 void CallPrinter::VisitForOfStatement(ForOfStatement* node) {
-  Find(node->each());
   Find(node->assign_iterator());
-  Find(node->body());
   Find(node->next_result());
+  Find(node->result_done());
+  Find(node->assign_each());
+  Find(node->body());
 }
 
 
@@ -439,13 +434,13 @@ void CallPrinter::PrintLiteral(Object* value, bool quote) {
     if (quote) Print("\"");
     Print("%s", String::cast(object)->ToCString().get());
     if (quote) Print("\"");
-  } else if (object->IsNull()) {
+  } else if (object->IsNull(isolate_)) {
     Print("null");
-  } else if (object->IsTrue()) {
+  } else if (object->IsTrue(isolate_)) {
     Print("true");
-  } else if (object->IsFalse()) {
+  } else if (object->IsFalse(isolate_)) {
     Print("false");
-  } else if (object->IsUndefined()) {
+  } else if (object->IsUndefined(isolate_)) {
     Print("undefined");
   } else if (object->IsNumber()) {
     Print("%g", object->Number());
@@ -476,494 +471,13 @@ static int FormatSlotNode(Vector<char>* buf, Expression* node,
   return pos;
 }
 
-
-PrettyPrinter::PrettyPrinter(Isolate* isolate) {
-  output_ = NULL;
-  size_ = 0;
-  pos_ = 0;
-  InitializeAstVisitor(isolate);
-}
-
-
-PrettyPrinter::~PrettyPrinter() {
-  DeleteArray(output_);
-}
-
-
-void PrettyPrinter::VisitBlock(Block* node) {
-  if (!node->ignore_completion_value()) Print("{ ");
-  PrintStatements(node->statements());
-  if (node->statements()->length() > 0) Print(" ");
-  if (!node->ignore_completion_value()) Print("}");
-}
-
-
-void PrettyPrinter::VisitVariableDeclaration(VariableDeclaration* node) {
-  Print("var ");
-  PrintLiteral(node->proxy()->name(), false);
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitFunctionDeclaration(FunctionDeclaration* node) {
-  Print("function ");
-  PrintLiteral(node->proxy()->name(), false);
-  Print(" = ");
-  PrintFunctionLiteral(node->fun());
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitImportDeclaration(ImportDeclaration* node) {
-  Print("import ");
-  PrintLiteral(node->proxy()->name(), false);
-  Print(" from ");
-  PrintLiteral(node->module_specifier()->string(), true);
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitExportDeclaration(ExportDeclaration* node) {
-  Print("export ");
-  PrintLiteral(node->proxy()->name(), false);
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitExpressionStatement(ExpressionStatement* node) {
-  Visit(node->expression());
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitEmptyStatement(EmptyStatement* node) {
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitSloppyBlockFunctionStatement(
-    SloppyBlockFunctionStatement* node) {
-  Visit(node->statement());
-}
-
-
-void PrettyPrinter::VisitIfStatement(IfStatement* node) {
-  Print("if (");
-  Visit(node->condition());
-  Print(") ");
-  Visit(node->then_statement());
-  if (node->HasElseStatement()) {
-    Print(" else ");
-    Visit(node->else_statement());
-  }
-}
-
-
-void PrettyPrinter::VisitContinueStatement(ContinueStatement* node) {
-  Print("continue");
-  ZoneList<const AstRawString*>* labels = node->target()->labels();
-  if (labels != NULL) {
-    Print(" ");
-    DCHECK(labels->length() > 0);  // guaranteed to have at least one entry
-    PrintLiteral(labels->at(0), false);  // any label from the list is fine
-  }
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitBreakStatement(BreakStatement* node) {
-  Print("break");
-  ZoneList<const AstRawString*>* labels = node->target()->labels();
-  if (labels != NULL) {
-    Print(" ");
-    DCHECK(labels->length() > 0);  // guaranteed to have at least one entry
-    PrintLiteral(labels->at(0), false);  // any label from the list is fine
-  }
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitReturnStatement(ReturnStatement* node) {
-  Print("return ");
-  Visit(node->expression());
-  Print(";");
-}
-
-
-void PrettyPrinter::VisitWithStatement(WithStatement* node) {
-  Print("with (");
-  Visit(node->expression());
-  Print(") ");
-  Visit(node->statement());
-}
-
-
-void PrettyPrinter::VisitSwitchStatement(SwitchStatement* node) {
-  PrintLabels(node->labels());
-  Print("switch (");
-  Visit(node->tag());
-  Print(") { ");
-  ZoneList<CaseClause*>* cases = node->cases();
-  for (int i = 0; i < cases->length(); i++)
-    Visit(cases->at(i));
-  Print("}");
-}
-
-
-void PrettyPrinter::VisitCaseClause(CaseClause* clause) {
-  if (clause->is_default()) {
-    Print("default");
-  } else {
-    Print("case ");
-    Visit(clause->label());
-  }
-  Print(": ");
-  PrintStatements(clause->statements());
-  if (clause->statements()->length() > 0)
-    Print(" ");
-}
-
-
-void PrettyPrinter::VisitDoWhileStatement(DoWhileStatement* node) {
-  PrintLabels(node->labels());
-  Print("do ");
-  Visit(node->body());
-  Print(" while (");
-  Visit(node->cond());
-  Print(");");
-}
-
-
-void PrettyPrinter::VisitWhileStatement(WhileStatement* node) {
-  PrintLabels(node->labels());
-  Print("while (");
-  Visit(node->cond());
-  Print(") ");
-  Visit(node->body());
-}
-
-
-void PrettyPrinter::VisitForStatement(ForStatement* node) {
-  PrintLabels(node->labels());
-  Print("for (");
-  if (node->init() != NULL) {
-    Visit(node->init());
-    Print(" ");
-  } else {
-    Print("; ");
-  }
-  if (node->cond() != NULL) Visit(node->cond());
-  Print("; ");
-  if (node->next() != NULL) {
-    Visit(node->next());  // prints extra ';', unfortunately
-    // to fix: should use Expression for next
-  }
-  Print(") ");
-  Visit(node->body());
-}
-
-
-void PrettyPrinter::VisitForInStatement(ForInStatement* node) {
-  PrintLabels(node->labels());
-  Print("for (");
-  Visit(node->each());
-  Print(" in ");
-  Visit(node->enumerable());
-  Print(") ");
-  Visit(node->body());
-}
-
-
-void PrettyPrinter::VisitForOfStatement(ForOfStatement* node) {
-  PrintLabels(node->labels());
-  Print("for (");
-  Visit(node->each());
-  Print(" of ");
-  Visit(node->iterable());
-  Print(") ");
-  Visit(node->body());
-}
-
-
-void PrettyPrinter::VisitTryCatchStatement(TryCatchStatement* node) {
-  Print("try ");
-  Visit(node->try_block());
-  Print(" catch (");
-  const bool quote = false;
-  PrintLiteral(node->variable()->name(), quote);
-  Print(") ");
-  Visit(node->catch_block());
-}
-
-
-void PrettyPrinter::VisitTryFinallyStatement(TryFinallyStatement* node) {
-  Print("try ");
-  Visit(node->try_block());
-  Print(" finally ");
-  Visit(node->finally_block());
-}
-
-
-void PrettyPrinter::VisitDebuggerStatement(DebuggerStatement* node) {
-  Print("debugger ");
-}
-
-
-void PrettyPrinter::VisitFunctionLiteral(FunctionLiteral* node) {
-  Print("(");
-  PrintFunctionLiteral(node);
-  Print(")");
-}
-
-
-void PrettyPrinter::VisitClassLiteral(ClassLiteral* node) {
-  Print("(class ");
-  PrintLiteral(node->constructor()->name(), false);
-  if (node->extends()) {
-    Print(" extends ");
-    Visit(node->extends());
-  }
-  Print(" { ");
-  for (int i = 0; i < node->properties()->length(); i++) {
-    PrintObjectLiteralProperty(node->properties()->at(i));
-  }
-  Print(" })");
-}
-
-
-void PrettyPrinter::VisitNativeFunctionLiteral(NativeFunctionLiteral* node) {
-  Print("(");
-  PrintLiteral(node->name(), false);
-  Print(")");
-}
-
-
-void PrettyPrinter::VisitDoExpression(DoExpression* node) {
-  Print("(do {");
-  PrintStatements(node->block()->statements());
-  Print("})");
-}
-
-
-void PrettyPrinter::VisitConditional(Conditional* node) {
-  Visit(node->condition());
-  Print(" ? ");
-  Visit(node->then_expression());
-  Print(" : ");
-  Visit(node->else_expression());
-}
-
-
-void PrettyPrinter::VisitLiteral(Literal* node) {
-  PrintLiteral(node->value(), true);
-}
-
-
-void PrettyPrinter::VisitRegExpLiteral(RegExpLiteral* node) {
-  Print(" RegExp(");
-  PrintLiteral(node->pattern(), false);
-  Print(",");
-  if (node->flags() & RegExp::kGlobal) Print("g");
-  if (node->flags() & RegExp::kIgnoreCase) Print("i");
-  if (node->flags() & RegExp::kMultiline) Print("m");
-  if (node->flags() & RegExp::kUnicode) Print("u");
-  if (node->flags() & RegExp::kSticky) Print("y");
-  Print(") ");
-}
-
-
-void PrettyPrinter::VisitObjectLiteral(ObjectLiteral* node) {
-  Print("{ ");
-  for (int i = 0; i < node->properties()->length(); i++) {
-    if (i != 0) Print(",");
-    PrintObjectLiteralProperty(node->properties()->at(i));
-  }
-  Print(" }");
-}
-
-
-void PrettyPrinter::PrintObjectLiteralProperty(
-    ObjectLiteralProperty* property) {
-  // TODO(arv): Better printing of methods etc.
-  Print(" ");
-  Visit(property->key());
-  Print(": ");
-  Visit(property->value());
-}
-
-
-void PrettyPrinter::VisitArrayLiteral(ArrayLiteral* node) {
-  Print("[ ");
-  Print(" literal_index = %d", node->literal_index());
-  for (int i = 0; i < node->values()->length(); i++) {
-    if (i != 0) Print(",");
-    Visit(node->values()->at(i));
-  }
-  Print(" ]");
-}
-
-
-void PrettyPrinter::VisitVariableProxy(VariableProxy* node) {
-  PrintLiteral(node->name(), false);
-}
-
-
-void PrettyPrinter::VisitAssignment(Assignment* node) {
-  Visit(node->target());
-  Print(" %s ", Token::String(node->op()));
-  Visit(node->value());
-}
-
-
-void PrettyPrinter::VisitYield(Yield* node) {
-  Print("yield ");
-  Visit(node->expression());
-}
-
-
-void PrettyPrinter::VisitThrow(Throw* node) {
-  Print("throw ");
-  Visit(node->exception());
-}
-
-
-void PrettyPrinter::VisitProperty(Property* node) {
-  Expression* key = node->key();
-  Literal* literal = key->AsLiteral();
-  if (literal != NULL && literal->value()->IsInternalizedString()) {
-    Print("(");
-    Visit(node->obj());
-    Print(").");
-    PrintLiteral(literal->value(), false);
-  } else {
-    Visit(node->obj());
-    Print("[");
-    Visit(key);
-    Print("]");
-  }
-}
-
-
-void PrettyPrinter::VisitCall(Call* node) {
-  Visit(node->expression());
-  PrintArguments(node->arguments());
-}
-
-
-void PrettyPrinter::VisitCallNew(CallNew* node) {
-  Print("new (");
-  Visit(node->expression());
-  Print(")");
-  PrintArguments(node->arguments());
-}
-
-
-void PrettyPrinter::VisitCallRuntime(CallRuntime* node) {
-  Print("%%%s\n", node->debug_name());
-  PrintArguments(node->arguments());
-}
-
-
-void PrettyPrinter::VisitUnaryOperation(UnaryOperation* node) {
-  Token::Value op = node->op();
-  bool needsSpace =
-      op == Token::DELETE || op == Token::TYPEOF || op == Token::VOID;
-  Print("(%s%s", Token::String(op), needsSpace ? " " : "");
-  Visit(node->expression());
-  Print(")");
-}
-
-
-void PrettyPrinter::VisitCountOperation(CountOperation* node) {
-  Print("(");
-  if (node->is_prefix()) Print("%s", Token::String(node->op()));
-  Visit(node->expression());
-  if (node->is_postfix()) Print("%s", Token::String(node->op()));
-  Print(")");
-}
-
-
-void PrettyPrinter::VisitBinaryOperation(BinaryOperation* node) {
-  Print("(");
-  Visit(node->left());
-  Print(" %s ", Token::String(node->op()));
-  Visit(node->right());
-  Print(")");
-}
-
-
-void PrettyPrinter::VisitCompareOperation(CompareOperation* node) {
-  Print("(");
-  Visit(node->left());
-  Print(" %s ", Token::String(node->op()));
-  Visit(node->right());
-  Print(")");
-}
-
-
-void PrettyPrinter::VisitSpread(Spread* node) {
-  Print("(...");
-  Visit(node->expression());
-  Print(")");
-}
-
-
-void PrettyPrinter::VisitEmptyParentheses(EmptyParentheses* node) {
-  Print("()");
-}
-
-
-void PrettyPrinter::VisitThisFunction(ThisFunction* node) {
-  Print("<this-function>");
-}
-
-
-void PrettyPrinter::VisitSuperPropertyReference(SuperPropertyReference* node) {
-  Print("<super-property-reference>");
-}
-
-
-void PrettyPrinter::VisitSuperCallReference(SuperCallReference* node) {
-  Print("<super-call-reference>");
-}
-
-
-void PrettyPrinter::VisitRewritableExpression(RewritableExpression* node) {
-  Visit(node->expression());
-}
-
-
-const char* PrettyPrinter::Print(AstNode* node) {
+const char* AstPrinter::Print(AstNode* node) {
   Init();
   Visit(node);
   return output_;
 }
 
-
-const char* PrettyPrinter::PrintExpression(FunctionLiteral* program) {
-  Init();
-  ExpressionStatement* statement =
-    program->body()->at(0)->AsExpressionStatement();
-  Visit(statement->expression());
-  return output_;
-}
-
-
-const char* PrettyPrinter::PrintProgram(FunctionLiteral* program) {
-  Init();
-  PrintStatements(program->body());
-  Print("\n");
-  return output_;
-}
-
-
-void PrettyPrinter::PrintOut(Isolate* isolate, AstNode* node) {
-  PrettyPrinter printer(isolate);
-  PrintF("%s\n", printer.Print(node));
-}
-
-
-void PrettyPrinter::Init() {
+void AstPrinter::Init() {
   if (size_ == 0) {
     DCHECK(output_ == NULL);
     const int initial_size = 256;
@@ -974,8 +488,7 @@ void PrettyPrinter::Init() {
   pos_ = 0;
 }
 
-
-void PrettyPrinter::Print(const char* format, ...) {
+void AstPrinter::Print(const char* format, ...) {
   for (;;) {
     va_list arguments;
     va_start(arguments, format);
@@ -1001,17 +514,7 @@ void PrettyPrinter::Print(const char* format, ...) {
   }
 }
 
-
-void PrettyPrinter::PrintStatements(ZoneList<Statement*>* statements) {
-  if (statements == NULL) return;
-  for (int i = 0; i < statements->length(); i++) {
-    if (i != 0) Print(" ");
-    Visit(statements->at(i));
-  }
-}
-
-
-void PrettyPrinter::PrintLabels(ZoneList<const AstRawString*>* labels) {
+void AstPrinter::PrintLabels(ZoneList<const AstRawString*>* labels) {
   if (labels != NULL) {
     for (int i = 0; i < labels->length(); i++) {
       PrintLiteral(labels->at(i), false);
@@ -1020,18 +523,7 @@ void PrettyPrinter::PrintLabels(ZoneList<const AstRawString*>* labels) {
   }
 }
 
-
-void PrettyPrinter::PrintArguments(ZoneList<Expression*>* arguments) {
-  Print("(");
-  for (int i = 0; i < arguments->length(); i++) {
-    if (i != 0) Print(", ");
-    Visit(arguments->at(i));
-  }
-  Print(")");
-}
-
-
-void PrettyPrinter::PrintLiteral(Handle<Object> value, bool quote) {
+void AstPrinter::PrintLiteral(Handle<Object> value, bool quote) {
   Object* object = *value;
   if (object->IsString()) {
     String* string = String::cast(object);
@@ -1040,13 +532,13 @@ void PrettyPrinter::PrintLiteral(Handle<Object> value, bool quote) {
       Print("%c", string->Get(i));
     }
     if (quote) Print("\"");
-  } else if (object->IsNull()) {
+  } else if (object->IsNull(isolate_)) {
     Print("null");
-  } else if (object->IsTrue()) {
+  } else if (object->IsTrue(isolate_)) {
     Print("true");
-  } else if (object->IsFalse()) {
+  } else if (object->IsFalse(isolate_)) {
     Print("false");
-  } else if (object->IsUndefined()) {
+  } else if (object->IsUndefined(isolate_)) {
     Print("undefined");
   } else if (object->IsNumber()) {
     Print("%g", object->Number());
@@ -1055,7 +547,8 @@ void PrettyPrinter::PrintLiteral(Handle<Object> value, bool quote) {
     if (object->IsJSFunction()) {
       Print("JS-Function");
     } else if (object->IsJSArray()) {
-      Print("JS-array[%u]", JSArray::cast(object)->length());
+      Print("JS-array[%u]",
+            Smi::cast(JSArray::cast(object)->length())->value());
     } else if (object->IsJSObject()) {
       Print("JS-Object");
     } else {
@@ -1064,42 +557,12 @@ void PrettyPrinter::PrintLiteral(Handle<Object> value, bool quote) {
   } else if (object->IsFixedArray()) {
     Print("FixedArray");
   } else {
-    Print("<unknown literal %p>", object);
+    Print("<unknown literal %p>", static_cast<void*>(object));
   }
 }
 
-
-void PrettyPrinter::PrintLiteral(const AstRawString* value, bool quote) {
+void AstPrinter::PrintLiteral(const AstRawString* value, bool quote) {
   PrintLiteral(value->string(), quote);
-}
-
-
-void PrettyPrinter::PrintParameters(Scope* scope) {
-  Print("(");
-  for (int i = 0; i < scope->num_parameters(); i++) {
-    if (i  > 0) Print(", ");
-    PrintLiteral(scope->parameter(i)->name(), false);
-  }
-  Print(")");
-}
-
-
-void PrettyPrinter::PrintDeclarations(ZoneList<Declaration*>* declarations) {
-  for (int i = 0; i < declarations->length(); i++) {
-    if (i > 0) Print(" ");
-    Visit(declarations->at(i));
-  }
-}
-
-
-void PrettyPrinter::PrintFunctionLiteral(FunctionLiteral* function) {
-  Print("function ");
-  PrintLiteral(function->name(), false);
-  PrintParameters(function->scope());
-  Print(" { ");
-  PrintDeclarations(function->scope()->declarations());
-  PrintStatements(function->body());
-  Print(" }");
 }
 
 
@@ -1132,12 +595,14 @@ class IndentedScope BASE_EMBEDDED {
 
 //-----------------------------------------------------------------------------
 
-
-AstPrinter::AstPrinter(Isolate* isolate) : PrettyPrinter(isolate), indent_(0) {}
-
+AstPrinter::AstPrinter(Isolate* isolate)
+    : output_(nullptr), size_(0), pos_(0), indent_(0) {
+  InitializeAstVisitor(isolate);
+}
 
 AstPrinter::~AstPrinter() {
   DCHECK(indent_ == 0);
+  DeleteArray(output_);
 }
 
 
@@ -1145,7 +610,7 @@ void AstPrinter::PrintIndented(const char* txt) {
   for (int i = 0; i < indent_; i++) {
     Print(". ");
   }
-  Print(txt);
+  Print("%s", txt);
 }
 
 
@@ -1191,13 +656,17 @@ void AstPrinter::PrintIndentedVisit(const char* s, AstNode* node) {
 const char* AstPrinter::PrintProgram(FunctionLiteral* program) {
   Init();
   { IndentedScope indent(this, "FUNC", program->position());
+    PrintIndented("KIND");
+    Print(" %d\n", program->kind());
+    PrintIndented("YIELD COUNT");
+    Print(" %d\n", program->yield_count());
     PrintLiteralIndented("NAME", program->name(), true);
     PrintLiteralIndented("INFERRED NAME", program->inferred_name(), true);
     PrintParameters(program->scope());
     PrintDeclarations(program->scope()->declarations());
     PrintStatements(program->body());
   }
-  return Output();
+  return output_;
 }
 
 
@@ -1205,7 +674,7 @@ void AstPrinter::PrintOut(Isolate* isolate, AstNode* node) {
   AstPrinter printer(isolate);
   printer.Init();
   printer.Visit(node);
-  PrintF("%s", printer.Output());
+  PrintF("%s", printer.output_);
 }
 
 
@@ -1267,19 +736,6 @@ void AstPrinter::VisitFunctionDeclaration(FunctionDeclaration* node) {
   Print(" = function ");
   PrintLiteral(node->fun()->name(), false);
   Print("\n");
-}
-
-
-void AstPrinter::VisitImportDeclaration(ImportDeclaration* node) {
-  IndentedScope indent(this, "IMPORT", node->position());
-  PrintLiteralIndented("NAME", node->proxy()->name(), true);
-  PrintLiteralIndented("FROM", node->module_specifier()->string(), true);
-}
-
-
-void AstPrinter::VisitExportDeclaration(ExportDeclaration* node) {
-  IndentedScope indent(this, "EXPORT", node->position());
-  PrintLiteral(node->proxy()->name(), true);
 }
 
 
@@ -1359,6 +815,8 @@ void AstPrinter::VisitCaseClause(CaseClause* clause) {
 
 void AstPrinter::VisitDoWhileStatement(DoWhileStatement* node) {
   IndentedScope indent(this, "DO", node->position());
+  PrintIndented("YIELD COUNT");
+  Print(" %d\n", node->yield_count());
   PrintLabelsIndented(node->labels());
   PrintIndentedVisit("BODY", node->body());
   PrintIndentedVisit("COND", node->cond());
@@ -1367,6 +825,8 @@ void AstPrinter::VisitDoWhileStatement(DoWhileStatement* node) {
 
 void AstPrinter::VisitWhileStatement(WhileStatement* node) {
   IndentedScope indent(this, "WHILE", node->position());
+  PrintIndented("YIELD COUNT");
+  Print(" %d\n", node->yield_count());
   PrintLabelsIndented(node->labels());
   PrintIndentedVisit("COND", node->cond());
   PrintIndentedVisit("BODY", node->body());
@@ -1375,6 +835,8 @@ void AstPrinter::VisitWhileStatement(WhileStatement* node) {
 
 void AstPrinter::VisitForStatement(ForStatement* node) {
   IndentedScope indent(this, "FOR", node->position());
+  PrintIndented("YIELD COUNT");
+  Print(" %d\n", node->yield_count());
   PrintLabelsIndented(node->labels());
   if (node->init()) PrintIndentedVisit("INIT", node->init());
   if (node->cond()) PrintIndentedVisit("COND", node->cond());
@@ -1385,6 +847,8 @@ void AstPrinter::VisitForStatement(ForStatement* node) {
 
 void AstPrinter::VisitForInStatement(ForInStatement* node) {
   IndentedScope indent(this, "FOR IN", node->position());
+  PrintIndented("YIELD COUNT");
+  Print(" %d\n", node->yield_count());
   PrintIndentedVisit("FOR", node->each());
   PrintIndentedVisit("IN", node->enumerable());
   PrintIndentedVisit("BODY", node->body());
@@ -1393,19 +857,19 @@ void AstPrinter::VisitForInStatement(ForInStatement* node) {
 
 void AstPrinter::VisitForOfStatement(ForOfStatement* node) {
   IndentedScope indent(this, "FOR OF", node->position());
-  PrintIndentedVisit("FOR", node->each());
-  PrintIndentedVisit("OF", node->iterable());
-  PrintIndentedVisit("BODY", node->body());
+  PrintIndented("YIELD COUNT");
+  Print(" %d\n", node->yield_count());
   PrintIndentedVisit("INIT", node->assign_iterator());
   PrintIndentedVisit("NEXT", node->next_result());
-  PrintIndentedVisit("EACH", node->assign_each());
   PrintIndentedVisit("DONE", node->result_done());
+  PrintIndentedVisit("EACH", node->assign_each());
+  PrintIndentedVisit("BODY", node->body());
 }
 
 
 void AstPrinter::VisitTryCatchStatement(TryCatchStatement* node) {
   IndentedScope indent(this, "TRY CATCH", node->position());
-  PrintIndentedVisit("TRY", node->try_block());
+  PrintTryStatement(node);
   PrintLiteralWithModeIndented("CATCHVAR",
                                node->variable(),
                                node->variable()->name());
@@ -1415,10 +879,27 @@ void AstPrinter::VisitTryCatchStatement(TryCatchStatement* node) {
 
 void AstPrinter::VisitTryFinallyStatement(TryFinallyStatement* node) {
   IndentedScope indent(this, "TRY FINALLY", node->position());
-  PrintIndentedVisit("TRY", node->try_block());
+  PrintTryStatement(node);
   PrintIndentedVisit("FINALLY", node->finally_block());
 }
 
+void AstPrinter::PrintTryStatement(TryStatement* node) {
+  PrintIndentedVisit("TRY", node->try_block());
+  PrintIndented("CATCH PREDICTION");
+  const char* prediction = "";
+  switch (node->catch_prediction()) {
+    case HandlerTable::UNCAUGHT:
+      prediction = "UNCAUGHT";
+      break;
+    case HandlerTable::CAUGHT:
+      prediction = "CAUGHT";
+      break;
+    case HandlerTable::PROMISE:
+      prediction = "PROMISE";
+      break;
+  }
+  Print(" %s\n", prediction);
+}
 
 void AstPrinter::VisitDebuggerStatement(DebuggerStatement* node) {
   IndentedScope indent(this, "DEBUGGER", node->position());
@@ -1522,7 +1003,7 @@ void AstPrinter::VisitRegExpLiteral(RegExpLiteral* node) {
   if (node->flags() & RegExp::kSticky) buf[i++] = 'y';
   buf[i] = '\0';
   PrintIndented("FLAGS ");
-  Print(buf.start());
+  Print("%s", buf.start());
   Print("\n");
 }
 
@@ -1594,7 +1075,9 @@ void AstPrinter::VisitAssignment(Assignment* node) {
 
 
 void AstPrinter::VisitYield(Yield* node) {
-  IndentedScope indent(this, "YIELD", node->position());
+  EmbeddedVector<char, 128> buf;
+  SNPrintF(buf, "YIELD id %d", node->yield_id());
+  IndentedScope indent(this, buf.start(), node->position());
   Visit(node->expression());
 }
 

@@ -20,6 +20,9 @@ namespace internal {
 
 
 // Number of times a function has to be seen on the stack before it is
+// compiled for baseline.
+static const int kProfilerTicksBeforeBaseline = 1;
+// Number of times a function has to be seen on the stack before it is
 // optimized.
 static const int kProfilerTicksBeforeOptimization = 2;
 // If the function optimization was disabled due to high deoptimization count,
@@ -53,16 +56,14 @@ RuntimeProfiler::RuntimeProfiler(Isolate* isolate)
       any_ic_changed_(false) {
 }
 
-
-static void GetICCounts(SharedFunctionInfo* shared,
-                        int* ic_with_type_info_count, int* ic_generic_count,
-                        int* ic_total_count, int* type_info_percentage,
-                        int* generic_percentage) {
+static void GetICCounts(JSFunction* function, int* ic_with_type_info_count,
+                        int* ic_generic_count, int* ic_total_count,
+                        int* type_info_percentage, int* generic_percentage) {
   *ic_total_count = 0;
   *ic_generic_count = 0;
   *ic_with_type_info_count = 0;
-  if (shared->code()->kind() == Code::FUNCTION) {
-    Code* shared_code = shared->code();
+  if (function->code()->kind() == Code::FUNCTION) {
+    Code* shared_code = function->shared()->code();
     Object* raw_info = shared_code->type_feedback_info();
     if (raw_info->IsTypeFeedbackInfo()) {
       TypeFeedbackInfo* info = TypeFeedbackInfo::cast(raw_info);
@@ -73,7 +74,7 @@ static void GetICCounts(SharedFunctionInfo* shared,
   }
 
   // Harvest vector-ics as well
-  TypeFeedbackVector* vector = shared->feedback_vector();
+  TypeFeedbackVector* vector = function->feedback_vector();
   int with = 0, gen = 0;
   vector->ComputeCounts(&with, &gen);
   *ic_with_type_info_count += with;
@@ -88,27 +89,39 @@ static void GetICCounts(SharedFunctionInfo* shared,
   }
 }
 
-
-void RuntimeProfiler::Optimize(JSFunction* function, const char* reason) {
+static void TraceRecompile(JSFunction* function, const char* reason,
+                           const char* type) {
   if (FLAG_trace_opt &&
       function->shared()->PassesFilter(FLAG_hydrogen_filter)) {
     PrintF("[marking ");
     function->ShortPrint();
-    PrintF(" for recompilation, reason: %s", reason);
+    PrintF(" for %s recompilation, reason: %s", type, reason);
     if (FLAG_type_info_threshold > 0) {
       int typeinfo, generic, total, type_percentage, generic_percentage;
-      GetICCounts(function->shared(), &typeinfo, &generic, &total,
-                  &type_percentage, &generic_percentage);
+      GetICCounts(function, &typeinfo, &generic, &total, &type_percentage,
+                  &generic_percentage);
       PrintF(", ICs with typeinfo: %d/%d (%d%%)", typeinfo, total,
              type_percentage);
       PrintF(", generic ICs: %d/%d (%d%%)", generic, total, generic_percentage);
     }
     PrintF("]\n");
   }
+}
 
+void RuntimeProfiler::Optimize(JSFunction* function, const char* reason) {
+  TraceRecompile(function, reason, "optimized");
   function->AttemptConcurrentOptimization();
 }
 
+void RuntimeProfiler::Baseline(JSFunction* function, const char* reason) {
+  TraceRecompile(function, reason, "baseline");
+
+  // TODO(4280): Fix this to check function is compiled for the interpreter
+  // once we have a standard way to check that. For now function will only
+  // have a bytecode array if compiled for the interpreter.
+  DCHECK(function->shared()->HasBytecodeArray());
+  function->MarkForBaseline();
+}
 
 void RuntimeProfiler::AttemptOnStackReplacement(JSFunction* function,
                                                 int loop_nesting_levels) {
@@ -125,17 +138,29 @@ void RuntimeProfiler::AttemptOnStackReplacement(JSFunction* function,
   // arguments accesses, which is unsound.  Don't try OSR.
   if (shared->uses_arguments()) return;
 
-  // We're using on-stack replacement: patch the unoptimized code so that
-  // any back edge in any unoptimized frame will trigger on-stack
+  // We're using on-stack replacement: modify unoptimized code so that
+  // certain back edges in any unoptimized frame will trigger on-stack
   // replacement for that frame.
+  //  - Ignition: Store new loop nesting level in BytecodeArray header.
+  //  - FullCodegen: Patch back edges up to new level using BackEdgeTable.
   if (FLAG_trace_osr) {
-    PrintF("[OSR - patching back edges in ");
+    PrintF("[OSR - arming back edges in ");
     function->PrintName();
     PrintF("]\n");
   }
 
-  for (int i = 0; i < loop_nesting_levels; i++) {
-    BackEdgeTable::Patch(isolate_, shared->code());
+  if (shared->code()->kind() == Code::FUNCTION) {
+    DCHECK(BackEdgeTable::Verify(shared->GetIsolate(), shared->code()));
+    for (int i = 0; i < loop_nesting_levels; i++) {
+      BackEdgeTable::Patch(isolate_, shared->code());
+    }
+  } else if (shared->HasBytecodeArray()) {
+    DCHECK(FLAG_ignition_osr);  // Should only happen when enabled.
+    int level = shared->bytecode_array()->osr_loop_nesting_level();
+    shared->bytecode_array()->set_osr_loop_nesting_level(
+        Min(level + loop_nesting_levels, AbstractCode::kMaxLoopNestingMarker));
+  } else {
+    UNREACHABLE();
   }
 }
 
@@ -148,7 +173,7 @@ void RuntimeProfiler::MaybeOptimizeFullCodegen(JSFunction* function,
   if (function->IsInOptimizationQueue()) return;
 
   if (FLAG_always_osr) {
-    AttemptOnStackReplacement(function, Code::kMaxLoopNestingMarker);
+    AttemptOnStackReplacement(function, AbstractCode::kMaxLoopNestingMarker);
     // Fall through and do a normal optimized compile as well.
   } else if (!frame_optimized &&
              (function->IsMarkedForOptimization() ||
@@ -199,7 +224,7 @@ void RuntimeProfiler::MaybeOptimizeFullCodegen(JSFunction* function,
 
   if (ticks >= kProfilerTicksBeforeOptimization) {
     int typeinfo, generic, total, type_percentage, generic_percentage;
-    GetICCounts(shared, &typeinfo, &generic, &total, &type_percentage,
+    GetICCounts(function, &typeinfo, &generic, &total, &type_percentage,
                 &generic_percentage);
     if (type_percentage >= FLAG_type_info_threshold &&
         generic_percentage <= FLAG_generic_ic_threshold) {
@@ -222,7 +247,7 @@ void RuntimeProfiler::MaybeOptimizeFullCodegen(JSFunction* function,
     // If no IC was patched since the last tick and this function is very
     // small, optimistically optimize it now.
     int typeinfo, generic, total, type_percentage, generic_percentage;
-    GetICCounts(shared, &typeinfo, &generic, &total, &type_percentage,
+    GetICCounts(function, &typeinfo, &generic, &total, &type_percentage,
                 &generic_percentage);
     if (type_percentage >= FLAG_type_info_threshold &&
         generic_percentage <= FLAG_generic_ic_threshold) {
@@ -235,8 +260,7 @@ void RuntimeProfiler::MaybeOptimizeFullCodegen(JSFunction* function,
   }
 }
 
-void RuntimeProfiler::MaybeOptimizeIgnition(JSFunction* function,
-                                            bool frame_optimized) {
+void RuntimeProfiler::MaybeBaselineIgnition(JSFunction* function) {
   if (function->IsInOptimizationQueue()) return;
 
   SharedFunctionInfo* shared = function->shared();
@@ -244,18 +268,41 @@ void RuntimeProfiler::MaybeOptimizeIgnition(JSFunction* function,
 
   // TODO(rmcilroy): Also ensure we only OSR top-level code if it is smaller
   // than kMaxToplevelSourceSize.
-  // TODO(rmcilroy): Consider whether we should optimize small functions when
-  // they are first seen on the stack (e.g., kMaxSizeEarlyOpt).
 
-  if (!frame_optimized && (function->IsMarkedForOptimization() ||
-                           function->IsMarkedForConcurrentOptimization() ||
-                           function->IsOptimized())) {
+  if (function->IsMarkedForBaseline() || function->IsMarkedForOptimization() ||
+      function->IsMarkedForConcurrentOptimization() ||
+      function->IsOptimized()) {
     // TODO(rmcilroy): Support OSR in these cases.
-
     return;
   }
 
-  // Do not optimize non-optimizable functions.
+  if (shared->optimization_disabled() &&
+      shared->disable_optimization_reason() == kOptimizationDisabledForTest) {
+    // Don't baseline functions which have been marked by NeverOptimizeFunction
+    // in a test.
+    return;
+  }
+
+  if (ticks >= kProfilerTicksBeforeBaseline) {
+    Baseline(function, "hot enough for baseline");
+  }
+}
+
+void RuntimeProfiler::MaybeOptimizeIgnition(JSFunction* function) {
+  if (function->IsInOptimizationQueue()) return;
+
+  SharedFunctionInfo* shared = function->shared();
+  int ticks = shared->profiler_ticks();
+
+  // TODO(rmcilroy): Also ensure we only OSR top-level code if it is smaller
+  // than kMaxToplevelSourceSize.
+  if (function->IsMarkedForBaseline() || function->IsMarkedForOptimization() ||
+      function->IsMarkedForConcurrentOptimization() ||
+      function->IsOptimized()) {
+    // TODO(rmcilroy): Support OSR in these cases.
+    return;
+  }
+
   if (shared->optimization_disabled()) {
     if (shared->deopt_count() >= FLAG_max_opt_count) {
       // If optimization was disabled due to many deoptimizations,
@@ -267,12 +314,11 @@ void RuntimeProfiler::MaybeOptimizeIgnition(JSFunction* function,
     }
     return;
   }
-
   if (function->IsOptimized()) return;
 
   if (ticks >= kProfilerTicksBeforeOptimization) {
     int typeinfo, generic, total, type_percentage, generic_percentage;
-    GetICCounts(shared, &typeinfo, &generic, &total, &type_percentage,
+    GetICCounts(function, &typeinfo, &generic, &total, &type_percentage,
                 &generic_percentage);
     if (type_percentage >= FLAG_type_info_threshold &&
         generic_percentage <= FLAG_generic_ic_threshold) {
@@ -290,6 +336,8 @@ void RuntimeProfiler::MaybeOptimizeIgnition(JSFunction* function,
       }
     }
   }
+  // TODO(rmcilroy): Consider whether we should optimize small functions when
+  // they are first seen on the stack (e.g., kMaxSizeEarlyOpt).
 }
 
 void RuntimeProfiler::MarkCandidatesForOptimization() {
@@ -320,9 +368,18 @@ void RuntimeProfiler::MarkCandidatesForOptimization() {
       }
     }
 
-    if (FLAG_ignition) {
-      MaybeOptimizeIgnition(function, frame->is_optimized());
+    Compiler::CompilationTier next_tier =
+        Compiler::NextCompilationTier(function);
+    if (frame->is_interpreted()) {
+      if (next_tier == Compiler::BASELINE) {
+        DCHECK(!frame->is_optimized());
+        MaybeBaselineIgnition(function);
+      } else {
+        DCHECK_EQ(next_tier, Compiler::OPTIMIZED);
+        MaybeOptimizeIgnition(function);
+      }
     } else {
+      DCHECK_EQ(next_tier, Compiler::OPTIMIZED);
       MaybeOptimizeFullCodegen(function, frame_count, frame->is_optimized());
     }
   }
