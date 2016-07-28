@@ -595,8 +595,7 @@ Reduction JSTypedLowering::ReduceShiftLeft(Node* node) {
 
   JSBinopReduction r(this, node);
   BinaryOperationHints::Hint feedback = r.GetNumberBinaryOperationFeedback();
-  if (feedback == BinaryOperationHints::kSigned32 ||
-      feedback == BinaryOperationHints::kSignedSmall) {
+  if (feedback != BinaryOperationHints::kAny) {
     return r.ChangeToSpeculativeOperator(
         simplified()->SpeculativeNumberShiftLeft(feedback), Type::Signed32());
   }
@@ -656,7 +655,11 @@ Reduction JSTypedLowering::ReduceJSComparison(Node* node) {
       r.OneInputCannotBe(Type::StringOrReceiver())) {
     const Operator* less_than;
     const Operator* less_than_or_equal;
-    if (hint != CompareOperationHints::kAny) {
+    if (r.BothInputsAre(Type::Signed32()) ||
+        r.BothInputsAre(Type::Unsigned32())) {
+      less_than = simplified()->NumberLessThan();
+      less_than_or_equal = simplified()->NumberLessThanOrEqual();
+    } else if (hint != CompareOperationHints::kAny) {
       less_than = simplified()->SpeculativeNumberLessThan(hint);
       less_than_or_equal = simplified()->SpeculativeNumberLessThanOrEqual(hint);
     } else if (r.BothInputsAre(Type::PlainPrimitive()) ||
@@ -1886,6 +1889,17 @@ Reduction JSTypedLowering::ReduceSelect(Node* node) {
   return NoChange();
 }
 
+Reduction JSTypedLowering::ReduceCheckString(Node* node) {
+  // TODO(bmeurer): Find a better home for this thing!
+  Node* const input = NodeProperties::GetValueInput(node, 0);
+  Type* const input_type = NodeProperties::GetType(input);
+  if (input_type->Is(Type::String())) {
+    ReplaceWithValue(node, input);
+    return Replace(input);
+  }
+  return NoChange();
+}
+
 Reduction JSTypedLowering::ReduceNumberRoundop(Node* node) {
   // TODO(bmeurer): Find a better home for this thing!
   Node* const input = NodeProperties::GetValueInput(node, 0);
@@ -2016,6 +2030,8 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       return ReduceJSGeneratorRestoreRegister(node);
     case IrOpcode::kSelect:
       return ReduceSelect(node);
+    case IrOpcode::kCheckString:
+      return ReduceCheckString(node);
     case IrOpcode::kNumberCeil:
     case IrOpcode::kNumberFloor:
     case IrOpcode::kNumberRound:

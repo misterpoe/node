@@ -395,3 +395,19 @@ Error.prepareStackTrace = function(e, frames) { throw 42; }
 
 var x = {}
 assertThrows(() => Error.captureStackTrace(x));
+
+// Check that we don't crash when CaptureSimpleStackTrace returns undefined.
+var o = {};
+Error.stackTraceLimit = "not a number";
+Error.captureStackTrace(o);
+
+// Check that we don't crash when a callsite's function's script is empty.
+Error.prepareStackTrace = function(e, frames) {
+  assertEquals(undefined, frames[0].getEvalOrigin());
+}
+try {
+  DataView();
+  assertUnreachable();
+} catch (e) {
+  assertEquals(undefined, e.stack);
+}

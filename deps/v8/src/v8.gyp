@@ -485,9 +485,11 @@
         'bit-vector.h',
         'bootstrapper.cc',
         'bootstrapper.h',
+        'builtins/builtins-api.cc',
         'builtins/builtins-arraybuffer.cc',
         'builtins/builtins-array.cc',
         'builtins/builtins-boolean.cc',
+        'builtins/builtins-call.cc',
         'builtins/builtins-callsite.cc',
         'builtins/builtins-conversion.cc',
         'builtins/builtins-dataview.cc',
@@ -495,6 +497,7 @@
         'builtins/builtins-debug.cc',
         'builtins/builtins-error.cc',
         'builtins/builtins-function.cc',
+        'builtins/builtins-generator.cc',
         'builtins/builtins-global.cc',
         'builtins/builtins-handler.cc',
         'builtins/builtins-internal.cc',
@@ -654,6 +657,8 @@
         'compiler/loop-analysis.h',
         'compiler/loop-peeling.cc',
         'compiler/loop-peeling.h',
+        'compiler/loop-variable-optimizer.cc',
+        'compiler/loop-variable-optimizer.h',
         'compiler/machine-operator-reducer.cc',
         'compiler/machine-operator-reducer.h',
         'compiler/machine-operator.cc',
@@ -1739,7 +1744,6 @@
         'base/atomicops_internals_mac.h',
         'base/atomicops_internals_mips_gcc.h',
         'base/atomicops_internals_mips64_gcc.h',
-        'base/atomicops_internals_portable.h',
         'base/atomicops_internals_ppc_gcc.h',
         'base/atomicops_internals_s390_gcc.h',
         'base/atomicops_internals_tsan.h',
@@ -1796,20 +1800,12 @@
           'toolsets': ['target'],
         }],
         ['OS=="linux"', {
-            'conditions': [
-              ['nacl_target_arch=="none"', {
-                'link_settings': {
-                  'libraries': [
-                    '-ldl',
-                    '-lrt'
-                  ],
-                },
-              }, {
-                'defines': [
-                  'V8_LIBRT_NOT_AVAILABLE=1',
-                ],
-              }],
-            ],
+            'link_settings': {
+              'libraries': [
+                '-ldl',
+                '-lrt'
+              ],
+            },
             'sources': [
               'base/platform/platform-linux.cc',
               'base/platform/platform-posix.cc'
@@ -2007,10 +2003,18 @@
       ],
       'sources': [
         '../include/libplatform/libplatform.h',
+        '../include/libplatform/v8-tracing.h',
         'libplatform/default-platform.cc',
         'libplatform/default-platform.h',
         'libplatform/task-queue.cc',
         'libplatform/task-queue.h',
+        'libplatform/tracing/trace-buffer.cc',
+        'libplatform/tracing/trace-buffer.h',
+        'libplatform/tracing/trace-config.cc',
+        'libplatform/tracing/trace-object.cc',
+        'libplatform/tracing/trace-writer.cc',
+        'libplatform/tracing/trace-writer.h',
+        'libplatform/tracing/tracing-controller.cc',
         'libplatform/worker-thread.cc',
         'libplatform/worker-thread.h',
       ],

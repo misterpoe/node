@@ -4264,7 +4264,7 @@ TEST(Regress513507) {
   Handle<TypeFeedbackVector> vector =
       TypeFeedbackVector::New(isolate, handle(shared->feedback_metadata()));
   Handle<LiteralsArray> lit =
-      LiteralsArray::New(isolate, vector, shared->num_literals(), TENURED);
+      LiteralsArray::New(isolate, vector, shared->num_literals());
   Handle<Context> context(isolate->context());
 
   // Add the new code several times to the optimized code map and also set an
@@ -4342,8 +4342,7 @@ TEST(Regress514122) {
     heap::SimulateFullSpace(heap->old_space());
 
     // Make sure there the number of literals is > 0.
-    Handle<LiteralsArray> lit =
-        LiteralsArray::New(isolate, vector, 23, TENURED);
+    Handle<LiteralsArray> lit = LiteralsArray::New(isolate, vector, 23);
 
     evac_page = Page::FromAddress(lit->address());
     BailoutId id = BailoutId(100);
@@ -6835,7 +6834,8 @@ TEST(RememberedSetRemoveRange) {
   Heap* heap = CcTest::heap();
   Isolate* isolate = heap->isolate();
 
-  Handle<FixedArray> array = isolate->factory()->NewFixedArray(500000);
+  Handle<FixedArray> array = isolate->factory()->NewFixedArray(Page::kPageSize /
+                                                              kPointerSize);
   MemoryChunk* chunk = MemoryChunk::FromAddress(array->address());
   CHECK(chunk->owner()->identity() == LO_SPACE);
   Address start = array->address();

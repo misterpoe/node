@@ -45,6 +45,7 @@
 #include "src/compiler/load-elimination.h"
 #include "src/compiler/loop-analysis.h"
 #include "src/compiler/loop-peeling.h"
+#include "src/compiler/loop-variable-optimizer.h"
 #include "src/compiler/machine-operator-reducer.h"
 #include "src/compiler/memory-optimizer.h"
 #include "src/compiler/move-optimizer.h"
@@ -834,7 +835,10 @@ struct TyperPhase {
   void Run(PipelineData* data, Zone* temp_zone, Typer* typer) {
     NodeVector roots(temp_zone);
     data->jsgraph()->GetCachedNodes(&roots);
-    typer->Run(roots);
+    LoopVariableOptimizer induction_vars(data->jsgraph()->graph(),
+                                         data->common(), temp_zone);
+    if (FLAG_turbo_loop_variable) induction_vars.Run();
+    typer->Run(roots, &induction_vars);
   }
 };
 
@@ -973,12 +977,22 @@ struct LoopExitEliminationPhase {
   }
 };
 
+struct GenericLoweringPhase {
+  static const char* phase_name() { return "generic lowering"; }
+
+  void Run(PipelineData* data, Zone* temp_zone) {
+    JSGraphReducer graph_reducer(data->jsgraph(), temp_zone);
+    JSGenericLowering generic_lowering(data->jsgraph());
+    AddReducer(data, &graph_reducer, &generic_lowering);
+    graph_reducer.ReduceGraph();
+  }
+};
+
 struct EarlyOptimizationPhase {
   static const char* phase_name() { return "early optimization"; }
 
   void Run(PipelineData* data, Zone* temp_zone) {
     JSGraphReducer graph_reducer(data->jsgraph(), temp_zone);
-    JSGenericLowering generic_lowering(data->jsgraph());
     DeadCodeElimination dead_code_elimination(&graph_reducer, data->graph(),
                                               data->common());
     SimplifiedOperatorReducer simple_reducer(&graph_reducer, data->jsgraph());
@@ -990,7 +1004,6 @@ struct EarlyOptimizationPhase {
     AddReducer(data, &graph_reducer, &dead_code_elimination);
     AddReducer(data, &graph_reducer, &simple_reducer);
     AddReducer(data, &graph_reducer, &redundancy_elimination);
-    AddReducer(data, &graph_reducer, &generic_lowering);
     AddReducer(data, &graph_reducer, &value_numbering);
     AddReducer(data, &graph_reducer, &machine_reducer);
     AddReducer(data, &graph_reducer, &common_reducer);
@@ -1053,12 +1066,21 @@ struct LoadEliminationPhase {
 
   void Run(PipelineData* data, Zone* temp_zone) {
     JSGraphReducer graph_reducer(data->jsgraph(), temp_zone);
+    BranchElimination branch_condition_elimination(&graph_reducer,
+                                                   data->jsgraph(), temp_zone);
+    DeadCodeElimination dead_code_elimination(&graph_reducer, data->graph(),
+                                              data->common());
     RedundancyElimination redundancy_elimination(&graph_reducer, temp_zone);
     LoadElimination load_elimination(&graph_reducer, temp_zone);
     ValueNumberingReducer value_numbering(temp_zone, data->graph()->zone());
+    CommonOperatorReducer common_reducer(&graph_reducer, data->graph(),
+                                         data->common(), data->machine());
+    AddReducer(data, &graph_reducer, &branch_condition_elimination);
+    AddReducer(data, &graph_reducer, &dead_code_elimination);
     AddReducer(data, &graph_reducer, &redundancy_elimination);
     AddReducer(data, &graph_reducer, &load_elimination);
     AddReducer(data, &graph_reducer, &value_numbering);
+    AddReducer(data, &graph_reducer, &common_reducer);
     graph_reducer.ReduceGraph();
   }
 };
@@ -1507,9 +1529,9 @@ bool PipelineImpl::CreateGraph() {
   RunPrintAndVerify("Untyped", true);
 #endif
 
-  // Run early optimization pass.
-  Run<EarlyOptimizationPhase>();
-  RunPrintAndVerify("Early optimized", true);
+  // Run generic lowering pass.
+  Run<GenericLoweringPhase>();
+  RunPrintAndVerify("Generic lowering", true);
 
   data->EndPhaseKind();
 
@@ -1520,6 +1542,10 @@ bool PipelineImpl::OptimizeGraph(Linkage* linkage) {
   PipelineData* data = this->data_;
 
   data->BeginPhaseKind("block building");
+
+  // Run early optimization pass.
+  Run<EarlyOptimizationPhase>();
+  RunPrintAndVerify("Early optimized", true);
 
   Run<EffectControlLinearizationPhase>();
   RunPrintAndVerify("Effect and control linearized", true);
@@ -1803,6 +1829,7 @@ void PipelineImpl::AllocateRegisters(const RegisterConfiguration* config,
 
   data->InitializeRegisterAllocationData(config, descriptor);
   if (info()->is_osr()) {
+    AllowHandleDereference allow_deref;
     OsrHelper osr_helper(info());
     osr_helper.SetupFrame(data->frame());
   }

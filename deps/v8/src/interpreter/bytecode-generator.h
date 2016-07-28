@@ -127,7 +127,6 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   void VisitArgumentsObject(Variable* variable);
   void VisitRestArgumentsArray(Variable* rest);
   void VisitCallSuper(Call* call);
-  void VisitClassLiteralContents(ClassLiteral* expr);
   void VisitClassLiteralForRuntimeDefinition(ClassLiteral* expr);
   void VisitClassLiteralProperties(ClassLiteral* expr, Register literal,
                                    Register prototype);
@@ -215,6 +214,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   RegisterAllocationScope* register_allocator_;
   ZoneVector<BytecodeLabel> generator_resume_points_;
   Register generator_state_;
+  int loop_depth_;
 };
 
 }  // namespace interpreter
