@@ -7,6 +7,8 @@
 #include "node_version.h"
 #include "node_internals.h"
 #include "node_revert.h"
+#include "node_tracing_controller.h"
+#include "node_trace_config_parser.h"
 
 #if defined HAVE_PERFCTR
 #include "node_counters.h"
@@ -59,6 +61,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -160,6 +163,8 @@ static node_module* modpending;
 static node_module* modlist_builtin;
 static node_module* modlist_linked;
 static node_module* modlist_addon;
+static bool trace_enabled = false;
+static const char* trace_config_file = nullptr;
 
 #if defined(NODE_HAVE_I18N_SUPPORT)
 // Path to ICU data (for i18n / Intl)
@@ -2198,6 +2203,7 @@ static void WaitForInspectorDisconnect(Environment* env) {
 
 void Exit(const FunctionCallbackInfo<Value>& args) {
   WaitForInspectorDisconnect(Environment::GetCurrent(args));
+  v8_platform.Dispose();
   exit(args[0]->Int32Value());
 }
 
@@ -3669,6 +3675,10 @@ static void ParseArgs(int* argc,
       trace_deprecation = true;
     } else if (strcmp(arg, "--trace-sync-io") == 0) {
       trace_sync_io = true;
+    } else if (strcmp(arg, "--enable-tracing") == 0) {
+      trace_enabled = true;
+    } else if (strncmp(arg, "--trace-config=", 15) == 0) {
+      trace_config_file = arg + 15;
     } else if (strcmp(arg, "--track-heap-objects") == 0) {
       track_heap_objects = true;
     } else if (strcmp(arg, "--throw-deprecation") == 0) {
@@ -4382,6 +4392,27 @@ static void StartNodeInstance(void* arg) {
     isolate->SetAbortOnUncaughtExceptionCallback(
         ShouldAbortOnUncaughtException);
 
+    // Enable tracing.
+    if (trace_enabled) {
+      NodeTracingController* tracing_controller = new NodeTracingController();
+      TraceBuffer* trace_buffer = new TraceBufferStreamingBuffer(
+          TraceBufferStreamingBuffer::kBufferChunks, new NodeTraceWriter());
+      TraceConfig* trace_config = new TraceConfig();
+      if (trace_config_file) {
+        std::ifstream fin(trace_config_file);
+        std::string str((std::istreambuf_iterator<char>(fin)),
+                        std::istreambuf_iterator<char>());
+        TraceConfigParser::FillTraceConfig(isolate, trace_config, str.c_str());
+      } else {
+        trace_config->AddIncludedCategory("v8");
+        trace_config->AddIncludedCategory("node");
+      }
+      tracing_controller->Initialize(trace_buffer);
+      tracing_controller->StartTracing(trace_config);
+      v8::platform::SetTracingController(v8_platform.platform_,
+                                         tracing_controller);
+    }
+
     // Start debug agent when argv has --debug
     if (instance_data->use_debug_agent())
       StartDebug(&env, debug_wait_connect);
@@ -4401,6 +4432,7 @@ static void StartNodeInstance(void* arg) {
       SealHandleScope seal(isolate);
       bool more;
       do {
+        TRACE_EVENT0("node", "Node.MainEventLoop");
         v8_platform.PumpMessageLoop(isolate);
         more = uv_run(env.event_loop(), UV_RUN_ONCE);
 
