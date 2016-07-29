@@ -22,6 +22,7 @@
 # include <io.h>
 #endif
 
+#include <string>
 #include <vector>
 
 namespace node {
@@ -325,6 +326,7 @@ static void After(uv_fs_t *req) {
   }
 
   req_wrap->MakeCallback(env->oncomplete_string(), argc, argv);
+  TRACE_EVENT_NESTABLE_ASYNC_END0("node", req_wrap->syscall(), &req_wrap->req_);
 
   uv_fs_req_cleanup(&req_wrap->req_);
   req_wrap->Dispose();
@@ -348,6 +350,7 @@ class fs_req_wrap {
   CHECK(req->IsObject());                                                     \
   FSReqWrap* req_wrap = FSReqWrap::New(env, req.As<Object>(),                 \
                                        #func, dest, encoding);                \
+  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("node", #func, &req_wrap->req_);          \
   int err = uv_fs_ ## func(env->event_loop(),                                 \
                            &req_wrap->req_,                                   \
                            __VA_ARGS__,                                       \

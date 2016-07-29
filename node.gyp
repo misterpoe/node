@@ -133,6 +133,7 @@
         'src',
         'tools/msvs/genfiles',
         'deps/uv/src/ares',
+        'deps/v8',
         '<(SHARED_INTERMEDIATE_DIR)', # for node_natives.h
       ],
 
@@ -159,6 +160,8 @@
         'src/node_util.cc',
         'src/node_v8.cc',
         'src/node_stat_watcher.cc',
+        'src/node_trace_config_parser.cc',
+        'src/node_tracing_controller.cc',
         'src/node_watchdog.cc',
         'src/node_zlib.cc',
         'src/node_i18n.cc',
