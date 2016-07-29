@@ -24,6 +24,15 @@ inline AsyncWrap::AsyncWrap(Environment* env,
   CHECK_NE(provider, PROVIDER_NONE);
   CHECK_GE(object->InternalFieldCount(), 1);
 
+  switch (provider_type()) {
+#define V(PROVIDER)                                                           \
+    case PROVIDER_ ## PROVIDER:                                               \
+      TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("node", #PROVIDER, get_uid());        \
+      break;
+    NODE_ASYNC_PROVIDER_TYPES(V)
+#undef V
+  }
+
   // Shift provider value over to prevent id collision.
   persistent().SetWrapperClassId(NODE_ASYNC_ID_OFFSET + provider);
 
@@ -68,6 +77,15 @@ inline AsyncWrap::AsyncWrap(Environment* env,
 
 
 inline AsyncWrap::~AsyncWrap() {
+  switch (provider_type()) {
+#define V(PROVIDER)                                                           \
+    case PROVIDER_ ## PROVIDER:                                               \
+      TRACE_EVENT_NESTABLE_ASYNC_END0("node", #PROVIDER, get_uid());          \
+      break;
+    NODE_ASYNC_PROVIDER_TYPES(V)
+#undef V
+  }
+
   if (!ran_init_callback())
     return;
 
