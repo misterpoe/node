@@ -724,7 +724,6 @@ enum CpuFeature {
   ARMv7,
   ARMv8,
   SUDIV,
-  UNALIGNED_ACCESSES,
   MOVW_MOVT_IMMEDIATE_LOADS,
   VFP32DREGS,
   NEON,
@@ -744,6 +743,9 @@ enum CpuFeature {
   DISTINCT_OPS,
   GENERAL_INSTR_EXT,
   FLOATING_POINT_EXT,
+  // PPC/S390
+  UNALIGNED_ACCESSES,
+
   NUMBER_OF_CPU_FEATURES
 };
 
@@ -843,8 +845,10 @@ enum ScopeType {
 // Use mips sNaN which is a not used qNaN in x87 port as sNaN to workaround this
 // issue
 // for some test cases.
-#if (V8_TARGET_ARCH_MIPS && !defined(_MIPS_ARCH_MIPS32R6)) ||   \
-    (V8_TARGET_ARCH_MIPS64 && !defined(_MIPS_ARCH_MIPS64R6)) || \
+#if (V8_TARGET_ARCH_MIPS && !defined(_MIPS_ARCH_MIPS32R6) &&           \
+     (!defined(USE_SIMULATOR) || !defined(_MIPS_TARGET_SIMULATOR))) || \
+    (V8_TARGET_ARCH_MIPS64 && !defined(_MIPS_ARCH_MIPS64R6) &&         \
+     (!defined(USE_SIMULATOR) || !defined(_MIPS_TARGET_SIMULATOR))) || \
     (V8_TARGET_ARCH_X87)
 const uint32_t kHoleNanUpper32 = 0xFFFF7FFF;
 const uint32_t kHoleNanLower32 = 0xFFFF7FFF;

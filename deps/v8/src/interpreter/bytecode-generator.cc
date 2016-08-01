@@ -266,7 +266,10 @@ class BytecodeGenerator::ControlScopeForIteration final
                            LoopBuilder* loop_builder)
       : ControlScope(generator),
         statement_(statement),
-        loop_builder_(loop_builder) {}
+        loop_builder_(loop_builder) {
+    generator->loop_depth_++;
+  }
+  ~ControlScopeForIteration() { generator()->loop_depth_--; }
 
  protected:
   bool Execute(Command command, Statement* statement) override {
@@ -597,7 +600,8 @@ BytecodeGenerator::BytecodeGenerator(CompilationInfo* info)
       execution_result_(nullptr),
       register_allocator_(nullptr),
       generator_resume_points_(info->literal()->yield_count(), info->zone()),
-      generator_state_() {
+      generator_state_(),
+      loop_depth_(0) {
   InitializeAstVisitor(isolate()->stack_guard()->real_climit());
 }
 
@@ -713,6 +717,14 @@ void BytecodeGenerator::VisitIterationHeader(IterationStatement* stmt,
   }
 
   loop_builder->LoopHeader(&resume_points_in_loop);
+
+  // Insert an explicit {OsrPoll} right after the loop header, to trigger
+  // on-stack replacement when armed for the given loop nesting depth.
+  if (FLAG_ignition_osr) {
+    // TODO(4764): Merge this with another bytecode (e.g. {Jump} back edge).
+    int level = Min(loop_depth_, AbstractCode::kMaxLoopNestingMarker - 1);
+    builder()->OsrPoll(level);
+  }
 
   if (stmt->yield_count() > 0) {
     // If we are not resuming, fall through to loop body.
@@ -1361,18 +1373,6 @@ void BytecodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
 }
 
 void BytecodeGenerator::VisitClassLiteral(ClassLiteral* expr) {
-  if (expr->scope()->ContextLocalCount() > 0) {
-    VisitNewLocalBlockContext(expr->scope());
-    ContextScope scope(this, expr->scope());
-    VisitDeclarations(expr->scope()->declarations());
-    VisitClassLiteralContents(expr);
-  } else {
-    VisitDeclarations(expr->scope()->declarations());
-    VisitClassLiteralContents(expr);
-  }
-}
-
-void BytecodeGenerator::VisitClassLiteralContents(ClassLiteral* expr) {
   VisitClassLiteralForRuntimeDefinition(expr);
 
   // Load the "prototype" from the constructor.
@@ -2781,8 +2781,7 @@ void BytecodeGenerator::VisitCountOperation(CountOperation* expr) {
   Property* property = expr->expression()->AsProperty();
   LhsKind assign_type = Property::GetAssignType(property);
 
-  // TODO(rmcilroy): Set is_postfix to false if visiting for effect.
-  bool is_postfix = expr->is_postfix();
+  bool is_postfix = expr->is_postfix() && !execution_result()->IsEffect();
 
   // Evaluate LHS expression and get old value.
   Register object, home_object, key, old_value, value;

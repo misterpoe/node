@@ -43,23 +43,24 @@
   V(RelocatableInt32Constant) \
   V(RelocatableInt64Constant)
 
-#define INNER_OP_LIST(V) \
-  V(Select)              \
-  V(Phi)                 \
-  V(EffectPhi)           \
-  V(Checkpoint)          \
-  V(BeginRegion)         \
-  V(FinishRegion)        \
-  V(FrameState)          \
-  V(StateValues)         \
-  V(TypedStateValues)    \
-  V(ObjectState)         \
-  V(Call)                \
-  V(Parameter)           \
-  V(OsrValue)            \
-  V(LoopExit)            \
-  V(LoopExitValue)       \
-  V(LoopExitEffect)      \
+#define INNER_OP_LIST(V)  \
+  V(Select)               \
+  V(Phi)                  \
+  V(EffectPhi)            \
+  V(InductionVariablePhi) \
+  V(Checkpoint)           \
+  V(BeginRegion)          \
+  V(FinishRegion)         \
+  V(FrameState)           \
+  V(StateValues)          \
+  V(TypedStateValues)     \
+  V(ObjectState)          \
+  V(Call)                 \
+  V(Parameter)            \
+  V(OsrValue)             \
+  V(LoopExit)             \
+  V(LoopExitValue)        \
+  V(LoopExitEffect)       \
   V(Projection)
 
 #define COMMON_OP_LIST(V) \
@@ -191,6 +192,7 @@
   V(CheckedUint32ToInt32)             \
   V(CheckedFloat64ToInt32)            \
   V(CheckedTaggedToInt32)             \
+  V(CheckedTruncateTaggedToWord32)    \
   V(CheckedTaggedToFloat64)
 
 #define SIMPLIFIED_COMPARE_BINOP_LIST(V) \
@@ -263,10 +265,12 @@
   V(NumberToInt32)                    \
   V(NumberToUint32)                   \
   V(NumberSilenceNaN)                 \
+  V(StringCharCodeAt)                 \
   V(StringFromCharCode)               \
   V(CheckBounds)                      \
   V(CheckIf)                          \
   V(CheckNumber)                      \
+  V(CheckString)                      \
   V(CheckTaggedPointer)               \
   V(CheckTaggedSigned)                \
   V(CheckFloat64Hole)                 \

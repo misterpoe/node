@@ -3083,14 +3083,8 @@ bool Heap::CanMoveObjectStart(HeapObject* object) {
 
   if (lo_space()->Contains(object)) return false;
 
-  Page* page = Page::FromAddress(address);
-  // We can move the object start if:
-  // (1) the object is not in old space,
-  // (2) the page of the object was already swept,
-  // (3) the page was already concurrently swept. This case is an optimization
-  // for concurrent sweeping. The WasSwept predicate for concurrently swept
-  // pages is set after sweeping all pages.
-  return !InOldSpace(object) || page->SweepingDone();
+  // We can move the object start if the page was already swept.
+  return Page::FromAddress(address)->SweepingDone();
 }
 
 
@@ -3828,17 +3822,20 @@ AllocationResult Heap::CopyFixedArrayWithMap(FixedArray* src, Map* map) {
     if (!allocation.To(&obj)) return allocation;
   }
   obj->set_map_no_write_barrier(map);
-  if (InNewSpace(obj)) {
+
+  FixedArray* result = FixedArray::cast(obj);
+  DisallowHeapAllocation no_gc;
+  WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
+
+  // Eliminate the write barrier if possible.
+  if (mode == SKIP_WRITE_BARRIER) {
     CopyBlock(obj->address() + kPointerSize, src->address() + kPointerSize,
               FixedArray::SizeFor(len) - kPointerSize);
     return obj;
   }
-  FixedArray* result = FixedArray::cast(obj);
-  result->set_length(len);
 
-  // Copy the content.
-  DisallowHeapAllocation no_gc;
-  WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
+  // Slow case: Just copy the content one-by-one.
+  result->set_length(len);
   for (int i = 0; i < len; i++) result->set(i, src->get(i), mode);
   return result;
 }
@@ -4688,7 +4685,7 @@ class IteratePromotedObjectsVisitor final : public ObjectVisitor {
     // promoted objects.
     if (heap_->incremental_marking()->black_allocation()) {
       Code* code = Code::cast(Code::GetObjectFromEntryAddress(code_entry_slot));
-      IncrementalMarking::MarkObject(heap_, code);
+      IncrementalMarking::MarkGrey(heap_, code);
     }
   }
 
@@ -4724,7 +4721,7 @@ void Heap::IteratePromotedObject(HeapObject* target, int size,
   // regular visiting and IteratePromotedObjectPointers.
   if (!was_marked_black) {
     if (incremental_marking()->black_allocation()) {
-      IncrementalMarking::MarkObject(this, target->map());
+      IncrementalMarking::MarkGrey(this, target->map());
       incremental_marking()->IterateBlackObject(target);
     }
   }

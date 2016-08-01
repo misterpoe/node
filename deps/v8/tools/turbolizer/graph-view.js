@@ -495,7 +495,10 @@ class GraphView extends View {
   searchInputAction(graph) {
     if (d3.event.keyCode == 13) {
       graph.state.selection.clear();
-      var reg = new RegExp(this.value);
+      var query = this.value;
+      window.sessionStorage.setItem("lastSearch", query);
+
+      var reg = new RegExp(query);
       var filterFunction = function(n) {
         return (reg.exec(n.getDisplayLabel()) != null ||
                 (graph.state.showTypes && reg.exec(n.getDisplayType())) ||
@@ -610,6 +613,19 @@ class GraphView extends View {
       showSelectionFrontierNodes(d3.event.keyCode == 38, undefined, true);
       break;
     }
+    case 82:
+      // 'r'
+      if (!d3.event.ctrlKey) {
+        this.layoutAction(this);
+      } else {
+        eventHandled = false;
+      }
+      break;
+    case 191:
+      // '/'
+      document.getElementById("search-input").focus();
+      document.getElementById("search-input").select();
+      break;
     default:
       eventHandled = false;
       break;

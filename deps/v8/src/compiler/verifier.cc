@@ -386,6 +386,11 @@ void Verifier::Visitor::Check(Node* node) {
       */
       break;
     }
+    case IrOpcode::kInductionVariablePhi: {
+      // This is only a temporary node for the typer.
+      UNREACHABLE();
+      break;
+    }
     case IrOpcode::kEffectPhi: {
       // EffectPhi input count matches parent control node.
       CHECK_EQ(0, value_count);
@@ -808,6 +813,12 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 1, Type::String());
       CheckUpperIs(node, Type::Boolean());
       break;
+    case IrOpcode::kStringCharCodeAt:
+      // (String, Unsigned32) -> UnsignedSmall
+      CheckValueInputIs(node, 0, Type::String());
+      CheckValueInputIs(node, 1, Type::Unsigned32());
+      CheckUpperIs(node, Type::UnsignedSmall());
+      break;
     case IrOpcode::kStringFromCharCode:
       // Number -> String
       CheckValueInputIs(node, 0, Type::Number());
@@ -965,6 +976,10 @@ void Verifier::Visitor::Check(Node* node) {
       CheckValueInputIs(node, 0, Type::Any());
       CheckUpperIs(node, Type::Number());
       break;
+    case IrOpcode::kCheckString:
+      CheckValueInputIs(node, 0, Type::Any());
+      CheckUpperIs(node, Type::String());
+      break;
     case IrOpcode::kCheckIf:
       CheckValueInputIs(node, 0, Type::Boolean());
       CheckNotTyped(node);
@@ -989,6 +1004,7 @@ void Verifier::Visitor::Check(Node* node) {
     case IrOpcode::kCheckedFloat64ToInt32:
     case IrOpcode::kCheckedTaggedToInt32:
     case IrOpcode::kCheckedTaggedToFloat64:
+    case IrOpcode::kCheckedTruncateTaggedToWord32:
       break;
 
     case IrOpcode::kCheckFloat64Hole:
