@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-#include "base/trace_event/common/trace_event_common.h"
+#include "trace_event_common.h"
 #include "util.h"
 
 namespace node {
@@ -25,7 +25,8 @@ void NodeTraceWriter::WriteSuffix() {
 NodeTraceWriter::~NodeTraceWriter() {
   WriteSuffix();
   uv_fs_t req;
-  CHECK_EQ(0, uv_fs_close(tracing_loop_, &req, fd_, nullptr));
+  int err = uv_fs_close(tracing_loop_, &req, fd_, nullptr);
+  CHECK_EQ(err, 0);
   uv_fs_req_cleanup(&req);
   uv_close(reinterpret_cast<uv_handle_t*>(&trace_file_pipe_), nullptr);
 }

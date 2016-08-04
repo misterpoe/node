@@ -24,6 +24,7 @@ inline AsyncWrap::AsyncWrap(Environment* env,
   CHECK_NE(provider, PROVIDER_NONE);
   CHECK_GE(object->InternalFieldCount(), 1);
 
+  // TODO: Do not land! Remove trace probe for initial PR.
   switch (provider_type()) {
 #define V(PROVIDER)                                                           \
     case PROVIDER_ ## PROVIDER:                                               \
@@ -77,6 +78,7 @@ inline AsyncWrap::AsyncWrap(Environment* env,
 
 
 inline AsyncWrap::~AsyncWrap() {
+  // TODO: Do not land! Remove trace probe for initial PR.
   switch (provider_type()) {
 #define V(PROVIDER)                                                           \
     case PROVIDER_ ## PROVIDER:                                               \

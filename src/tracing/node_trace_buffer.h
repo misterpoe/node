@@ -61,8 +61,10 @@ class NodeTraceBuffer : public TraceBuffer {
 
  private:
   std::unique_ptr<NodeTraceWriter> trace_writer_;
-  std::atomic<bool> current_buf_;
-  std::unique_ptr<InternalTraceBuffer> buffers_[2];
+  // TODO: Change std::atomic to something less contentious.
+  std::atomic<InternalTraceBuffer*> current_buf_;
+  InternalTraceBuffer buffer1_;
+  InternalTraceBuffer buffer2_;
 };
 
 }  // namespace tracing

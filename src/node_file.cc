@@ -326,6 +326,7 @@ static void After(uv_fs_t *req) {
   }
 
   req_wrap->MakeCallback(env->oncomplete_string(), argc, argv);
+  // TODO: Do not land! Remove trace probe for initial PR.
   TRACE_EVENT_NESTABLE_ASYNC_END0("node", req_wrap->syscall(), &req_wrap->req_);
 
   uv_fs_req_cleanup(&req_wrap->req_);
@@ -344,7 +345,7 @@ class fs_req_wrap {
   DISALLOW_COPY_AND_ASSIGN(fs_req_wrap);
 };
 
-
+// TODO: Do not land! Remove trace probe for initial PR.
 #define ASYNC_DEST_CALL(func, req, dest, encoding, ...)                       \
   Environment* env = Environment::GetCurrent(args);                           \
   CHECK(req->IsObject());                                                     \

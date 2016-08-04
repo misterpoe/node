@@ -86,33 +86,38 @@ void InternalTraceBuffer::ExtractHandle(
 
 NodeTraceBuffer::NodeTraceBuffer(size_t max_chunks,
     NodeTraceWriter* trace_writer, Agent* agent)
-    : trace_writer_(trace_writer), current_buf_(0) {
-  for (int i = 0; i < 2; ++i) {
-    buffers_[i].reset(new InternalTraceBuffer(max_chunks, trace_writer, agent));
-  }
+    : trace_writer_(trace_writer),
+      buffer1_(max_chunks, trace_writer, agent),
+      buffer2_(max_chunks, trace_writer, agent) {
+  current_buf_.store(&buffer1_);
 }
 
 TraceObject* NodeTraceBuffer::AddTraceEvent(uint64_t* handle) {
-  return buffers_[current_buf_]->AddTraceEvent(handle);
+  return current_buf_.load()->AddTraceEvent(handle);
 }
 
 TraceObject* NodeTraceBuffer::GetEventByHandle(uint64_t handle) {
-  return buffers_[current_buf_]->GetEventByHandle(handle);
+  return current_buf_.load()->GetEventByHandle(handle);
 }
 
 bool NodeTraceBuffer::Flush() {
   // This function should mainly be called from the tracing agent thread.
-  // However, it could be called from the main thread, for instance when
+  // TODO: However, it could be called from the main thread, when
   // the tracing controller stops tracing.
-  // In both cases we can assume that Flush cannot be called from two threads
-  // at the same time.
+  // Ideally we would want all Flushes to be done on the tracing thread, to
+  // prevent concurrent access of trace_writer_.
   if (!trace_writer_->IsReady()) {
     return false;
   }
-  current_buf_ = 1 - current_buf_;
+  InternalTraceBuffer* prev_buf = current_buf_.load();
+  if (prev_buf == &buffer1_) {
+    current_buf_.store(&buffer2_);
+  } else {
+    current_buf_.store(&buffer1_);
+  }
   // Flush the other buffer.
   // Note that concurrently, we can AddTraceEvent to the current buffer.
-  buffers_[1 - current_buf_]->Flush();
+  prev_buf->Flush();
   return true;
 }
 

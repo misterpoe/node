@@ -200,6 +200,7 @@ static struct {
   void Initialize(int thread_pool_size) {
     platform_ = v8::platform::CreateDefaultPlatform(thread_pool_size);
     V8::InitializePlatform(platform_);
+    tracing::TraceEventHelper::SetCurrentPlatform(platform_);
   }
 
   void PumpMessageLoop(Isolate* isolate) {
@@ -4414,6 +4415,7 @@ static void StartNodeInstance(void* arg) {
       SealHandleScope seal(isolate);
       bool more;
       do {
+        // TODO: Do not land! Remove trace probe for initial PR.
         TRACE_EVENT0("node", "Node.MainEventLoop");
         v8_platform.PumpMessageLoop(isolate);
         more = uv_run(env.event_loop(), UV_RUN_ONCE);
