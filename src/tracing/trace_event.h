@@ -1,16 +1,10 @@
-// Copyright 2015 the V8 project authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
-
 #ifndef SRC_TRACING_TRACE_EVENT_H_
 #define SRC_TRACING_TRACE_EVENT_H_
 
 #include <stddef.h>
 
-#include "base/trace_event/common/trace_event_common.h"
-#include "include/v8-platform.h"
-#include "src/base/atomicops.h"
-#include "src/base/macros.h"
+#include "trace_event_common.h"
+#include "v8-platform.h"
 
 // This header file defines implementation details of how the trace macros in
 // trace_event_common.h collect and store trace events. Anything not
@@ -33,20 +27,20 @@ enum CategoryGroupEnabledFlags {
 
 // By default, const char* asrgument values are assumed to have long-lived scope
 // and will not be copied. Use this macro to force a const char* to be copied.
-#define TRACE_STR_COPY(str) v8::internal::tracing::TraceStringWithCopy(str)
+#define TRACE_STR_COPY(str) node::tracing::TraceStringWithCopy(str)
 
 // By default, uint64 ID argument values are not mangled with the Process ID in
 // TRACE_EVENT_ASYNC macros. Use this macro to force Process ID mangling.
-#define TRACE_ID_MANGLE(id) v8::internal::tracing::TraceID::ForceMangle(id)
+#define TRACE_ID_MANGLE(id) node::tracing::TraceID::ForceMangle(id)
 
 // By default, pointers are mangled with the Process ID in TRACE_EVENT_ASYNC
 // macros. Use this macro to prevent Process ID mangling.
-#define TRACE_ID_DONT_MANGLE(id) v8::internal::tracing::TraceID::DontMangle(id)
+#define TRACE_ID_DONT_MANGLE(id) node::tracing::TraceID::DontMangle(id)
 
 // By default, trace IDs are eventually converted to a single 64-bit number. Use
 // this macro to add a scope string.
 #define TRACE_ID_WITH_SCOPE(scope, id) \
-  trace_event_internal::TraceID::WithScope(scope, id)
+  node::tracing::TraceID::WithScope(scope, id)
 
 // Sets the current sample state to the given category and name (both must be
 // constant strings). These states are intended for a sampling profiler.
@@ -56,12 +50,12 @@ enum CategoryGroupEnabledFlags {
 // thread from others.
 #define TRACE_EVENT_SET_SAMPLING_STATE_FOR_BUCKET(bucket_number, category, \
                                                   name)                    \
-  v8::internal::tracing::TraceEventSamplingStateScope<bucket_number>::Set( \
+  node::tracing::TraceEventSamplingStateScope<bucket_number>::Set( \
       category "\0" name)
 
 // Returns a current sampling state of the given bucket.
 #define TRACE_EVENT_GET_SAMPLING_STATE_FOR_BUCKET(bucket_number) \
-  v8::internal::tracing::TraceEventSamplingStateScope<bucket_number>::Current()
+  node::tracing::TraceEventSamplingStateScope<bucket_number>::Current()
 
 // Creates a scope of a sampling state of the given bucket.
 //
@@ -71,7 +65,7 @@ enum CategoryGroupEnabledFlags {
 // }
 #define TRACE_EVENT_SCOPED_SAMPLING_STATE_FOR_BUCKET(bucket_number, category, \
                                                      name)                    \
-  v8::internal::TraceEventSamplingStateScope<bucket_number>                   \
+  node::tracing::TraceEventSamplingStateScope<bucket_number>                   \
       traceEventSamplingScope(category "\0" name);
 
 
@@ -99,7 +93,7 @@ enum CategoryGroupEnabledFlags {
 // const uint8_t*
 //     TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED(const char* category_group)
 #define TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED              \
-  v8::internal::tracing::TraceEventHelper::GetCurrentPlatform() \
+  node::tracing::TraceEventHelper::GetCurrentPlatform() \
       ->GetCategoryGroupEnabled
 
 // Get the number of times traces have been recorded. This is used to implement
@@ -121,7 +115,7 @@ enum CategoryGroupEnabledFlags {
 //                    const uint64_t* arg_values,
 //                    unsigned int flags)
 #define TRACE_EVENT_API_ADD_TRACE_EVENT \
-  v8::internal::tracing::TraceEventHelper::GetCurrentPlatform()->AddTraceEvent
+  node::tracing::TraceEventHelper::GetCurrentPlatform()->AddTraceEvent
 
 // Set the duration field of a COMPLETE trace event.
 // void TRACE_EVENT_API_UPDATE_TRACE_EVENT_DURATION(
@@ -129,14 +123,13 @@ enum CategoryGroupEnabledFlags {
 //     const char* name,
 //     uint64_t id)
 #define TRACE_EVENT_API_UPDATE_TRACE_EVENT_DURATION             \
-  v8::internal::tracing::TraceEventHelper::GetCurrentPlatform() \
+  node::tracing::TraceEventHelper::GetCurrentPlatform() \
       ->UpdateTraceEventDuration
 
 // Defines atomic operations used internally by the tracing system.
-#define TRACE_EVENT_API_ATOMIC_WORD v8::base::AtomicWord
-#define TRACE_EVENT_API_ATOMIC_LOAD(var) v8::base::NoBarrier_Load(&(var))
-#define TRACE_EVENT_API_ATOMIC_STORE(var, value) \
-  v8::base::NoBarrier_Store(&(var), (value))
+#define TRACE_EVENT_API_ATOMIC_WORD intptr_t
+#define TRACE_EVENT_API_ATOMIC_LOAD(var) (var)
+#define TRACE_EVENT_API_ATOMIC_STORE(var, value) (var) = (value)
 
 // The thread buckets for the sampling profiler.
 extern TRACE_EVENT_API_ATOMIC_WORD g_trace_state[3];
@@ -186,10 +179,10 @@ extern TRACE_EVENT_API_ATOMIC_WORD g_trace_state[3];
   do {                                                                       \
     INTERNAL_TRACE_EVENT_GET_CATEGORY_INFO(category_group);                  \
     if (INTERNAL_TRACE_EVENT_CATEGORY_GROUP_ENABLED_FOR_RECORDING_MODE()) {  \
-      v8::internal::tracing::AddTraceEvent(                                  \
+      node::tracing::AddTraceEvent(                                  \
           phase, INTERNAL_TRACE_EVENT_UID(category_group_enabled), name,     \
-          v8::internal::tracing::kGlobalScope, v8::internal::tracing::kNoId, \
-          v8::internal::tracing::kNoId, flags, ##__VA_ARGS__);               \
+          node::tracing::kGlobalScope, node::tracing::kNoId, \
+          node::tracing::kNoId, flags, ##__VA_ARGS__);               \
     }                                                                        \
   } while (0)
 
@@ -198,13 +191,13 @@ extern TRACE_EVENT_API_ATOMIC_WORD g_trace_state[3];
 // ends.
 #define INTERNAL_TRACE_EVENT_ADD_SCOPED(category_group, name, ...)           \
   INTERNAL_TRACE_EVENT_GET_CATEGORY_INFO(category_group);                    \
-  v8::internal::tracing::ScopedTracer INTERNAL_TRACE_EVENT_UID(tracer);      \
+  node::tracing::ScopedTracer INTERNAL_TRACE_EVENT_UID(tracer);      \
   if (INTERNAL_TRACE_EVENT_CATEGORY_GROUP_ENABLED_FOR_RECORDING_MODE()) {    \
-    uint64_t h = v8::internal::tracing::AddTraceEvent(                       \
+    uint64_t h = node::tracing::AddTraceEvent(                       \
         TRACE_EVENT_PHASE_COMPLETE,                                          \
         INTERNAL_TRACE_EVENT_UID(category_group_enabled), name,              \
-        v8::internal::tracing::kGlobalScope, v8::internal::tracing::kNoId,   \
-        v8::internal::tracing::kNoId, TRACE_EVENT_FLAG_NONE, ##__VA_ARGS__); \
+        node::tracing::kGlobalScope, node::tracing::kNoId,   \
+        node::tracing::kNoId, TRACE_EVENT_FLAG_NONE, ##__VA_ARGS__); \
     INTERNAL_TRACE_EVENT_UID(tracer)                                         \
         .Initialize(INTERNAL_TRACE_EVENT_UID(category_group_enabled), name,  \
                     h);                                                      \
@@ -213,15 +206,15 @@ extern TRACE_EVENT_API_ATOMIC_WORD g_trace_state[3];
 #define INTERNAL_TRACE_EVENT_ADD_SCOPED_WITH_FLOW(category_group, name,     \
                                                   bind_id, flow_flags, ...) \
   INTERNAL_TRACE_EVENT_GET_CATEGORY_INFO(category_group);                   \
-  v8::internal::tracing::ScopedTracer INTERNAL_TRACE_EVENT_UID(tracer);     \
+  node::tracing::ScopedTracer INTERNAL_TRACE_EVENT_UID(tracer);     \
   if (INTERNAL_TRACE_EVENT_CATEGORY_GROUP_ENABLED_FOR_RECORDING_MODE()) {   \
     unsigned int trace_event_flags = flow_flags;                            \
-    v8::internal::tracing::TraceID trace_event_bind_id(bind_id,             \
+    node::tracing::TraceID trace_event_bind_id(bind_id,             \
                                                        &trace_event_flags); \
-    uint64_t h = v8::internal::tracing::AddTraceEvent(                      \
+    uint64_t h = node::tracing::AddTraceEvent(                      \
         TRACE_EVENT_PHASE_COMPLETE,                                         \
         INTERNAL_TRACE_EVENT_UID(category_group_enabled), name,             \
-        v8::internal::tracing::kGlobalScope, v8::internal::tracing::kNoId,  \
+        node::tracing::kGlobalScope, node::tracing::kNoId,  \
         trace_event_bind_id.raw_id(), trace_event_flags, ##__VA_ARGS__);    \
     INTERNAL_TRACE_EVENT_UID(tracer)                                        \
         .Initialize(INTERNAL_TRACE_EVENT_UID(category_group_enabled), name, \
@@ -236,12 +229,12 @@ extern TRACE_EVENT_API_ATOMIC_WORD g_trace_state[3];
     INTERNAL_TRACE_EVENT_GET_CATEGORY_INFO(category_group);                    \
     if (INTERNAL_TRACE_EVENT_CATEGORY_GROUP_ENABLED_FOR_RECORDING_MODE()) {    \
       unsigned int trace_event_flags = flags | TRACE_EVENT_FLAG_HAS_ID;        \
-      v8::internal::tracing::TraceID trace_event_trace_id(id,                  \
+      node::tracing::TraceID trace_event_trace_id(id,                  \
                                                           &trace_event_flags); \
-      v8::internal::tracing::AddTraceEvent(                                    \
+      node::tracing::AddTraceEvent(                                    \
           phase, INTERNAL_TRACE_EVENT_UID(category_group_enabled), name,       \
           trace_event_trace_id.scope(), trace_event_trace_id.raw_id(),         \
-          v8::internal::tracing::kNoId, trace_event_flags, ##__VA_ARGS__);     \
+          node::tracing::kNoId, trace_event_flags, ##__VA_ARGS__);     \
     }                                                                          \
   } while (0)
 
@@ -282,8 +275,7 @@ extern TRACE_EVENT_API_ATOMIC_WORD g_trace_state[3];
   INTERNAL_TRACE_EVENT_UID(ScopedContext)                                  \
   INTERNAL_TRACE_EVENT_UID(scoped_context)(context.raw_id());
 
-namespace v8 {
-namespace internal {
+namespace node {
 namespace tracing {
 
 // Specify these values when the corresponding argument of AddTraceEvent is not
@@ -294,6 +286,7 @@ const uint64_t kNoId = 0;
 
 class TraceEventHelper {
  public:
+  static void SetCurrentPlatform(v8::Platform* platform);
   static v8::Platform* GetCurrentPlatform();
 };
 
@@ -431,7 +424,7 @@ class TraceStringWithCopy {
 // structures so that it is portable to third_party libraries.
 #define INTERNAL_DECLARE_SET_TRACE_VALUE(actual_type, union_member,         \
                                          value_type_id)                     \
-  static V8_INLINE void SetTraceValue(actual_type arg, unsigned char* type, \
+  static inline void SetTraceValue(actual_type arg, unsigned char* type, \
                                       uint64_t* value) {                    \
     TraceValueUnion type_value;                                             \
     type_value.union_member = arg;                                          \
@@ -440,7 +433,7 @@ class TraceStringWithCopy {
   }
 // Simpler form for int types that can be safely casted.
 #define INTERNAL_DECLARE_SET_TRACE_VALUE_INT(actual_type, value_type_id)    \
-  static V8_INLINE void SetTraceValue(actual_type arg, unsigned char* type, \
+  static inline void SetTraceValue(actual_type arg, unsigned char* type, \
                                       uint64_t* value) {                    \
     *type = value_type_id;                                                  \
     *value = static_cast<uint64_t>(arg);                                    \
@@ -472,7 +465,7 @@ INTERNAL_DECLARE_SET_TRACE_VALUE(const TraceStringWithCopy&, as_string,
 // pointers to the internal c_str and pass through to the tracing API,
 // the arg_values must live throughout these procedures.
 
-static V8_INLINE uint64_t AddTraceEvent(char phase,
+static inline uint64_t AddTraceEvent(char phase,
                                         const uint8_t* category_group_enabled,
                                         const char* name, const char* scope,
                                         uint64_t id, uint64_t bind_id,
@@ -483,7 +476,7 @@ static V8_INLINE uint64_t AddTraceEvent(char phase,
 }
 
 template <class ARG1_TYPE>
-static V8_INLINE uint64_t AddTraceEvent(
+static inline uint64_t AddTraceEvent(
     char phase, const uint8_t* category_group_enabled, const char* name,
     const char* scope, uint64_t id, uint64_t bind_id, unsigned int flags,
     const char* arg1_name, const ARG1_TYPE& arg1_val) {
@@ -497,7 +490,7 @@ static V8_INLINE uint64_t AddTraceEvent(
 }
 
 template <class ARG1_TYPE, class ARG2_TYPE>
-static V8_INLINE uint64_t AddTraceEvent(
+static inline uint64_t AddTraceEvent(
     char phase, const uint8_t* category_group_enabled, const char* name,
     const char* scope, uint64_t id, uint64_t bind_id, unsigned int flags,
     const char* arg1_name, const ARG1_TYPE& arg1_val, const char* arg2_name,
@@ -575,12 +568,12 @@ class TraceEventSamplingStateScope {
     TraceEventSamplingStateScope<BucketNumber>::Set(previous_state_);
   }
 
-  static V8_INLINE const char* Current() {
+  static inline const char* Current() {
     return reinterpret_cast<const char*>(
         TRACE_EVENT_API_ATOMIC_LOAD(g_trace_state[BucketNumber]));
   }
 
-  static V8_INLINE void Set(const char* category_and_name) {
+  static inline void Set(const char* category_and_name) {
     TRACE_EVENT_API_ATOMIC_STORE(g_trace_state[BucketNumber],
                                  reinterpret_cast<TRACE_EVENT_API_ATOMIC_WORD>(
                                      const_cast<char*>(category_and_name)));
@@ -591,7 +584,6 @@ class TraceEventSamplingStateScope {
 };
 
 }  // namespace tracing
-}  // namespace internal
-}  // namespace v8
+}  // namespace node
 
 #endif  // SRC_TRACING_TRACE_EVENT_H_

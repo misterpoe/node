@@ -51,10 +51,24 @@ void Agent::Stop() {
   }
   // Perform final Flush on TraceBuffer. We don't want the tracing controller
   // to flush the buffer again on destruction of the V8::Platform.
+
+  // TODO: Note that the serialization of this Flush is done on the main thread
+  // and passed to libuv file write on the child thread later.
+  // We might want to perform the serialization on the child thread instead,
+  // but the current TracingController does not allow override of StopTracing().
+  // By allowing serialization to be performed on the main thread,
+  // NodeTraceWriter::IsReady() is now accessed from multiple threads, and
+  // there might be race conditions if the child thread is still processing
+  // something at the moment.
+  // This can also be resolved by ensuring the child thread is free before
+  // stopping tracing.
   tracing_controller_->StopTracing();
   delete tracing_controller_;
   v8::platform::SetTracingController(platform_, nullptr);
-  // NOTE: We might need to cleanup loop properly upon exit.
+  // TODO: We might need to cleanup loop properly upon exit.
+  // 1. Close child_loop_.
+  // 2. Close flush_signal_.
+  // 3. Destroy thread_.
 }
 
 // static
