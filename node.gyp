@@ -133,11 +133,16 @@
         'src',
         'tools/msvs/genfiles',
         'deps/uv/src/ares',
-        'deps/v8',
+        'deps/v8', # TODO: Remove after trace-event.h implemented in Node.
         '<(SHARED_INTERMEDIATE_DIR)', # for node_natives.h
       ],
 
       'sources': [
+        'src/tracing/agent.cc',
+        'src/tracing/node_trace_buffer.cc',
+        'src/tracing/node_trace_writer.cc',
+        'src/tracing/node_tracing_controller.cc',
+        'src/tracing/trace_config_parser.cc',
         'src/debug-agent.cc',
         'src/async-wrap.cc',
         'src/env.cc',
@@ -160,8 +165,6 @@
         'src/node_util.cc',
         'src/node_v8.cc',
         'src/node_stat_watcher.cc',
-        'src/node_trace_config_parser.cc',
-        'src/node_tracing_controller.cc',
         'src/node_watchdog.cc',
         'src/node_zlib.cc',
         'src/node_i18n.cc',

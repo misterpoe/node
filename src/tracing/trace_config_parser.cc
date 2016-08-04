@@ -1,8 +1,9 @@
-#include "node_trace_config_parser.h"
+#include "tracing/trace_config_parser.h"
 
 #include <string.h>
 
 namespace node {
+namespace tracing {
 
 // String options that can be used to initialize TraceOptions.
 const char* kRecordUntilFull = "record-until-full";
@@ -104,4 +105,5 @@ Local<Value> TraceConfigParser::GetValue(Isolate* isolate,
   return object->Get(context, v8_str).ToLocalChecked();
 }
 
+}  // namespace tracing
 }  // namespace node
