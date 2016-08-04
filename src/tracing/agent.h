@@ -1,7 +1,6 @@
 #ifndef SRC_TRACING_AGENT_H_
 #define SRC_TRACING_AGENT_H_
 
-#include "tracing/node_tracing_controller.h"
 #include "tracing/node_trace_buffer.h"
 #include "tracing/node_trace_writer.h"
 #include "uv.h"
@@ -28,17 +27,13 @@ class Agent {
 
   bool IsStarted() { return platform_ != nullptr; }
   void WorkerRun();
-  void AttemptFlush();
 
   v8::Platform* platform_ = nullptr;
   Environment* parent_env_;
   uv_thread_t thread_;
   uv_loop_t child_loop_;
   uv_async_t flush_signal_;
-  NodeTracingController* tracing_controller_;
-  NodeTraceWriter* trace_writer_;
-  NodeTraceBuffer* trace_buffers_[2];
-  int current_buf_ = 0;
+  TracingController* tracing_controller_;
 };
 
 }  // namespace tracing

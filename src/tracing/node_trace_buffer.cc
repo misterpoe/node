@@ -1,18 +1,19 @@
 #include "tracing/node_trace_buffer.h"
+
 #include "tracing/agent.h"
 
 namespace node {
 namespace tracing {
 
-const double NodeTraceBuffer::kFlushThreshold = 0.75;
+const double InternalTraceBuffer::kFlushThreshold = 0.75;
 
-NodeTraceBuffer::NodeTraceBuffer(size_t max_chunks,
+InternalTraceBuffer::InternalTraceBuffer(size_t max_chunks,
     NodeTraceWriter* trace_writer, Agent* agent)
     : max_chunks_(max_chunks), trace_writer_(trace_writer), agent_(agent) {
   chunks_.resize(max_chunks);
 }
 
-TraceObject* NodeTraceBuffer::AddTraceEvent(uint64_t* handle) {
+TraceObject* InternalTraceBuffer::AddTraceEvent(uint64_t* handle) {
   Mutex::ScopedLock scoped_lock(mutex_);
   // If the buffer usage exceeds kFlushThreshold, attempt to perform a flush.
   // This number should be customizable.
@@ -42,9 +43,8 @@ TraceObject* NodeTraceBuffer::AddTraceEvent(uint64_t* handle) {
   return trace_object;
 }
 
-TraceObject* NodeTraceBuffer::GetEventByHandle(uint64_t handle) {
+TraceObject* InternalTraceBuffer::GetEventByHandle(uint64_t handle) {
   Mutex::ScopedLock scoped_lock(mutex_);
-
   size_t chunk_index, event_index;
   uint32_t chunk_seq;
   ExtractHandle(handle, &chunk_index, &chunk_seq, &event_index);
@@ -58,14 +58,7 @@ TraceObject* NodeTraceBuffer::GetEventByHandle(uint64_t handle) {
   return chunk->GetEventAt(event_index);
 }
 
-bool NodeTraceBuffer::Flush() {
-  // This function should mainly be called from the tracing agent thread.
-  // However, it could be called from the main thread, for instance when
-  // the tracing controller stops tracing.
-  Mutex::ScopedLock scoped_lock(mutex_);
-  if (!trace_writer_->IsReady()) {
-    return false;
-  }
+void InternalTraceBuffer::Flush() {
   for (size_t i = 0; i < total_chunks_; ++i) {
     auto& chunk = chunks_[i];
     for (size_t j = 0; j < chunk->size(); ++j) {
@@ -74,22 +67,53 @@ bool NodeTraceBuffer::Flush() {
   }
   trace_writer_->Flush();
   total_chunks_ = 0;
-  return true;
 }
 
-uint64_t NodeTraceBuffer::MakeHandle(
+uint64_t InternalTraceBuffer::MakeHandle(
     size_t chunk_index, uint32_t chunk_seq, size_t event_index) const {
   return static_cast<uint64_t>(chunk_seq) * Capacity() +
          chunk_index * TraceBufferChunk::kChunkSize + event_index;
 }
 
-void NodeTraceBuffer::ExtractHandle(
+void InternalTraceBuffer::ExtractHandle(
     uint64_t handle, size_t* chunk_index,
     uint32_t* chunk_seq, size_t* event_index) const {
   *chunk_seq = static_cast<uint32_t>(handle / Capacity());
   size_t indices = handle % Capacity();
   *chunk_index = indices / TraceBufferChunk::kChunkSize;
   *event_index = indices % TraceBufferChunk::kChunkSize;
+}
+
+NodeTraceBuffer::NodeTraceBuffer(size_t max_chunks,
+    NodeTraceWriter* trace_writer, Agent* agent)
+    : trace_writer_(trace_writer), current_buf_(0) {
+  for (int i = 0; i < 2; ++i) {
+    buffers_[i].reset(new InternalTraceBuffer(max_chunks, trace_writer, agent));
+  }
+}
+
+TraceObject* NodeTraceBuffer::AddTraceEvent(uint64_t* handle) {
+  return buffers_[current_buf_]->AddTraceEvent(handle);
+}
+
+TraceObject* NodeTraceBuffer::GetEventByHandle(uint64_t handle) {
+  return buffers_[current_buf_]->GetEventByHandle(handle);
+}
+
+bool NodeTraceBuffer::Flush() {
+  // This function should mainly be called from the tracing agent thread.
+  // However, it could be called from the main thread, for instance when
+  // the tracing controller stops tracing.
+  // In both cases we can assume that Flush cannot be called from two threads
+  // at the same time.
+  if (!trace_writer_->IsReady()) {
+    return false;
+  }
+  current_buf_ = 1 - current_buf_;
+  // Flush the other buffer.
+  // Note that concurrently, we can AddTraceEvent to the current buffer.
+  buffers_[1 - current_buf_]->Flush();
+  return true;
 }
 
 }  // namespace tracing

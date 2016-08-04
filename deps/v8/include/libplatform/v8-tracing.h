@@ -211,14 +211,12 @@ class TracingController {
   void StartTracing(TraceConfig* trace_config);
   void StopTracing();
 
- protected:
-  std::unique_ptr<TraceBuffer> trace_buffer_;
-
  private:
   const uint8_t* GetCategoryGroupEnabledInternal(const char* category_group);
   void UpdateCategoryGroupEnabledFlag(size_t category_index);
   void UpdateCategoryGroupEnabledFlags();
 
+  std::unique_ptr<TraceBuffer> trace_buffer_;
   std::unique_ptr<TraceConfig> trace_config_;
   Mode mode_ = DISABLED;
 

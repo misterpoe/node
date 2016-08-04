@@ -1,7 +1,8 @@
-#include "env-inl.h"
 #include "tracing/agent.h"
-#include "tracing/trace_config_parser.h"
+
+#include "env-inl.h"
 #include "libplatform/libplatform.h"
+#include "tracing/trace_config_parser.h"
 
 namespace node {
 namespace tracing {
@@ -15,15 +16,15 @@ void Agent::Start(v8::Platform* platform, const char* trace_config_file) {
   int err = uv_loop_init(&child_loop_);
   CHECK_EQ(err, 0);
 
-  flush_signal_.data = this;
+  NodeTraceWriter* trace_writer = new NodeTraceWriter(&child_loop_);
+  TraceBuffer* trace_buffer = new NodeTraceBuffer(
+      NodeTraceBuffer::kBufferChunks, trace_writer, this);
+
+  flush_signal_.data = trace_buffer;
   err = uv_async_init(&child_loop_, &flush_signal_, FlushSignalCb);
   CHECK_EQ(err, 0);
 
-  tracing_controller_ = new NodeTracingController();
-  trace_writer_ = new NodeTraceWriter(&child_loop_);
-  for (int i = 0; i < 2; ++i)
-    trace_buffers_[i] = new NodeTraceBuffer(
-        NodeTraceBuffer::kBufferChunks, trace_writer_, this);
+  tracing_controller_ = new TracingController();
 
   TraceConfig* trace_config = new TraceConfig();
   if (trace_config_file) {
@@ -36,7 +37,7 @@ void Agent::Start(v8::Platform* platform, const char* trace_config_file) {
     trace_config->AddIncludedCategory("v8");
     trace_config->AddIncludedCategory("node");
   }
-  tracing_controller_->Initialize(trace_buffers_[current_buf_]);
+  tracing_controller_->Initialize(trace_buffer);
   tracing_controller_->StartTracing(trace_config);
   v8::platform::SetTracingController(platform, tracing_controller_);
 
@@ -53,10 +54,6 @@ void Agent::Stop() {
   tracing_controller_->StopTracing();
   delete tracing_controller_;
   v8::platform::SetTracingController(platform_, nullptr);
-  trace_writer_->WriteSuffix();
-  delete trace_writer_;
-  // // Remove extra TraceBuffer.
-  delete trace_buffers_[1 - current_buf_];
   // NOTE: We might need to cleanup loop properly upon exit.
 }
 
@@ -71,19 +68,7 @@ void Agent::WorkerRun() {
 
 // static
 void Agent::FlushSignalCb(uv_async_t* signal) {
-  static_cast<Agent*>(signal->data)->AttemptFlush();
-}
-
-void Agent::AttemptFlush() {
-  // If writer is ready now, we can perform a TraceBuffer->Flush() and swap
-  // TraceBuffers immediately. Otherwise ignore this signal.
-  if (!trace_writer_->IsReady()) {
-    return;
-  }
-  current_buf_ = 1 - current_buf_;
-  // Swap the trace buffers.
-  tracing_controller_->SwapTraceBuffer(trace_buffers_[current_buf_]);
-  trace_buffers_[1 - current_buf_]->Flush();
+  static_cast<TraceBuffer*>(signal->data)->Flush();
 }
 
 void Agent::SendFlushSignal() {

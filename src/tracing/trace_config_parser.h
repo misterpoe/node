@@ -1,8 +1,8 @@
 #ifndef SRC_TRACE_CONFIG_PARSER_H_
 #define SRC_TRACE_CONFIG_PARSER_H_
 
-#include "v8.h"
 #include "libplatform/v8-tracing.h"
+#include "v8.h"
 
 namespace node {
 namespace tracing {
