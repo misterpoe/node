@@ -3,8 +3,8 @@
 
 #include <sstream>
 
-#include "uv.h"
 #include "libplatform/v8-tracing.h"
+#include "uv.h"
 
 namespace node {
 namespace tracing {
@@ -18,7 +18,6 @@ class NodeTraceWriter : public TraceWriter {
   NodeTraceWriter(uv_loop_t* tracing_loop);
   ~NodeTraceWriter();
 
-  void WriteSuffix();
   bool IsReady() { return !is_writing_; }
   void AppendTraceEvent(TraceObject* trace_event) override;
   void Flush() override;
@@ -34,6 +33,7 @@ class NodeTraceWriter : public TraceWriter {
   static void WriteCb(uv_write_t* req, int status);
   void OpenNewFileForStreaming();
   void WriteToFile(const char* str);
+  void WriteSuffix();
 
   uv_loop_t* tracing_loop_;
   int fd_;

@@ -5,6 +5,8 @@
 #include "tracing/node_trace_writer.h"
 #include "libplatform/v8-tracing.h"
 
+#include <atomic>
+
 // Forward declaration to break recursive dependency chain with tracing/agent.h.
 namespace node {
 namespace tracing {
@@ -19,17 +21,16 @@ using v8::platform::tracing::TraceBuffer;
 using v8::platform::tracing::TraceBufferChunk;
 using v8::platform::tracing::TraceObject;
 
-class NodeTraceBuffer : public TraceBuffer {
+class InternalTraceBuffer {
  public:
-  NodeTraceBuffer(size_t max_chunks, NodeTraceWriter* trace_writer,
-                  Agent* agent);
+  InternalTraceBuffer(size_t max_chunks, NodeTraceWriter* trace_writer,
+                      Agent* agent);
 
-  TraceObject* AddTraceEvent(uint64_t* handle) override;
-  TraceObject* GetEventByHandle(uint64_t handle) override;
-  bool Flush() override;
+  TraceObject* AddTraceEvent(uint64_t* handle);
+  TraceObject* GetEventByHandle(uint64_t handle);
+  void Flush();
 
   static const double kFlushThreshold;
-  static const size_t kBufferChunks = 1024;
 
  private:
   uint64_t MakeHandle(size_t chunk_index, uint32_t chunk_seq,
@@ -45,6 +46,23 @@ class NodeTraceBuffer : public TraceBuffer {
   std::vector<std::unique_ptr<TraceBufferChunk>> chunks_;
   size_t total_chunks_ = 0;
   uint32_t current_chunk_seq_ = 1;
+};
+
+class NodeTraceBuffer : public TraceBuffer {
+ public:
+  NodeTraceBuffer(size_t max_chunks, NodeTraceWriter* trace_writer,
+                  Agent* agent);
+
+  TraceObject* AddTraceEvent(uint64_t* handle) override;
+  TraceObject* GetEventByHandle(uint64_t handle) override;
+  bool Flush() override;
+
+  static const size_t kBufferChunks = 1024;
+
+ private:
+  std::unique_ptr<NodeTraceWriter> trace_writer_;
+  std::atomic<bool> current_buf_;
+  std::unique_ptr<InternalTraceBuffer> buffers_[2];
 };
 
 }  // namespace tracing

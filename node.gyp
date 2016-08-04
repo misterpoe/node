@@ -141,7 +141,6 @@
         'src/tracing/agent.cc',
         'src/tracing/node_trace_buffer.cc',
         'src/tracing/node_trace_writer.cc',
-        'src/tracing/node_tracing_controller.cc',
         'src/tracing/trace_config_parser.cc',
         'src/debug-agent.cc',
         'src/async-wrap.cc',

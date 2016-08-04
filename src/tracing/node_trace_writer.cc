@@ -1,8 +1,9 @@
 #include "tracing/node_trace_writer.h"
-#include "base/trace_event/common/trace_event_common.h"
-#include "util.h"
 
 #include <string.h>
+
+#include "base/trace_event/common/trace_event_common.h"
+#include "util.h"
 
 namespace node {
 namespace tracing {
@@ -22,6 +23,7 @@ void NodeTraceWriter::WriteSuffix() {
 }
 
 NodeTraceWriter::~NodeTraceWriter() {
+  WriteSuffix();
   uv_fs_t req;
   CHECK_EQ(0, uv_fs_close(tracing_loop_, &req, fd_, nullptr));
   uv_fs_req_cleanup(&req);
