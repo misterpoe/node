@@ -7,8 +7,6 @@
 #include "node_version.h"
 #include "node_internals.h"
 #include "node_revert.h"
-#include "node_tracing_controller.h"
-#include "node_trace_config_parser.h"
 
 #if defined HAVE_PERFCTR
 #include "node_counters.h"
@@ -196,7 +194,6 @@ static uv_async_t dispatch_debug_messages_async;
 
 static Mutex node_isolate_mutex;
 static v8::Isolate* node_isolate;
-static NodeTraceWriter* trace_writer;
 
 static struct {
 #if NODE_USE_V8_PLATFORM
@@ -2204,7 +2201,7 @@ static void WaitForInspectorDisconnect(Environment* env) {
 
 void Exit(const FunctionCallbackInfo<Value>& args) {
   WaitForInspectorDisconnect(Environment::GetCurrent(args));
-  v8_platform.Dispose();
+  Environment::GetCurrent(args)->tracing_agent()->Stop();
   exit(args[0]->Int32Value());
 }
 
@@ -4393,26 +4390,9 @@ static void StartNodeInstance(void* arg) {
     isolate->SetAbortOnUncaughtExceptionCallback(
         ShouldAbortOnUncaughtException);
 
-    // Enable tracing.
+    // Enable tracing when argv has --enable-tracing.
     if (trace_enabled) {
-      NodeTracingController* tracing_controller = new NodeTracingController();
-      trace_writer = new NodeTraceWriter();
-      TraceBuffer* trace_buffer = new TraceBufferStreamingBuffer(
-          TraceBufferStreamingBuffer::kBufferChunks, trace_writer);
-      TraceConfig* trace_config = new TraceConfig();
-      if (trace_config_file) {
-        std::ifstream fin(trace_config_file);
-        std::string str((std::istreambuf_iterator<char>(fin)),
-                        std::istreambuf_iterator<char>());
-        TraceConfigParser::FillTraceConfig(isolate, trace_config, str.c_str());
-      } else {
-        trace_config->AddIncludedCategory("v8");
-        trace_config->AddIncludedCategory("node");
-      }
-      tracing_controller->Initialize(trace_buffer);
-      tracing_controller->StartTracing(trace_config);
-      v8::platform::SetTracingController(v8_platform.platform_,
-                                         tracing_controller);
+      env.tracing_agent()->Start(v8_platform.platform_, trace_config_file);
     }
 
     // Start debug agent when argv has --debug
@@ -4459,6 +4439,7 @@ static void StartNodeInstance(void* arg) {
     RunAtExit(&env);
 
     WaitForInspectorDisconnect(&env);
+    env.tracing_agent()->Stop();
 #if defined(LEAK_SANITIZER)
     __lsan_do_leak_check();
 #endif

@@ -1,7 +1,11 @@
+#ifndef SRC_TRACE_CONFIG_PARSER_H_
+#define SRC_TRACE_CONFIG_PARSER_H_
+
 #include "v8.h"
 #include "libplatform/v8-tracing.h"
 
 namespace node {
+namespace tracing {
 
 using v8::platform::tracing::TraceConfig;
 using v8::platform::tracing::TraceRecordMode;
@@ -39,4 +43,7 @@ class TraceConfigParser {
                                Local<Object> object, const char* property);
 };
 
+}  // namespace tracing
 }  // namespace node
+
+#endif  // SRC_TRACE_CONFIG_PARSER_H_
