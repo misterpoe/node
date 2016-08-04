@@ -57,6 +57,9 @@
     # Similar to the ARM hard float ABI but on MIPS.
     'v8_use_mips_abi_hardfloat%': 'true',
 
+    # Print to stdout on Android.
+    'v8_android_log_stdout%': 0,
+
     # Force disable libstdc++ debug mode.
     'disable_glibcxx_debug%': 0,
 
@@ -71,6 +74,7 @@
     # Chrome needs this definition unconditionally. For standalone V8 builds,
     # it's handled in gypfiles/standalone.gypi.
     'want_separate_host_toolset%': 1,
+    'want_separate_host_toolset_mkpeephole%': 1,
 
     # Toolset the shell binary should be compiled for. Possible values are
     # 'host' and 'target'.
@@ -1080,6 +1084,11 @@
              ]
            }],
          ],
+      }],
+      ['OS=="android" and v8_android_log_stdout==1', {
+        'defines': [
+          'V8_ANDROID_LOG_STDOUT',
+        ],
       }],
       ['OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="solaris" \
          or OS=="netbsd" or OS=="qnx" or OS=="aix"', {

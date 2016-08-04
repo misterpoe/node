@@ -216,8 +216,6 @@ DEFINE_IMPLICATION(es_staging, move_object_start)
 #define HARMONY_STAGED_BASE(V)                                               \
   V(harmony_regexp_lookbehind, "harmony regexp lookbehind")                  \
   V(harmony_tailcalls, "harmony tail calls")                                 \
-  V(harmony_object_own_property_descriptors,                                 \
-    "harmony Object.getOwnPropertyDescriptors()")                            \
   V(harmony_async_await, "harmony async-await")                              \
   V(harmony_string_padding, "harmony String-padding methods")
 
@@ -233,8 +231,9 @@ DEFINE_IMPLICATION(es_staging, move_object_start)
 #define HARMONY_SHIPPING(V)                                                  \
   V(harmony_restrictive_declarations,                                        \
     "harmony limitations on sloppy mode function declarations")              \
-  V(harmony_exponentiation_operator, "harmony exponentiation operator `**`") \
-  V(harmony_object_values_entries, "harmony Object.values / Object.entries")
+  V(harmony_object_values_entries, "harmony Object.values / Object.entries") \
+  V(harmony_object_own_property_descriptors,                                 \
+    "harmony Object.getOwnPropertyDescriptors()")
 
 // Once a shipping feature has proved stable in the wild, it will be dropped
 // from HARMONY_SHIPPING, all occurrences of the FLAG_ variable are removed,
@@ -767,6 +766,10 @@ DEFINE_BOOL(scavenge_reclaim_unmodified_objects, true,
             "remove unmodified and unreferenced objects")
 DEFINE_INT(heap_growing_percent, 0,
            "specifies heap growing factor as (1 + heap_growing_percent/100)")
+
+// execution.cc, messages.cc
+DEFINE_BOOL(clear_exceptions_on_js_entry, false,
+            "clear pending exceptions when entering JavaScript")
 
 // counters.cc
 DEFINE_INT(histogram_interval, 600000,

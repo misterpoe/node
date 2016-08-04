@@ -16,9 +16,8 @@
 #include "src/base/atomic-utils.h"
 #include "src/globals.h"
 #include "src/heap-symbols.h"
-// TODO(mstarzinger): Two more includes to kill!
+// TODO(mstarzinger): One more include to kill!
 #include "src/heap/spaces.h"
-#include "src/heap/store-buffer.h"
 #include "src/list.h"
 
 namespace v8 {
@@ -204,7 +203,7 @@ using v8::MemoryPressureLevel;
   V(Object, noscript_shared_function_infos, NoScriptSharedFunctionInfos)       \
   V(FixedArray, serialized_templates, SerializedTemplates)                     \
   /* Configured values */                                                      \
-  V(JSObject, message_listeners, MessageListeners)                             \
+  V(TemplateList, message_listeners, MessageListeners)                         \
   V(Code, js_entry_code, JsEntryCode)                                          \
   V(Code, js_construct_entry_code, JsConstructEntryCode)                       \
   /* Oddball maps */                                                           \
@@ -326,6 +325,7 @@ class MemoryReducer;
 class ObjectStats;
 class Scavenger;
 class ScavengeJob;
+class StoreBuffer;
 class WeakObjectRetainer;
 
 enum PromotionMode { PROMOTE_MARKED, DEFAULT_PROMOTION };
@@ -1034,6 +1034,10 @@ class Heap {
     roots_[kNoScriptSharedFunctionInfosRootIndex] = value;
   }
 
+  void SetMessageListeners(TemplateList* value) {
+    roots_[kMessageListenersRootIndex] = value;
+  }
+
   // Set the stack limit in the roots_ array.  Some architectures generate
   // code that looks here, because it is faster than loading from the static
   // jslimit_/real_jslimit_ variable in the StackGuard.
@@ -1125,10 +1129,11 @@ class Heap {
   inline void RecordWrite(Object* object, int offset, Object* o);
   inline void RecordWriteIntoCode(Code* host, RelocInfo* rinfo, Object* target);
   void RecordWriteIntoCodeSlow(Code* host, RelocInfo* rinfo, Object* target);
+  void RecordWritesIntoCode(Code* code);
   inline void RecordFixedArrayElements(FixedArray* array, int offset,
                                        int length);
 
-  Address* store_buffer_top_address() { return store_buffer()->top_address(); }
+  inline Address* store_buffer_top_address();
 
   void ClearRecordedSlot(HeapObject* object, Object** slot);
   void ClearRecordedSlotRange(Address start, Address end);
@@ -1551,7 +1556,7 @@ class Heap {
   ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
 
-  StoreBuffer* store_buffer() { return &store_buffer_; }
+  StoreBuffer* store_buffer() { return store_buffer_; }
 
   void set_current_gc_flags(int flags) {
     current_gc_flags_ = flags;
@@ -2193,7 +2198,7 @@ class Heap {
 
   MemoryAllocator* memory_allocator_;
 
-  StoreBuffer store_buffer_;
+  StoreBuffer* store_buffer_;
 
   IncrementalMarking* incremental_marking_;
 

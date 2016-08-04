@@ -594,9 +594,16 @@ void TestCharacterStream(const char* one_byte_source, unsigned length,
   TestExternalResource resource(uc16_buffer.get(), length);
   i::Handle<i::String> uc16_string(
       factory->NewExternalStringFromTwoByte(&resource).ToHandleChecked());
+  ScriptResource one_byte_resource(one_byte_source, length);
+  i::Handle<i::String> ext_one_byte_string(
+      factory->NewExternalStringFromOneByte(&one_byte_resource)
+          .ToHandleChecked());
 
   i::ExternalTwoByteStringUtf16CharacterStream uc16_stream(
       i::Handle<i::ExternalTwoByteString>::cast(uc16_string), start, end);
+  i::ExternalOneByteStringUtf16CharacterStream one_byte_stream(
+      i::Handle<i::ExternalOneByteString>::cast(ext_one_byte_string), start,
+      end);
   i::GenericStringUtf16CharacterStream string_stream(one_byte_string, start,
                                                      end);
   i::Utf8ToUtf16CharacterStream utf8_stream(
@@ -609,17 +616,21 @@ void TestCharacterStream(const char* one_byte_source, unsigned length,
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     int32_t c0 = one_byte_source[i];
     int32_t c1 = uc16_stream.Advance();
     int32_t c2 = string_stream.Advance();
     int32_t c3 = utf8_stream.Advance();
+    int32_t c4 = one_byte_stream.Advance();
     i++;
     CHECK_EQ(c0, c1);
     CHECK_EQ(c0, c2);
     CHECK_EQ(c0, c3);
+    CHECK_EQ(c0, c4);
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
   }
   while (i > start + sub_length / 4) {
     // Pushback, re-read, pushback again.
@@ -627,64 +638,80 @@ void TestCharacterStream(const char* one_byte_source, unsigned length,
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     uc16_stream.PushBack(c0);
     string_stream.PushBack(c0);
     utf8_stream.PushBack(c0);
+    one_byte_stream.PushBack(c0);
     i--;
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     int32_t c1 = uc16_stream.Advance();
     int32_t c2 = string_stream.Advance();
     int32_t c3 = utf8_stream.Advance();
+    int32_t c4 = one_byte_stream.Advance();
     i++;
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     CHECK_EQ(c0, c1);
     CHECK_EQ(c0, c2);
     CHECK_EQ(c0, c3);
+    CHECK_EQ(c0, c4);
     uc16_stream.PushBack(c0);
     string_stream.PushBack(c0);
     utf8_stream.PushBack(c0);
+    one_byte_stream.PushBack(c0);
     i--;
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
   }
   unsigned halfway = start + sub_length / 2;
   uc16_stream.SeekForward(halfway - i);
   string_stream.SeekForward(halfway - i);
   utf8_stream.SeekForward(halfway - i);
+  one_byte_stream.SeekForward(halfway - i);
   i = halfway;
   CHECK_EQU(i, uc16_stream.pos());
   CHECK_EQU(i, string_stream.pos());
   CHECK_EQU(i, utf8_stream.pos());
+  CHECK_EQU(i, one_byte_stream.pos());
 
   while (i < end) {
     // Read streams one char at a time
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
     int32_t c0 = one_byte_source[i];
     int32_t c1 = uc16_stream.Advance();
     int32_t c2 = string_stream.Advance();
     int32_t c3 = utf8_stream.Advance();
+    int32_t c4 = one_byte_stream.Advance();
     i++;
     CHECK_EQ(c0, c1);
     CHECK_EQ(c0, c2);
     CHECK_EQ(c0, c3);
+    CHECK_EQ(c0, c4);
     CHECK_EQU(i, uc16_stream.pos());
     CHECK_EQU(i, string_stream.pos());
     CHECK_EQU(i, utf8_stream.pos());
+    CHECK_EQU(i, one_byte_stream.pos());
   }
 
   int32_t c1 = uc16_stream.Advance();
   int32_t c2 = string_stream.Advance();
   int32_t c3 = utf8_stream.Advance();
+  int32_t c4 = one_byte_stream.Advance();
   CHECK_LT(c1, 0);
   CHECK_LT(c2, 0);
   CHECK_LT(c3, 0);
+  CHECK_LT(c4, 0);
 }
 
 
@@ -1530,7 +1557,6 @@ enum ParserFlag {
   kAllowNatives,
   kAllowHarmonyFunctionSent,
   kAllowHarmonyRestrictiveDeclarations,
-  kAllowHarmonyExponentiationOperator,
   kAllowHarmonyForIn,
   kAllowHarmonyAsyncAwait,
   kAllowHarmonyRestrictiveGenerators,
@@ -1552,8 +1578,6 @@ void SetParserFlags(i::ParserBase<Traits>* parser,
       flags.Contains(kAllowHarmonyFunctionSent));
   parser->set_allow_harmony_restrictive_declarations(
       flags.Contains(kAllowHarmonyRestrictiveDeclarations));
-  parser->set_allow_harmony_exponentiation_operator(
-      flags.Contains(kAllowHarmonyExponentiationOperator));
   parser->set_allow_harmony_for_in(flags.Contains(kAllowHarmonyForIn));
   parser->set_allow_harmony_async_await(
       flags.Contains(kAllowHarmonyAsyncAwait));
@@ -1623,6 +1647,7 @@ void TestParserSyncWithFlags(i::Handle<i::String> source,
     i::Handle<i::String> message_string = i::Handle<i::String>::cast(
         i::JSReceiver::GetProperty(isolate, exception_handle, "message")
             .ToHandleChecked());
+    isolate->clear_pending_exception();
 
     if (result == kSuccess) {
       v8::base::OS::Print(
@@ -3369,8 +3394,9 @@ TEST(SerializationOfMaybeAssignmentFlag) {
   CHECK(str->IsInternalizedString());
   i::Scope* script_scope =
       new (&zone) i::Scope(&zone, nullptr, i::SCRIPT_SCOPE);
-  i::Scope* s = i::Scope::DeserializeScopeChain(isolate, &zone, context,
-                                                script_scope, &avf);
+  i::Scope* s = i::Scope::DeserializeScopeChain(
+      isolate, &zone, context, script_scope, &avf,
+      i::Scope::DeserializationMode::kKeepScopeInfo);
   CHECK(s != script_scope);
   CHECK(name != NULL);
 
@@ -3416,8 +3442,9 @@ TEST(IfArgumentsArrayAccessedThenParametersMaybeAssigned) {
 
   i::Scope* script_scope =
       new (&zone) i::Scope(&zone, nullptr, i::SCRIPT_SCOPE);
-  i::Scope* s = i::Scope::DeserializeScopeChain(isolate, &zone, context,
-                                                script_scope, &avf);
+  i::Scope* s = i::Scope::DeserializeScopeChain(
+      isolate, &zone, context, script_scope, &avf,
+      i::Scope::DeserializationMode::kKeepScopeInfo);
   CHECK(s != script_scope);
   const i::AstRawString* name_x = avf.GetOneByteString("x");
 
@@ -5591,6 +5618,7 @@ TEST(BasicImportExportParsing) {
         i::Handle<i::String> message_string = i::Handle<i::String>::cast(
             i::JSReceiver::GetProperty(isolate, exception_handle, "message")
                 .ToHandleChecked());
+        isolate->clear_pending_exception();
 
         v8::base::OS::Print(
             "Parser failed on:\n"
@@ -5611,6 +5639,7 @@ TEST(BasicImportExportParsing) {
       i::Parser parser(&info);
       info.set_global();
       CHECK(!parser.Parse(&info));
+      isolate->clear_pending_exception();
     }
   }
 }
@@ -5703,6 +5732,7 @@ TEST(ImportExportParsingErrors) {
     i::Parser parser(&info);
     info.set_module();
     CHECK(!parser.Parse(&info));
+    isolate->clear_pending_exception();
   }
 }
 
@@ -5740,6 +5770,7 @@ TEST(ModuleTopLevelFunctionDecl) {
     i::Parser parser(&info);
     info.set_module();
     CHECK(!parser.Parse(&info));
+    isolate->clear_pending_exception();
   }
 }
 
@@ -7443,10 +7474,7 @@ TEST(ExponentiationOperator) {
   };
   // clang-format on
 
-  static const ParserFlag always_flags[] = {
-      kAllowHarmonyExponentiationOperator};
-  RunParserSyncTest(context_data, data, kSuccess, NULL, 0, always_flags,
-                    arraysize(always_flags));
+  RunParserSyncTest(context_data, data, kSuccess);
 }
 
 TEST(ExponentiationOperatorErrors) {
@@ -7493,10 +7521,7 @@ TEST(ExponentiationOperatorErrors) {
   };
   // clang-format on
 
-  static const ParserFlag always_flags[] = {
-      kAllowHarmonyExponentiationOperator};
-  RunParserSyncTest(context_data, error_data, kError, NULL, 0, always_flags,
-                    arraysize(always_flags));
+  RunParserSyncTest(context_data, error_data, kError);
 }
 
 TEST(AsyncAwait) {

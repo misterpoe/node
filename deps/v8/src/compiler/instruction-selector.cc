@@ -299,6 +299,9 @@ void InstructionSelector::MarkAsDefined(Node* node) {
 
 bool InstructionSelector::IsUsed(Node* node) const {
   DCHECK_NOT_NULL(node);
+  // TODO(bmeurer): This is a terrible monster hack, but we have to make sure
+  // that the Retain is actually emitted, otherwise the GC will mess up.
+  if (node->opcode() == IrOpcode::kRetain) return true;
   if (!node->op()->HasProperty(Operator::kEliminatable)) return true;
   size_t const id = node->id();
   DCHECK_LT(id, used_.size());
@@ -634,7 +637,7 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
     // all the frames on top of it that are either an arguments adaptor frame
     // or a tail caller frame.
     if (buffer->descriptor->SupportsTailCalls()) {
-      frame_state = NodeProperties::GetFrameStateInput(frame_state, 0);
+      frame_state = NodeProperties::GetFrameStateInput(frame_state);
       buffer->frame_state_descriptor =
           buffer->frame_state_descriptor->outer_state();
       while (buffer->frame_state_descriptor != nullptr &&
@@ -642,7 +645,7 @@ void InstructionSelector::InitializeCallBuffer(Node* call, CallBuffer* buffer,
                   FrameStateType::kArgumentsAdaptor ||
               buffer->frame_state_descriptor->type() ==
                   FrameStateType::kTailCallerFunction)) {
-        frame_state = NodeProperties::GetFrameStateInput(frame_state, 0);
+        frame_state = NodeProperties::GetFrameStateInput(frame_state);
         buffer->frame_state_descriptor =
             buffer->frame_state_descriptor->outer_state();
       }
@@ -929,6 +932,9 @@ void InstructionSelector::VisitNode(Node* node) {
     case IrOpcode::kComment:
       VisitComment(node);
       return;
+    case IrOpcode::kRetain:
+      VisitRetain(node);
+      return;
     case IrOpcode::kLoad: {
       LoadRepresentation type = LoadRepresentationOf(node->op());
       MarkAsRepresentation(type.representation(), node);
@@ -958,6 +964,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsWord32(node), VisitWord32Ctz(node);
     case IrOpcode::kWord32ReverseBits:
       return MarkAsWord32(node), VisitWord32ReverseBits(node);
+    case IrOpcode::kWord32ReverseBytes:
+      return MarkAsWord32(node), VisitWord32ReverseBytes(node);
     case IrOpcode::kWord32Popcnt:
       return MarkAsWord32(node), VisitWord32Popcnt(node);
     case IrOpcode::kWord64Popcnt:
@@ -982,6 +990,8 @@ void InstructionSelector::VisitNode(Node* node) {
       return MarkAsWord64(node), VisitWord64Ctz(node);
     case IrOpcode::kWord64ReverseBits:
       return MarkAsWord64(node), VisitWord64ReverseBits(node);
+    case IrOpcode::kWord64ReverseBytes:
+      return MarkAsWord64(node), VisitWord64ReverseBytes(node);
     case IrOpcode::kWord64Equal:
       return VisitWord64Equal(node);
     case IrOpcode::kInt32Add:
@@ -1293,6 +1303,9 @@ void InstructionSelector::VisitNode(Node* node) {
     }
     case IrOpcode::kAtomicStore:
       return VisitAtomicStore(node);
+    case IrOpcode::kUnsafePointerAdd:
+      MarkAsRepresentation(MachineType::PointerRepresentation(), node);
+      return VisitUnsafePointerAdd(node);
     default:
       V8_Fatal(__FILE__, __LINE__, "Unexpected operator #%d:%s @ node #%d",
                node->opcode(), node->op()->mnemonic(), node->id());
@@ -1766,12 +1779,6 @@ void InstructionSelector::VisitCall(Node* node, BasicBlock* handler) {
   CallDescriptor::Flags flags = descriptor->flags();
   if (handler) {
     DCHECK_EQ(IrOpcode::kIfException, handler->front()->opcode());
-    IfExceptionHint hint = OpParameter<IfExceptionHint>(handler->front());
-    if (hint == IfExceptionHint::kLocallyCaught) {
-      flags |= CallDescriptor::kHasLocalCatchHandler;
-    } else if (hint == IfExceptionHint::kLocallyCaughtForPromiseReject) {
-      flags |= CallDescriptor::kHasLocalCatchHandlerForPromiseReject;
-    }
     flags |= CallDescriptor::kHasExceptionHandler;
     buffer.instruction_args.push_back(g.Label(handler));
   }
@@ -2010,6 +2017,19 @@ void InstructionSelector::VisitComment(Node* node) {
   OperandGenerator g(this);
   InstructionOperand operand(g.UseImmediate(node));
   Emit(kArchComment, 0, nullptr, 1, &operand);
+}
+
+void InstructionSelector::VisitUnsafePointerAdd(Node* node) {
+#if V8_TARGET_ARCH_64_BIT
+  VisitInt64Add(node);
+#else   // V8_TARGET_ARCH_64_BIT
+  VisitInt32Add(node);
+#endif  // V8_TARGET_ARCH_64_BIT
+}
+
+void InstructionSelector::VisitRetain(Node* node) {
+  OperandGenerator g(this);
+  Emit(kArchNop, g.NoOutput(), g.UseAny(node->InputAt(0)));
 }
 
 bool InstructionSelector::CanProduceSignalingNaN(Node* node) {

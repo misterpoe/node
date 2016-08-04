@@ -65,6 +65,44 @@ enum Phase {
 
 namespace {
 
+MachineRepresentation MachineRepresentationFromArrayType(
+    ExternalArrayType array_type) {
+  switch (array_type) {
+    case kExternalUint8Array:
+    case kExternalUint8ClampedArray:
+    case kExternalInt8Array:
+      return MachineRepresentation::kWord8;
+    case kExternalUint16Array:
+    case kExternalInt16Array:
+      return MachineRepresentation::kWord16;
+    case kExternalUint32Array:
+    case kExternalInt32Array:
+      return MachineRepresentation::kWord32;
+    case kExternalFloat32Array:
+      return MachineRepresentation::kFloat32;
+    case kExternalFloat64Array:
+      return MachineRepresentation::kFloat64;
+  }
+  UNREACHABLE();
+  return MachineRepresentation::kNone;
+}
+
+UseInfo CheckedUseInfoAsWord32FromHint(BinaryOperationHints::Hint hint) {
+  switch (hint) {
+    case BinaryOperationHints::kSignedSmall:
+      return UseInfo::CheckedSignedSmallAsWord32();
+    case BinaryOperationHints::kSigned32:
+      return UseInfo::CheckedSigned32AsWord32();
+    case BinaryOperationHints::kNumberOrOddball:
+      return UseInfo::CheckedNumberOrOddballAsWord32();
+    case BinaryOperationHints::kNone:
+    case BinaryOperationHints::kString:
+    case BinaryOperationHints::kAny:
+      break;
+  }
+  UNREACHABLE();
+  return UseInfo::None();
+}
 
 UseInfo TruncatingUseInfoFromRepresentation(MachineRepresentation rep) {
   switch (rep) {
@@ -337,84 +375,37 @@ class RepresentationSelector {
     }
 
     switch (node->opcode()) {
-      case IrOpcode::kNumberAdd:
-      case IrOpcode::kSpeculativeNumberAdd: {
-        // TODO(jarin) The ToNumber conversion is too conservative here,
-        // e.g. it will treat true as 1 even though the number check will
-        // fail on a boolean. OperationTyper should have a function that
-        // computes a more precise type.
-        Type* lhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(0)));
-        Type* rhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(1)));
-        Type* computed_type = op_typer_.NumberAdd(lhs, rhs);
-        new_type = Type::Intersect(computed_type, info->restriction_type(),
-                                   graph_zone());
-        break;
-      }
+#define DECLARE_CASE(Name)                                       \
+  case IrOpcode::k##Name: {                                      \
+    new_type = op_typer_.Name(FeedbackTypeOf(node->InputAt(0)),  \
+                              FeedbackTypeOf(node->InputAt(1))); \
+    break;                                                       \
+  }
+      SIMPLIFIED_NUMBER_BINOP_LIST(DECLARE_CASE)
+#undef DECLARE_CASE
 
-      case IrOpcode::kNumberSubtract:
-      case IrOpcode::kSpeculativeNumberSubtract: {
-        // TODO(jarin) The ToNumber conversion is too conservative here,
-        // e.g. it will treat true as 1 even though the number check will
-        // fail on a boolean. OperationTyper should have a function that
-        // computes a more precise type.
-        Type* lhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(0)));
-        Type* rhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(1)));
-        Type* computed_type = op_typer_.NumberSubtract(lhs, rhs);
-        new_type = Type::Intersect(computed_type, info->restriction_type(),
-                                   graph_zone());
-        break;
-      }
+#define DECLARE_CASE(Name)                                                \
+  case IrOpcode::k##Name: {                                               \
+    new_type =                                                            \
+        Type::Intersect(op_typer_.Name(FeedbackTypeOf(node->InputAt(0)),  \
+                                       FeedbackTypeOf(node->InputAt(1))), \
+                        info->restriction_type(), graph_zone());          \
+    break;                                                                \
+  }
+      SIMPLIFIED_SPECULATIVE_NUMBER_BINOP_LIST(DECLARE_CASE)
+#undef DECLARE_CASE
 
-      case IrOpcode::kNumberMultiply:
-      case IrOpcode::kSpeculativeNumberMultiply: {
-        // TODO(jarin) The ToNumber conversion is too conservative here,
-        // e.g. it will treat true as 1 even though the number check will
-        // fail on a boolean. OperationTyper should have a function that
-        // computes a more precise type.
-        Type* lhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(0)));
-        Type* rhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(1)));
-        Type* computed_type = op_typer_.NumberMultiply(lhs, rhs);
-        new_type = Type::Intersect(computed_type, info->restriction_type(),
-                                   graph_zone());
-        break;
-      }
-
-      case IrOpcode::kNumberDivide:
-      case IrOpcode::kSpeculativeNumberDivide: {
-        // TODO(jarin) The ToNumber conversion is too conservative here,
-        // e.g. it will treat true as 1 even though the number check will
-        // fail on a boolean. OperationTyper should have a function that
-        // computes a more precise type.
-        Type* lhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(0)));
-        Type* rhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(1)));
-        Type* computed_type = op_typer_.NumberDivide(lhs, rhs);
-        new_type = Type::Intersect(computed_type, info->restriction_type(),
-                                   graph_zone());
-        break;
-      }
-
-      case IrOpcode::kNumberModulus:
-      case IrOpcode::kSpeculativeNumberModulus: {
-        // TODO(jarin) The ToNumber conversion is too conservative here,
-        // e.g. it will treat true as 1 even though the number check will
-        // fail on a boolean. OperationTyper should have a function that
-        // computes a more precise type.
-        Type* lhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(0)));
-        Type* rhs = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(1)));
-        Type* computed_type = op_typer_.NumberModulus(lhs, rhs);
-        new_type = Type::Intersect(computed_type, info->restriction_type(),
-                                   graph_zone());
-        break;
-      }
+#define DECLARE_CASE(Name)                                       \
+  case IrOpcode::k##Name: {                                      \
+    new_type = op_typer_.Name(FeedbackTypeOf(node->InputAt(0))); \
+    break;                                                       \
+  }
+      SIMPLIFIED_NUMBER_UNOP_LIST(DECLARE_CASE)
+#undef DECLARE_CASE
 
       case IrOpcode::kPlainPrimitiveToNumber:
         new_type = op_typer_.ToNumber(FeedbackTypeOf(node->InputAt(0)));
         break;
-
-      case IrOpcode::kNumberAbs: {
-        new_type = op_typer_.NumberAbs(FeedbackTypeOf(node->InputAt(0)));
-        break;
-      }
 
       case IrOpcode::kPhi: {
         new_type = TypePhi(node);
@@ -656,6 +647,12 @@ class RepresentationSelector {
            GetUpperBound(node->InputAt(1))->Is(type);
   }
 
+  bool OneInputCannotBe(Node* node, Type* type) {
+    DCHECK_EQ(2, node->op()->ValueInputCount());
+    return !GetUpperBound(node->InputAt(0))->Maybe(type) ||
+           !GetUpperBound(node->InputAt(1))->Maybe(type);
+  }
+
   void ConvertInput(Node* node, int index, UseInfo use) {
     Node* input = node->InputAt(index);
     // In the change phase, insert a change before the use if necessary.
@@ -755,6 +752,17 @@ class RepresentationSelector {
     VisitBinop(node, input_use, input_use, output, restriction_type);
   }
 
+  void VisitSpeculativeInt32Binop(Node* node) {
+    DCHECK_EQ(2, node->op()->ValueInputCount());
+    if (BothInputsAre(node, Type::NumberOrOddball())) {
+      return VisitBinop(node, UseInfo::TruncatingWord32(),
+                        MachineRepresentation::kWord32);
+    }
+    BinaryOperationHints::Hint hint = BinaryOperationHintOf(node->op());
+    return VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
+                      MachineRepresentation::kWord32);
+  }
+
   // Helper for unops of the I -> O variety.
   void VisitUnop(Node* node, UseInfo input_use, MachineRepresentation output) {
     DCHECK_EQ(1, node->op()->ValueInputCount());
@@ -818,11 +826,11 @@ class RepresentationSelector {
       return MachineRepresentation::kNone;
     } else if (type->Is(Type::Signed32()) || type->Is(Type::Unsigned32())) {
       return MachineRepresentation::kWord32;
-    } else if (use.IsUsedAsWord32()) {
+    } else if (type->Is(Type::NumberOrOddball()) && use.IsUsedAsWord32()) {
       return MachineRepresentation::kWord32;
     } else if (type->Is(Type::Boolean())) {
       return MachineRepresentation::kBit;
-    } else if (use.IsUsedAsFloat64()) {
+    } else if (type->Is(Type::NumberOrOddball()) && use.IsUsedAsFloat64()) {
       return MachineRepresentation::kFloat64;
     } else if (type->Is(
                    Type::Union(Type::SignedSmall(), Type::NaN(), zone()))) {
@@ -1089,7 +1097,7 @@ class RepresentationSelector {
     if (BothInputsAre(node, Type::PlainPrimitive())) {
       if (truncation.IsUnused()) return VisitUnused(node);
     }
-    if (BothInputsAre(node, type_cache_.kSigned32OrMinusZero) &&
+    if (BothInputsAre(node, Type::Signed32OrMinusZero()) &&
         NodeProperties::GetType(node)->Is(Type::Signed32())) {
       // int32 + int32 = int32   ==>   signed Int32Add/Sub
       VisitInt32Binop(node);
@@ -1113,7 +1121,7 @@ class RepresentationSelector {
     // Handle the case when no int32 checks on inputs are necessary
     // (but an overflow check is needed on the output).
     if (BothInputsAre(node, Type::Signed32()) ||
-        (BothInputsAre(node, type_cache_.kSigned32OrMinusZero) &&
+        (BothInputsAre(node, Type::Signed32OrMinusZero()) &&
          NodeProperties::GetType(node)->Is(type_cache_.kSafeInteger))) {
       // If both the inputs the feedback are int32, use the overflow op.
       if (hint == BinaryOperationHints::kSignedSmall ||
@@ -1127,7 +1135,7 @@ class RepresentationSelector {
 
     if (hint == BinaryOperationHints::kSignedSmall ||
         hint == BinaryOperationHints::kSigned32) {
-      VisitBinop(node, UseInfo::CheckedSigned32AsWord32(),
+      VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
                  MachineRepresentation::kWord32, Type::Signed32());
       if (lower()) ChangeToInt32OverflowOp(node);
       return;
@@ -1252,7 +1260,35 @@ class RepresentationSelector {
         }
         return;
       }
-      case IrOpcode::kNumberEqual:
+      case IrOpcode::kNumberEqual: {
+        Type* const lhs_type = TypeOf(node->InputAt(0));
+        Type* const rhs_type = TypeOf(node->InputAt(1));
+        // Number comparisons reduce to integer comparisons for integer inputs.
+        if ((lhs_type->Is(Type::Unsigned32()) &&
+             rhs_type->Is(Type::Unsigned32())) ||
+            (lhs_type->Is(Type::Unsigned32OrMinusZeroOrNaN()) &&
+             rhs_type->Is(Type::Unsigned32OrMinusZeroOrNaN()) &&
+             OneInputCannotBe(node, type_cache_.kZeroish))) {
+          // => unsigned Int32Cmp
+          VisitUint32Cmp(node);
+          if (lower()) NodeProperties::ChangeOp(node, Uint32Op(node));
+          return;
+        }
+        if ((lhs_type->Is(Type::Signed32()) &&
+             rhs_type->Is(Type::Signed32())) ||
+            (lhs_type->Is(Type::Signed32OrMinusZeroOrNaN()) &&
+             rhs_type->Is(Type::Signed32OrMinusZeroOrNaN()) &&
+             OneInputCannotBe(node, type_cache_.kZeroish))) {
+          // => signed Int32Cmp
+          VisitInt32Cmp(node);
+          if (lower()) NodeProperties::ChangeOp(node, Int32Op(node));
+          return;
+        }
+        // => Float64Cmp
+        VisitFloat64Cmp(node);
+        if (lower()) NodeProperties::ChangeOp(node, Float64Op(node));
+        return;
+      }
       case IrOpcode::kNumberLessThan:
       case IrOpcode::kNumberLessThanOrEqual: {
         // Number comparisons reduce to integer comparisons for integer inputs.
@@ -1387,7 +1423,7 @@ class RepresentationSelector {
 
         if (hint == BinaryOperationHints::kSignedSmall ||
             hint == BinaryOperationHints::kSigned32) {
-          VisitBinop(node, UseInfo::CheckedSigned32AsWord32(),
+          VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
                      MachineRepresentation::kWord32, Type::Signed32());
           if (lower()) {
             LowerToCheckedInt32Mul(node, truncation, input0_type, input1_type);
@@ -1483,11 +1519,11 @@ class RepresentationSelector {
             hint == BinaryOperationHints::kSigned32) {
           // If the result is truncated, we only need to check the inputs.
           if (truncation.IsUsedAsWord32()) {
-            VisitBinop(node, UseInfo::CheckedSigned32AsWord32(),
+            VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
                        MachineRepresentation::kWord32);
             if (lower()) DeferReplacement(node, lowering->Int32Div(node));
           } else {
-            VisitBinop(node, UseInfo::CheckedSigned32AsWord32(),
+            VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
                        MachineRepresentation::kWord32, Type::Signed32());
             if (lower()) ChangeToInt32OverflowOp(node);
           }
@@ -1542,25 +1578,21 @@ class RepresentationSelector {
         if (BothInputsAre(node, Type::PlainPrimitive())) {
           if (truncation.IsUnused()) return VisitUnused(node);
         }
-        if (BothInputsAreUnsigned32(node) && truncation.IsUsedAsWord32()) {
+        if (BothInputsAre(node, Type::Unsigned32OrMinusZeroOrNaN()) &&
+            (truncation.IsUsedAsWord32() ||
+             NodeProperties::GetType(node)->Is(Type::Unsigned32()))) {
           // => unsigned Uint32Mod
           VisitWord32TruncatingBinop(node);
           if (lower()) DeferReplacement(node, lowering->Uint32Mod(node));
           return;
         }
-        if (BothInputsAreSigned32(node)) {
-          if (NodeProperties::GetType(node)->Is(Type::Signed32())) {
-            // => signed Int32Mod
-            VisitInt32Binop(node);
-            if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
-            return;
-          }
-          if (truncation.IsUsedAsWord32()) {
-            // => signed Int32Mod
-            VisitWord32TruncatingBinop(node);
-            if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
-            return;
-          }
+        if (BothInputsAre(node, Type::Signed32OrMinusZeroOrNaN()) &&
+            (truncation.IsUsedAsWord32() ||
+             NodeProperties::GetType(node)->Is(Type::Signed32()))) {
+          // => signed Int32Mod
+          VisitWord32TruncatingBinop(node);
+          if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
+          return;
         }
 
         // Try to use type feedback.
@@ -1595,17 +1627,41 @@ class RepresentationSelector {
             hint == BinaryOperationHints::kSigned32) {
           // If the result is truncated, we only need to check the inputs.
           if (truncation.IsUsedAsWord32()) {
-            VisitBinop(node, UseInfo::CheckedSigned32AsWord32(),
+            VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
                        MachineRepresentation::kWord32);
             if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
           } else {
-            VisitBinop(node, UseInfo::CheckedSigned32AsWord32(),
+            VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
                        MachineRepresentation::kWord32, Type::Signed32());
             if (lower()) ChangeToInt32OverflowOp(node);
           }
           return;
         }
 
+        if (TypeOf(node->InputAt(0))->Is(Type::Unsigned32()) &&
+            TypeOf(node->InputAt(1))->Is(Type::Unsigned32()) &&
+            (truncation.IsUsedAsWord32() ||
+             NodeProperties::GetType(node)->Is(Type::Unsigned32()))) {
+          // We can only promise Float64 truncation here, as the decision is
+          // based on the feedback types of the inputs.
+          VisitBinop(node, UseInfo(MachineRepresentation::kWord32,
+                                   Truncation::Float64()),
+                     MachineRepresentation::kWord32);
+          if (lower()) DeferReplacement(node, lowering->Uint32Mod(node));
+          return;
+        }
+        if (TypeOf(node->InputAt(0))->Is(Type::Signed32()) &&
+            TypeOf(node->InputAt(1))->Is(Type::Signed32()) &&
+            (truncation.IsUsedAsWord32() ||
+             NodeProperties::GetType(node)->Is(Type::Signed32()))) {
+          // We can only promise Float64 truncation here, as the decision is
+          // based on the feedback types of the inputs.
+          VisitBinop(node, UseInfo(MachineRepresentation::kWord32,
+                                   Truncation::Float64()),
+                     MachineRepresentation::kWord32);
+          if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
+          return;
+        }
         // default case => Float64Mod
         VisitBinop(node, UseInfo::CheckedNumberOrOddballAsFloat64(),
                    MachineRepresentation::kFloat64, Type::Number());
@@ -1613,27 +1669,47 @@ class RepresentationSelector {
         return;
       }
       case IrOpcode::kNumberModulus: {
-        if (BothInputsAreUnsigned32(node) && truncation.IsUsedAsWord32()) {
+        if (BothInputsAre(node, Type::Unsigned32OrMinusZeroOrNaN()) &&
+            (truncation.IsUsedAsWord32() ||
+             NodeProperties::GetType(node)->Is(Type::Unsigned32()))) {
           // => unsigned Uint32Mod
           VisitWord32TruncatingBinop(node);
           if (lower()) DeferReplacement(node, lowering->Uint32Mod(node));
           return;
         }
-        if (BothInputsAreSigned32(node)) {
-          if (NodeProperties::GetType(node)->Is(Type::Signed32())) {
-            // => signed Int32Mod
-            VisitInt32Binop(node);
-            if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
-            return;
-          }
-          if (truncation.IsUsedAsWord32()) {
-            // => signed Int32Mod
-            VisitWord32TruncatingBinop(node);
-            if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
-            return;
-          }
+        if (BothInputsAre(node, Type::Signed32OrMinusZeroOrNaN()) &&
+            (truncation.IsUsedAsWord32() ||
+             NodeProperties::GetType(node)->Is(Type::Signed32()))) {
+          // => signed Int32Mod
+          VisitWord32TruncatingBinop(node);
+          if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
+          return;
         }
-        // => Float64Mod
+        if (TypeOf(node->InputAt(0))->Is(Type::Unsigned32()) &&
+            TypeOf(node->InputAt(1))->Is(Type::Unsigned32()) &&
+            (truncation.IsUsedAsWord32() ||
+             NodeProperties::GetType(node)->Is(Type::Unsigned32()))) {
+          // We can only promise Float64 truncation here, as the decision is
+          // based on the feedback types of the inputs.
+          VisitBinop(node, UseInfo(MachineRepresentation::kWord32,
+                                   Truncation::Float64()),
+                     MachineRepresentation::kWord32);
+          if (lower()) DeferReplacement(node, lowering->Uint32Mod(node));
+          return;
+        }
+        if (TypeOf(node->InputAt(0))->Is(Type::Signed32()) &&
+            TypeOf(node->InputAt(1))->Is(Type::Signed32()) &&
+            (truncation.IsUsedAsWord32() ||
+             NodeProperties::GetType(node)->Is(Type::Signed32()))) {
+          // We can only promise Float64 truncation here, as the decision is
+          // based on the feedback types of the inputs.
+          VisitBinop(node, UseInfo(MachineRepresentation::kWord32,
+                                   Truncation::Float64()),
+                     MachineRepresentation::kWord32);
+          if (lower()) DeferReplacement(node, lowering->Int32Mod(node));
+          return;
+        }
+        // default case => Float64Mod
         VisitFloat64Binop(node);
         if (lower()) ChangeToPureOp(node, Float64Op(node));
         return;
@@ -1645,6 +1721,14 @@ class RepresentationSelector {
         if (lower()) NodeProperties::ChangeOp(node, Int32Op(node));
         return;
       }
+      case IrOpcode::kSpeculativeNumberBitwiseOr:
+      case IrOpcode::kSpeculativeNumberBitwiseXor:
+      case IrOpcode::kSpeculativeNumberBitwiseAnd:
+        VisitSpeculativeInt32Binop(node);
+        if (lower()) {
+          ChangeToPureOp(node, Int32Op(node));
+        }
+        return;
       case IrOpcode::kNumberShiftLeft: {
         Type* rhs_type = GetUpperBound(node->InputAt(1));
         VisitBinop(node, UseInfo::TruncatingWord32(),
@@ -1674,9 +1758,7 @@ class RepresentationSelector {
         }
         BinaryOperationHints::Hint hint = BinaryOperationHintOf(node->op());
         Type* rhs_type = GetUpperBound(node->InputAt(1));
-        VisitBinop(node, hint == BinaryOperationHints::kNumberOrOddball
-                             ? UseInfo::CheckedNumberOrOddballAsWord32()
-                             : UseInfo::CheckedSigned32AsWord32(),
+        VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
                    MachineRepresentation::kWord32, Type::Signed32());
         if (lower()) {
           lowering->DoShift(node, lowering->machine()->Word32Shl(), rhs_type);
@@ -1692,10 +1774,64 @@ class RepresentationSelector {
         }
         return;
       }
+      case IrOpcode::kSpeculativeNumberShiftRight: {
+        // ToNumber(x) can throw if x is either a Receiver or a Symbol, so we
+        // can only eliminate an unused speculative number operation if we know
+        // that the inputs are PlainPrimitive, which excludes everything that's
+        // might have side effects or throws during a ToNumber conversion.
+        if (BothInputsAre(node, Type::PlainPrimitive())) {
+          if (truncation.IsUnused()) return VisitUnused(node);
+        }
+        if (BothInputsAre(node, Type::NumberOrOddball())) {
+          Type* rhs_type = GetUpperBound(node->InputAt(1));
+          VisitBinop(node, UseInfo::TruncatingWord32(),
+                     UseInfo::TruncatingWord32(),
+                     MachineRepresentation::kWord32);
+          if (lower()) {
+            lowering->DoShift(node, lowering->machine()->Word32Sar(), rhs_type);
+          }
+          return;
+        }
+        BinaryOperationHints::Hint hint = BinaryOperationHintOf(node->op());
+        Type* rhs_type = GetUpperBound(node->InputAt(1));
+        VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
+                   MachineRepresentation::kWord32, Type::Signed32());
+        if (lower()) {
+          lowering->DoShift(node, lowering->machine()->Word32Sar(), rhs_type);
+        }
+        return;
+      }
       case IrOpcode::kNumberShiftRightLogical: {
         Type* rhs_type = GetUpperBound(node->InputAt(1));
         VisitBinop(node, UseInfo::TruncatingWord32(),
                    UseInfo::TruncatingWord32(), MachineRepresentation::kWord32);
+        if (lower()) {
+          lowering->DoShift(node, lowering->machine()->Word32Shr(), rhs_type);
+        }
+        return;
+      }
+      case IrOpcode::kSpeculativeNumberShiftRightLogical: {
+        // ToNumber(x) can throw if x is either a Receiver or a Symbol, so we
+        // can only eliminate an unused speculative number operation if we know
+        // that the inputs are PlainPrimitive, which excludes everything that's
+        // might have side effects or throws during a ToNumber conversion.
+        if (BothInputsAre(node, Type::PlainPrimitive())) {
+          if (truncation.IsUnused()) return VisitUnused(node);
+        }
+        if (BothInputsAre(node, Type::NumberOrOddball())) {
+          Type* rhs_type = GetUpperBound(node->InputAt(1));
+          VisitBinop(node, UseInfo::TruncatingWord32(),
+                     UseInfo::TruncatingWord32(),
+                     MachineRepresentation::kWord32);
+          if (lower()) {
+            lowering->DoShift(node, lowering->machine()->Word32Shr(), rhs_type);
+          }
+          return;
+        }
+        BinaryOperationHints::Hint hint = BinaryOperationHintOf(node->op());
+        Type* rhs_type = GetUpperBound(node->InputAt(1));
+        VisitBinop(node, CheckedUseInfoAsWord32FromHint(hint),
+                   MachineRepresentation::kWord32, Type::Unsigned32());
         if (lower()) {
           lowering->DoShift(node, lowering->machine()->Word32Shr(), rhs_type);
         }
@@ -2010,8 +2146,7 @@ class RepresentationSelector {
       }
       case IrOpcode::kCheckTaggedSigned: {
         if (SmiValuesAre32Bits() && truncation.IsUsedAsWord32()) {
-          // TODO(jarin,bmeurer): Add CheckedSignedSmallAsWord32?
-          VisitUnop(node, UseInfo::CheckedSigned32AsWord32(),
+          VisitUnop(node, UseInfo::CheckedSignedSmallAsWord32(),
                     MachineRepresentation::kWord32);
           if (lower()) DeferReplacement(node, node->InputAt(0));
         } else {
@@ -2151,6 +2286,30 @@ class RepresentationSelector {
         }
         return;
       }
+      case IrOpcode::kLoadTypedElement: {
+        MachineRepresentation const rep =
+            MachineRepresentationFromArrayType(ExternalArrayTypeOf(node->op()));
+        ProcessInput(node, 0, UseInfo::AnyTagged());         // buffer
+        ProcessInput(node, 1, UseInfo::AnyTagged());         // base pointer
+        ProcessInput(node, 2, UseInfo::PointerInt());        // external pointer
+        ProcessInput(node, 3, UseInfo::TruncatingWord32());  // index
+        ProcessRemainingInputs(node, 4);
+        SetOutput(node, rep);
+        return;
+      }
+      case IrOpcode::kStoreTypedElement: {
+        MachineRepresentation const rep =
+            MachineRepresentationFromArrayType(ExternalArrayTypeOf(node->op()));
+        ProcessInput(node, 0, UseInfo::AnyTagged());         // buffer
+        ProcessInput(node, 1, UseInfo::AnyTagged());         // base pointer
+        ProcessInput(node, 2, UseInfo::PointerInt());        // external pointer
+        ProcessInput(node, 3, UseInfo::TruncatingWord32());  // index
+        ProcessInput(node, 4,
+                     TruncatingUseInfoFromRepresentation(rep));  // value
+        ProcessRemainingInputs(node, 5);
+        SetOutput(node, MachineRepresentation::kNone);
+        return;
+      }
       case IrOpcode::kPlainPrimitiveToNumber: {
         if (InputIs(node, Type::Boolean())) {
           VisitUnop(node, UseInfo::Bool(), MachineRepresentation::kWord32);
@@ -2226,6 +2385,7 @@ class RepresentationSelector {
         }
         return;
       }
+      case IrOpcode::kCheckMaps:
       case IrOpcode::kTransitionElementsKind: {
         VisitInputs(node);
         return SetOutput(node, MachineRepresentation::kNone);

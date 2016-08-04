@@ -252,11 +252,6 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationSpace space,
     old_gen_exhausted_ = true;
   }
 
-  if (!old_gen_exhausted_ && incremental_marking()->black_allocation() &&
-      space != OLD_SPACE) {
-    Marking::MarkBlack(ObjectMarking::MarkBitFrom(object));
-    MemoryChunk::IncrementLiveBytesFromGC(object, size_in_bytes);
-  }
   return allocation;
 }
 
@@ -443,6 +438,9 @@ void Heap::RecordFixedArrayElements(FixedArray* array, int offset, int length) {
   }
 }
 
+Address* Heap::store_buffer_top_address() {
+  return store_buffer()->top_address();
+}
 
 bool Heap::AllowedToBeMigrated(HeapObject* obj, AllocationSpace dst) {
   // Object migration is governed by the following rules:

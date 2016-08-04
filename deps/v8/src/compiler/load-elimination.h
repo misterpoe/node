@@ -149,10 +149,13 @@ class LoadElimination final : public AdvancedReducer {
     ZoneVector<AbstractState const*> info_for_node_;
   };
 
+  Reduction ReduceCheckMaps(Node* node);
+  Reduction ReduceTransitionElementsKind(Node* node);
   Reduction ReduceLoadField(Node* node);
   Reduction ReduceStoreField(Node* node);
   Reduction ReduceLoadElement(Node* node);
   Reduction ReduceStoreElement(Node* node);
+  Reduction ReduceStoreTypedElement(Node* node);
   Reduction ReduceEffectPhi(Node* node);
   Reduction ReduceStart(Node* node);
   Reduction ReduceOtherNode(Node* node);

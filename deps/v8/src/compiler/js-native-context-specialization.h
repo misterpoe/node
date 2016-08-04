@@ -41,8 +41,9 @@ class JSNativeContextSpecialization final : public AdvancedReducer {
   // Flags that control the mode of operation.
   enum Flag {
     kNoFlags = 0u,
-    kBailoutOnUninitialized = 1u << 0,
-    kDeoptimizationEnabled = 1u << 1,
+    kAccessorInliningEnabled = 1u << 0,
+    kBailoutOnUninitialized = 1u << 1,
+    kDeoptimizationEnabled = 1u << 2,
   };
   typedef base::Flags<Flag> Flags;
 
@@ -65,9 +66,9 @@ class JSNativeContextSpecialization final : public AdvancedReducer {
                                 AccessMode access_mode,
                                 LanguageMode language_mode,
                                 KeyedAccessStoreMode store_mode);
+  template <typename KeyedICNexus>
   Reduction ReduceKeyedAccess(Node* node, Node* index, Node* value,
-                              FeedbackNexus const& nexus,
-                              AccessMode access_mode,
+                              KeyedICNexus const& nexus, AccessMode access_mode,
                               LanguageMode language_mode,
                               KeyedAccessStoreMode store_mode);
   Reduction ReduceNamedAccess(Node* node, Node* value,
@@ -100,6 +101,7 @@ class JSNativeContextSpecialization final : public AdvancedReducer {
 
   // Construct the appropriate subgraph for property access.
   ValueEffectControl BuildPropertyAccess(Node* receiver, Node* value,
+                                         Node* context, Node* frame_state,
                                          Node* effect, Node* control,
                                          Handle<Name> name,
                                          Handle<Context> native_context,
@@ -107,12 +109,17 @@ class JSNativeContextSpecialization final : public AdvancedReducer {
                                          AccessMode access_mode);
 
   // Construct the appropriate subgraph for element access.
-  ValueEffectControl BuildElementAccess(Node* receiver, Node* index,
-                                        Node* value, Node* effect,
-                                        Node* control,
-                                        Handle<Context> native_context,
-                                        ElementAccessInfo const& access_info,
-                                        AccessMode access_mode);
+  ValueEffectControl BuildElementAccess(
+      Node* receiver, Node* index, Node* value, Node* effect, Node* control,
+      Handle<Context> native_context, ElementAccessInfo const& access_info,
+      AccessMode access_mode, KeyedAccessStoreMode store_mode);
+
+  // Construct an appropriate map check.
+  Node* BuildCheckMaps(Node* receiver, Node* effect, Node* control,
+                       std::vector<Handle<Map>> const& maps);
+
+  // Construct an appropriate heap object check.
+  Node* BuildCheckTaggedPointer(Node* receiver, Node* effect, Node* control);
 
   // Adds stability dependencies on all prototypes of every class in
   // {receiver_type} up to (and including) the {holder}.

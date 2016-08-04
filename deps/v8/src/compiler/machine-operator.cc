@@ -392,6 +392,8 @@ MachineRepresentation AtomicStoreRepresentationOf(Operator const* op) {
   V(Word64Ctz, Operator::kNoProperties, 1, 0, 1)            \
   V(Word32ReverseBits, Operator::kNoProperties, 1, 0, 1)    \
   V(Word64ReverseBits, Operator::kNoProperties, 1, 0, 1)    \
+  V(Word32ReverseBytes, Operator::kNoProperties, 1, 0, 1)   \
+  V(Word64ReverseBytes, Operator::kNoProperties, 1, 0, 1)   \
   V(Word32Popcnt, Operator::kNoProperties, 1, 0, 1)         \
   V(Word64Popcnt, Operator::kNoProperties, 1, 0, 1)         \
   V(Float32RoundDown, Operator::kNoProperties, 1, 0, 1)     \
@@ -609,6 +611,13 @@ struct MachineOperatorGlobalCache {
                    0, 0, 0, 0, 0) {}
   };
   DebugBreakOperator kDebugBreak;
+
+  struct UnsafePointerAddOperator final : public Operator {
+    UnsafePointerAddOperator()
+        : Operator(IrOpcode::kUnsafePointerAdd, Operator::kKontrol,
+                   "UnsafePointerAdd", 2, 1, 1, 1, 1, 0) {}
+  };
+  UnsafePointerAddOperator kUnsafePointerAdd;
 };
 
 struct CommentOperator : public Operator1<const char*> {
@@ -724,6 +733,10 @@ const Operator* MachineOperatorBuilder::Store(StoreRepresentation store_rep) {
   }
   UNREACHABLE();
   return nullptr;
+}
+
+const Operator* MachineOperatorBuilder::UnsafePointerAdd() {
+  return &cache_.kUnsafePointerAdd;
 }
 
 const Operator* MachineOperatorBuilder::DebugBreak() {

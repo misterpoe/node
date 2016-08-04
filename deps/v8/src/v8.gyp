@@ -399,7 +399,7 @@
         'action': ['<(mkpeephole_exec)', '<(INTERMEDIATE_DIR)/bytecode-peephole-table.cc' ],
         'process_outputs_as_sources': 1,
         'conditions': [
-          ['want_separate_host_toolset==1', {
+          ['want_separate_host_toolset_mkpeephole==1', {
             'dependencies': ['mkpeephole#host'],
             'toolsets': ['host'],
           }, {
@@ -461,6 +461,8 @@
         'ast/ast-value-factory.h',
         'ast/ast.cc',
         'ast/ast.h',
+        'ast/context-slot-cache.cc',
+        'ast/context-slot-cache.h',
         'ast/modules.cc',
         'ast/modules.h',
         'ast/prettyprinter.cc',
@@ -1132,6 +1134,7 @@
         'runtime/runtime-debug.cc',
         'runtime/runtime-forin.cc',
         'runtime/runtime-function.cc',
+        'runtime/runtime-error.cc',
         'runtime/runtime-futex.cc',
         'runtime/runtime-generator.cc',
         'runtime/runtime-i18n.cc',
@@ -1794,7 +1797,8 @@
         'base/utils/random-number-generator.h',
       ],
       'conditions': [
-        ['want_separate_host_toolset==1', {
+        ['want_separate_host_toolset==1 or \
+          want_separate_host_toolset_mkpeephole==1', {
           'toolsets': ['host', 'target'],
         }, {
           'toolsets': ['target'],
@@ -1999,6 +2003,7 @@
       ],
       'include_dirs+': [
         '..',
+        '<(DEPTH)',
         '../include',
       ],
       'sources': [
@@ -2380,7 +2385,7 @@
         'interpreter/mkpeephole.cc'
       ],
       'conditions': [
-        ['want_separate_host_toolset==1', {
+        ['want_separate_host_toolset_mkpeephole==1', {
           'toolsets': ['host'],
         }, {
           'toolsets': ['target'],

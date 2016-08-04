@@ -129,8 +129,6 @@ void Interpreter::IterateDispatchTable(ObjectVisitor* v) {
 
 // static
 int Interpreter::InterruptBudget() {
-  // TODO(ignition): Tune code size multiplier.
-  const int kCodeSizeMultiplier = 32;
   return FLAG_interrupt_budget * kCodeSizeMultiplier;
 }
 
@@ -1024,13 +1022,6 @@ Node* Interpreter::BuildUnaryOp(Callable callable,
   return __ CallStub(callable.descriptor(), target, context, accumulator);
 }
 
-void Interpreter::DoUnaryOp(Callable callable,
-                            InterpreterAssembler* assembler) {
-  Node* result = BuildUnaryOp(callable, assembler);
-  __ SetAccumulator(result);
-  __ Dispatch();
-}
-
 template <class Generator>
 void Interpreter::DoUnaryOp(InterpreterAssembler* assembler) {
   Node* value = __ GetAccumulator();
@@ -1062,7 +1053,9 @@ void Interpreter::DoToNumber(InterpreterAssembler* assembler) {
 //
 // Cast the object referenced by the accumulator to a JSObject.
 void Interpreter::DoToObject(InterpreterAssembler* assembler) {
-  DoUnaryOp(CodeFactory::ToObject(isolate_), assembler);
+  Node* result = BuildUnaryOp(CodeFactory::ToObject(isolate_), assembler);
+  __ StoreRegister(result, __ BytecodeOperandReg(0));
+  __ Dispatch();
 }
 
 // Inc
@@ -1141,7 +1134,7 @@ void Interpreter::DoLogicalNot(InterpreterAssembler* assembler) {
 // Load the accumulator with the string representating type of the
 // object in the accumulator.
 void Interpreter::DoTypeOf(InterpreterAssembler* assembler) {
-  DoUnaryOp(CodeFactory::Typeof(isolate_), assembler);
+  DoUnaryOp<TypeofStub>(assembler);
 }
 
 void Interpreter::DoDelete(Runtime::FunctionId function_id,
@@ -1724,6 +1717,18 @@ void Interpreter::DoCreateClosure(InterpreterAssembler* assembler) {
   }
 }
 
+// CreateFunctionContext <slots>
+//
+// Creates a new context with number of |slots| for the function closure.
+void Interpreter::DoCreateFunctionContext(InterpreterAssembler* assembler) {
+  Node* closure = __ LoadRegister(Register::function_closure());
+  Node* slots = __ BytecodeOperandIdx(0);
+  Node* context = __ GetContext();
+  __ SetAccumulator(
+      FastNewFunctionContextStub::Generate(assembler, closure, slots, context));
+  __ Dispatch();
+}
+
 // CreateMappedArguments
 //
 // Creates a new mapped arguments object.
@@ -1912,7 +1917,8 @@ void Interpreter::BuildForInPrepareResult(Node* output_register,
 // |cache_info_triple + 2|, with the registers holding cache_type, cache_array,
 // and cache_length respectively.
 void Interpreter::DoForInPrepare(InterpreterAssembler* assembler) {
-  Node* object = __ GetAccumulator();
+  Node* object_reg = __ BytecodeOperandReg(0);
+  Node* object = __ LoadRegister(object_reg);
   Node* context = __ GetContext();
   Node* const zero_smi = __ SmiConstant(Smi::FromInt(0));
 
@@ -1973,7 +1979,7 @@ void Interpreter::DoForInPrepare(InterpreterAssembler* assembler) {
         __ LoadObjectField(descriptors, DescriptorArray::kEnumCacheOffset);
     Node* cache_array = __ LoadObjectField(
         cache_offset, DescriptorArray::kEnumCacheBridgeCacheOffset);
-    Node* output_register = __ BytecodeOperandReg(0);
+    Node* output_register = __ BytecodeOperandReg(1);
     BuildForInPrepareResult(output_register, cache_type, cache_array,
                             cache_length, assembler);
     __ Dispatch();
@@ -1986,7 +1992,7 @@ void Interpreter::DoForInPrepare(InterpreterAssembler* assembler) {
     Node* cache_type = __ Projection(0, result_triple);
     Node* cache_array = __ Projection(1, result_triple);
     Node* cache_length = __ Projection(2, result_triple);
-    Node* output_register = __ BytecodeOperandReg(0);
+    Node* output_register = __ BytecodeOperandReg(1);
     BuildForInPrepareResult(output_register, cache_type, cache_array,
                             cache_length, assembler);
     __ Dispatch();
@@ -1995,7 +2001,7 @@ void Interpreter::DoForInPrepare(InterpreterAssembler* assembler) {
   __ Bind(&nothing_to_iterate);
   {
     // Receiver is null or undefined or descriptors are zero length.
-    Node* output_register = __ BytecodeOperandReg(0);
+    Node* output_register = __ BytecodeOperandReg(1);
     BuildForInPrepareResult(output_register, zero_smi, zero_smi, zero_smi,
                             assembler);
     __ Dispatch();

@@ -511,9 +511,7 @@ void AllocateHeapNumberStub::GenerateAssembly(
       const {                                                               \
     compiler::Node* result =                                                \
         assembler->Allocate(Simd128Value::kSize, CodeStubAssembler::kNone); \
-    compiler::Node* map_offset =                                            \
-        assembler->IntPtrConstant(HeapObject::kMapOffset - kHeapObjectTag); \
-    compiler::Node* map = assembler->IntPtrAdd(result, map_offset);         \
+    compiler::Node* map = assembler->LoadMap(result);                       \
     assembler->StoreNoWriteBarrier(                                         \
         MachineRepresentation::kTagged, map,                                \
         assembler->HeapConstant(isolate()->factory()->type##_map()));       \
@@ -524,10 +522,8 @@ SIMD128_TYPES(SIMD128_GEN_ASM)
 
 void StringLengthStub::GenerateAssembly(CodeStubAssembler* assembler) const {
   compiler::Node* value = assembler->Parameter(0);
-  compiler::Node* string =
-      assembler->LoadObjectField(value, JSValue::kValueOffset);
-  compiler::Node* result =
-      assembler->LoadObjectField(string, String::kLengthOffset);
+  compiler::Node* string = assembler->LoadJSValueValue(value);
+  compiler::Node* result = assembler->LoadStringLength(string);
   assembler->Return(result);
 }
 
@@ -598,7 +594,7 @@ compiler::Node* AddStub::Generate(CodeStubAssembler* assembler,
       assembler->Bind(&if_rhsisnotsmi);
       {
         // Load the map of {rhs}.
-        Node* rhs_map = assembler->LoadObjectField(rhs, HeapObject::kMapOffset);
+        Node* rhs_map = assembler->LoadMap(rhs);
 
         // Check if the {rhs} is a HeapNumber.
         Label if_rhsisnumber(assembler),
@@ -1882,6 +1878,130 @@ compiler::Node* DecStub::Generate(CodeStubAssembler* assembler,
 }
 
 // static
+// ES6 section 12.5.5 typeof operator
+compiler::Node* TypeofStub::Generate(CodeStubAssembler* assembler,
+                                     compiler::Node* value,
+                                     compiler::Node* context) {
+  typedef compiler::Node Node;
+  typedef CodeStubAssembler::Label Label;
+  typedef CodeStubAssembler::Variable Variable;
+
+  Variable result_var(assembler, MachineRepresentation::kTagged);
+
+  Label return_number(assembler, Label::kDeferred), if_oddball(assembler),
+      return_function(assembler), return_undefined(assembler),
+      return_object(assembler), return_string(assembler),
+      return_result(assembler);
+
+  assembler->GotoIf(assembler->WordIsSmi(value), &return_number);
+
+  Node* map = assembler->LoadMap(value);
+
+  assembler->GotoIf(
+      assembler->WordEqual(map, assembler->HeapNumberMapConstant()),
+      &return_number);
+
+  Node* instance_type = assembler->LoadInstanceType(value);
+
+  assembler->GotoIf(assembler->Word32Equal(
+                        instance_type, assembler->Int32Constant(ODDBALL_TYPE)),
+                    &if_oddball);
+
+  Node* callable_or_undetectable_mask =
+      assembler->Word32And(assembler->LoadMapBitField(map),
+                           assembler->Int32Constant(1 << Map::kIsCallable |
+                                                    1 << Map::kIsUndetectable));
+
+  assembler->GotoIf(
+      assembler->Word32Equal(callable_or_undetectable_mask,
+                             assembler->Int32Constant(1 << Map::kIsCallable)),
+      &return_function);
+
+  assembler->GotoUnless(assembler->Word32Equal(callable_or_undetectable_mask,
+                                               assembler->Int32Constant(0)),
+                        &return_undefined);
+
+  assembler->GotoIf(
+      assembler->Int32GreaterThanOrEqual(
+          instance_type, assembler->Int32Constant(FIRST_JS_RECEIVER_TYPE)),
+      &return_object);
+
+  assembler->GotoIf(
+      assembler->Int32LessThan(instance_type,
+                               assembler->Int32Constant(FIRST_NONSTRING_TYPE)),
+      &return_string);
+
+#define SIMD128_BRANCH(TYPE, Type, type, lane_count, lane_type)    \
+  Label return_##type(assembler);                                  \
+  Node* type##_map =                                               \
+      assembler->HeapConstant(assembler->factory()->type##_map()); \
+  assembler->GotoIf(assembler->WordEqual(map, type##_map), &return_##type);
+  SIMD128_TYPES(SIMD128_BRANCH)
+#undef SIMD128_BRANCH
+
+  assembler->Assert(assembler->Word32Equal(
+      instance_type, assembler->Int32Constant(SYMBOL_TYPE)));
+  result_var.Bind(assembler->HeapConstant(
+      assembler->isolate()->factory()->symbol_string()));
+  assembler->Goto(&return_result);
+
+  assembler->Bind(&return_number);
+  {
+    result_var.Bind(assembler->HeapConstant(
+        assembler->isolate()->factory()->number_string()));
+    assembler->Goto(&return_result);
+  }
+
+  assembler->Bind(&if_oddball);
+  {
+    Node* type = assembler->LoadObjectField(value, Oddball::kTypeOfOffset);
+    result_var.Bind(type);
+    assembler->Goto(&return_result);
+  }
+
+  assembler->Bind(&return_function);
+  {
+    result_var.Bind(assembler->HeapConstant(
+        assembler->isolate()->factory()->function_string()));
+    assembler->Goto(&return_result);
+  }
+
+  assembler->Bind(&return_undefined);
+  {
+    result_var.Bind(assembler->HeapConstant(
+        assembler->isolate()->factory()->undefined_string()));
+    assembler->Goto(&return_result);
+  }
+
+  assembler->Bind(&return_object);
+  {
+    result_var.Bind(assembler->HeapConstant(
+        assembler->isolate()->factory()->object_string()));
+    assembler->Goto(&return_result);
+  }
+
+  assembler->Bind(&return_string);
+  {
+    result_var.Bind(assembler->HeapConstant(
+        assembler->isolate()->factory()->string_string()));
+    assembler->Goto(&return_result);
+  }
+
+#define SIMD128_BIND_RETURN(TYPE, Type, type, lane_count, lane_type) \
+  assembler->Bind(&return_##type);                                   \
+  {                                                                  \
+    result_var.Bind(assembler->HeapConstant(                         \
+        assembler->isolate()->factory()->type##_string()));          \
+    assembler->Goto(&return_result);                                 \
+  }
+  SIMD128_TYPES(SIMD128_BIND_RETURN)
+#undef SIMD128_BIND_RETURN
+
+  assembler->Bind(&return_result);
+  return result_var.value();
+}
+
+// static
 compiler::Node* InstanceOfStub::Generate(CodeStubAssembler* assembler,
                                          compiler::Node* object,
                                          compiler::Node* callable,
@@ -2342,78 +2462,8 @@ void GenerateEqual_Simd128Value_HeapObject(
     CodeStubAssembler* assembler, compiler::Node* lhs, compiler::Node* lhs_map,
     compiler::Node* rhs, compiler::Node* rhs_map,
     CodeStubAssembler::Label* if_equal, CodeStubAssembler::Label* if_notequal) {
-  typedef CodeStubAssembler::Label Label;
-  typedef compiler::Node Node;
-
-  // Check if {lhs} and {rhs} have the same map.
-  Label if_mapsame(assembler), if_mapnotsame(assembler);
-  assembler->Branch(assembler->WordEqual(lhs_map, rhs_map), &if_mapsame,
-                    &if_mapnotsame);
-
-  assembler->Bind(&if_mapsame);
-  {
-    // Both {lhs} and {rhs} are Simd128Values with the same map, need special
-    // handling for Float32x4 because of NaN comparisons.
-    Label if_float32x4(assembler), if_notfloat32x4(assembler);
-    Node* float32x4_map =
-        assembler->HeapConstant(assembler->factory()->float32x4_map());
-    assembler->Branch(assembler->WordEqual(lhs_map, float32x4_map),
-                      &if_float32x4, &if_notfloat32x4);
-
-    assembler->Bind(&if_float32x4);
-    {
-      // Both {lhs} and {rhs} are Float32x4, compare the lanes individually
-      // using a floating point comparison.
-      for (int offset = Float32x4::kValueOffset - kHeapObjectTag;
-           offset < Float32x4::kSize - kHeapObjectTag;
-           offset += sizeof(float)) {
-        // Load the floating point values for {lhs} and {rhs}.
-        Node* lhs_value = assembler->Load(MachineType::Float32(), lhs,
-                                          assembler->IntPtrConstant(offset));
-        Node* rhs_value = assembler->Load(MachineType::Float32(), rhs,
-                                          assembler->IntPtrConstant(offset));
-
-        // Perform a floating point comparison.
-        Label if_valueequal(assembler), if_valuenotequal(assembler);
-        assembler->Branch(assembler->Float32Equal(lhs_value, rhs_value),
-                          &if_valueequal, &if_valuenotequal);
-        assembler->Bind(&if_valuenotequal);
-        assembler->Goto(if_notequal);
-        assembler->Bind(&if_valueequal);
-      }
-
-      // All 4 lanes match, {lhs} and {rhs} considered equal.
-      assembler->Goto(if_equal);
-    }
-
-    assembler->Bind(&if_notfloat32x4);
-    {
-      // For other Simd128Values we just perform a bitwise comparison.
-      for (int offset = Simd128Value::kValueOffset - kHeapObjectTag;
-           offset < Simd128Value::kSize - kHeapObjectTag;
-           offset += kPointerSize) {
-        // Load the word values for {lhs} and {rhs}.
-        Node* lhs_value = assembler->Load(MachineType::Pointer(), lhs,
-                                          assembler->IntPtrConstant(offset));
-        Node* rhs_value = assembler->Load(MachineType::Pointer(), rhs,
-                                          assembler->IntPtrConstant(offset));
-
-        // Perform a bitwise word-comparison.
-        Label if_valueequal(assembler), if_valuenotequal(assembler);
-        assembler->Branch(assembler->WordEqual(lhs_value, rhs_value),
-                          &if_valueequal, &if_valuenotequal);
-        assembler->Bind(&if_valuenotequal);
-        assembler->Goto(if_notequal);
-        assembler->Bind(&if_valueequal);
-      }
-
-      // Bitwise comparison succeeded, {lhs} and {rhs} considered equal.
-      assembler->Goto(if_equal);
-    }
-  }
-
-  assembler->Bind(&if_mapnotsame);
-  assembler->Goto(if_notequal);
+  assembler->BranchIfSimd128Equal(lhs, lhs_map, rhs, rhs_map, if_equal,
+                                  if_notequal);
 }
 
 // ES6 section 7.2.12 Abstract Equality Comparison
@@ -3275,8 +3325,8 @@ void GenerateStringRelationalComparison(CodeStubAssembler* assembler,
     assembler->Bind(&if_bothonebyteseqstrings);
     {
       // Load the length of {lhs} and {rhs}.
-      Node* lhs_length = assembler->LoadObjectField(lhs, String::kLengthOffset);
-      Node* rhs_length = assembler->LoadObjectField(rhs, String::kLengthOffset);
+      Node* lhs_length = assembler->LoadStringLength(lhs);
+      Node* rhs_length = assembler->LoadStringLength(rhs);
 
       // Determine the minimum length.
       Node* length = assembler->SmiMin(lhs_length, rhs_length);
@@ -3447,8 +3497,8 @@ void GenerateStringEqual(CodeStubAssembler* assembler, ResultMode mode) {
     // The {lhs} and {rhs} don't refer to the exact same String object.
 
     // Load the length of {lhs} and {rhs}.
-    Node* lhs_length = assembler->LoadObjectField(lhs, String::kLengthOffset);
-    Node* rhs_length = assembler->LoadObjectField(rhs, String::kLengthOffset);
+    Node* lhs_length = assembler->LoadStringLength(lhs);
+    Node* rhs_length = assembler->LoadStringLength(rhs);
 
     // Check if the lengths of {lhs} and {rhs} are equal.
     Label if_lengthisequal(assembler), if_lengthisnotequal(assembler);
@@ -4100,22 +4150,10 @@ void StoreTransitionStub::InitializeDescriptor(CodeStubDescriptor* descriptor) {
       FUNCTION_ADDR(Runtime_TransitionStoreIC_MissFromStubFailure));
 }
 
-void TypeofStub::InitializeDescriptor(CodeStubDescriptor* descriptor) {
-  descriptor->SetMissHandler(Runtime::kTypeof);
-}
-
 void NumberToStringStub::InitializeDescriptor(CodeStubDescriptor* descriptor) {
   descriptor->Initialize(
       Runtime::FunctionForId(Runtime::kNumberToString)->entry);
   descriptor->SetMissHandler(Runtime::kNumberToString);
-}
-
-
-void FastCloneRegExpStub::InitializeDescriptor(CodeStubDescriptor* descriptor) {
-  FastCloneRegExpDescriptor call_descriptor(isolate());
-  descriptor->Initialize(
-      Runtime::FunctionForId(Runtime::kCreateRegExpLiteral)->entry);
-  descriptor->SetMissHandler(Runtime::kCreateRegExpLiteral);
 }
 
 
@@ -4189,11 +4227,6 @@ void GrowArrayElementsStub::InitializeDescriptor(
       Runtime::FunctionForId(Runtime::kGrowArrayElements)->entry);
 }
 
-
-void TypeofStub::GenerateAheadOfTime(Isolate* isolate) {
-  TypeofStub stub(isolate);
-  stub.GetCode();
-}
 
 namespace {
 
@@ -4512,26 +4545,31 @@ void FastNewClosureStub::GenerateAssembly(CodeStubAssembler* assembler) const {
       Generate(assembler, assembler->Parameter(0), assembler->Parameter(1)));
 }
 
-void FastNewFunctionContextStub::GenerateAssembly(
-    CodeStubAssembler* assembler) const {
+// static
+compiler::Node* FastNewFunctionContextStub::Generate(
+    CodeStubAssembler* assembler, compiler::Node* function,
+    compiler::Node* slots, compiler::Node* context) {
+  typedef CodeStubAssembler::Label Label;
   typedef compiler::Node Node;
+  typedef CodeStubAssembler::Variable Variable;
 
-  int length = slots() + Context::MIN_CONTEXT_SLOTS;
-  int size = length * kPointerSize + FixedArray::kHeaderSize;
-
-  // Get the function
-  Node* function = assembler->Parameter(Descriptor::kFunction);
-  Node* context = assembler->Parameter(Descriptor::kContext);
+  Node* min_context_slots =
+      assembler->Int32Constant(Context::MIN_CONTEXT_SLOTS);
+  Node* length = assembler->Int32Add(slots, min_context_slots);
+  Node* size = assembler->Int32Add(
+      assembler->Word32Shl(length, assembler->Int32Constant(kPointerSizeLog2)),
+      assembler->Int32Constant(FixedArray::kHeaderSize));
 
   // Create a new closure from the given function info in new space
   Node* function_context = assembler->Allocate(size);
 
+  Isolate* isolate = assembler->isolate();
   assembler->StoreMapNoWriteBarrier(
       function_context,
-      assembler->HeapConstant(isolate()->factory()->function_context_map()));
-  assembler->StoreObjectFieldNoWriteBarrier(
-      function_context, Context::kLengthOffset,
-      assembler->SmiConstant(Smi::FromInt(length)));
+      assembler->HeapConstant(isolate->factory()->function_context_map()));
+  assembler->StoreObjectFieldNoWriteBarrier(function_context,
+                                            Context::kLengthOffset,
+                                            assembler->SmiFromWord32(length));
 
   // Set up the fixed slots.
   assembler->StoreFixedArrayElement(
@@ -4553,13 +4591,75 @@ void FastNewFunctionContextStub::GenerateAssembly(
 
   // Initialize the rest of the slots to undefined.
   Node* undefined = assembler->UndefinedConstant();
-  for (int i = Context::MIN_CONTEXT_SLOTS; i < length; ++i) {
-    assembler->StoreFixedArrayElement(function_context,
-                                      assembler->Int32Constant(i), undefined,
+  Variable var_slot_index(assembler, MachineRepresentation::kWord32);
+  var_slot_index.Bind(min_context_slots);
+  Label loop(assembler, &var_slot_index), after_loop(assembler);
+  assembler->Goto(&loop);
+
+  assembler->Bind(&loop);
+  {
+    Node* slot_index = var_slot_index.value();
+    // check for < length later, there are at least Context::MIN_CONTEXT_SLOTS
+    assembler->StoreFixedArrayElement(function_context, slot_index, undefined,
                                       SKIP_WRITE_BARRIER);
+    Node* one = assembler->Int32Constant(1);
+    Node* next_index = assembler->Int32Add(slot_index, one);
+    var_slot_index.Bind(next_index);
+    assembler->Branch(assembler->Int32LessThan(next_index, length), &loop,
+                      &after_loop);
+  }
+  assembler->Bind(&after_loop);
+
+  return function_context;
+}
+
+void FastNewFunctionContextStub::GenerateAssembly(
+    CodeStubAssembler* assembler) const {
+  typedef compiler::Node Node;
+  Node* function = assembler->Parameter(Descriptor::kFunction);
+  Node* slots = assembler->Parameter(FastNewFunctionContextDescriptor::kSlots);
+  Node* context = assembler->Parameter(Descriptor::kContext);
+
+  assembler->Return(Generate(assembler, function, slots, context));
+}
+
+void FastCloneRegExpStub::GenerateAssembly(CodeStubAssembler* assembler) const {
+  typedef CodeStubAssembler::Label Label;
+  typedef compiler::Node Node;
+
+  Label call_runtime(assembler, Label::kDeferred);
+
+  Node* closure = assembler->Parameter(Descriptor::kClosure);
+  Node* literal_index = assembler->Parameter(Descriptor::kLiteralIndex);
+
+  Node* undefined = assembler->UndefinedConstant();
+  Node* literals_array =
+      assembler->LoadObjectField(closure, JSFunction::kLiteralsOffset);
+  Node* boilerplate = assembler->LoadFixedArrayElement(
+      literals_array, literal_index,
+      LiteralsArray::kFirstLiteralIndex * kPointerSize,
+      CodeStubAssembler::SMI_PARAMETERS);
+  assembler->GotoIf(assembler->WordEqual(boilerplate, undefined),
+                    &call_runtime);
+
+  {
+    int size = JSRegExp::kSize + JSRegExp::kInObjectFieldCount * kPointerSize;
+    Node* copy = assembler->Allocate(size);
+    for (int offset = 0; offset < size; offset += kPointerSize) {
+      Node* value = assembler->LoadObjectField(boilerplate, offset);
+      assembler->StoreObjectFieldNoWriteBarrier(copy, offset, value);
+    }
+    assembler->Return(copy);
   }
 
-  assembler->Return(function_context);
+  assembler->Bind(&call_runtime);
+  {
+    Node* context = assembler->Parameter(Descriptor::kContext);
+    Node* pattern = assembler->Parameter(Descriptor::kPattern);
+    Node* flags = assembler->Parameter(Descriptor::kFlags);
+    assembler->TailCallRuntime(Runtime::kCreateRegExpLiteral, context, closure,
+                               literal_index, pattern, flags);
+  }
 }
 
 void CreateAllocationSiteStub::GenerateAheadOfTime(Isolate* isolate) {

@@ -99,6 +99,8 @@ MUST_USE_RESULT MaybeHandle<Object> Invoke(Isolate* isolate, bool is_construct,
     SealHandleScope shs(isolate);
     JSEntryFunction stub_entry = FUNCTION_CAST<JSEntryFunction>(code->entry());
 
+    if (FLAG_clear_exceptions_on_js_entry) isolate->clear_pending_exception();
+
     // Call the function through the right JS entry stub.
     Object* orig_func = *new_target;
     Object* func = *target;
@@ -431,16 +433,23 @@ Handle<String> Execution::GetStackTraceLine(Handle<Object> recv,
                                             Handle<Object> pos,
                                             Handle<Object> is_global) {
   Isolate* isolate = fun->GetIsolate();
-  Handle<Object> args[] = { recv, fun, pos, is_global };
-  MaybeHandle<Object> maybe_result =
-      TryCall(isolate, isolate->get_stack_trace_line_fun(),
-              isolate->factory()->undefined_value(), arraysize(args), args);
-  Handle<Object> result;
-  if (!maybe_result.ToHandle(&result) || !result->IsString()) {
+  Handle<Object> strict_mode = isolate->factory()->ToBoolean(false);
+
+  MaybeHandle<Object> maybe_callsite =
+      CallSiteUtils::Construct(isolate, recv, fun, pos, strict_mode);
+  if (maybe_callsite.is_null()) {
+    isolate->clear_pending_exception();
     return isolate->factory()->empty_string();
   }
 
-  return Handle<String>::cast(result);
+  MaybeHandle<String> maybe_to_string =
+      CallSiteUtils::ToString(isolate, maybe_callsite.ToHandleChecked());
+  if (maybe_to_string.is_null()) {
+    isolate->clear_pending_exception();
+    return isolate->factory()->empty_string();
+  }
+
+  return maybe_to_string.ToHandleChecked();
 }
 
 

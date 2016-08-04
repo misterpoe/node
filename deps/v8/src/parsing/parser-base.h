@@ -229,12 +229,6 @@ class ParserBase : public Traits {
   bool allow_##name() const { return allow_##name##_; } \
   void set_allow_##name(bool allow) { allow_##name##_ = allow; }
 
-#define SCANNER_ACCESSORS(name)                                  \
-  bool allow_##name() const { return scanner_->allow_##name(); } \
-  void set_allow_##name(bool allow) {                            \
-    return scanner_->set_allow_##name(allow);                    \
-  }
-
   ALLOW_ACCESSORS(lazy);
   ALLOW_ACCESSORS(natives);
   ALLOW_ACCESSORS(tailcalls);
@@ -245,12 +239,12 @@ class ParserBase : public Traits {
   ALLOW_ACCESSORS(harmony_async_await);
   ALLOW_ACCESSORS(harmony_restrictive_generators);
   ALLOW_ACCESSORS(harmony_trailing_commas);
-  SCANNER_ACCESSORS(harmony_exponentiation_operator);
 
-#undef SCANNER_ACCESSORS
 #undef ALLOW_ACCESSORS
 
   uintptr_t stack_limit() const { return stack_limit_; }
+
+  void set_stack_limit(uintptr_t stack_limit) { stack_limit_ = stack_limit; }
 
  protected:
   enum AllowRestrictedIdentifiers {
@@ -281,6 +275,7 @@ class ParserBase : public Traits {
   class ScopeState BASE_EMBEDDED {
    public:
     V8_INLINE Scope* scope() const { return scope_; }
+    Zone* zone() const { return scope_->zone(); }
 
    protected:
     ScopeState(ScopeState** scope_stack, Scope* scope)
@@ -289,11 +284,9 @@ class ParserBase : public Traits {
     }
     ~ScopeState() { *scope_stack_ = outer_scope_; }
 
-    Zone* zone() const { return scope_->zone(); }
-
    private:
-    ScopeState** scope_stack_;
-    ScopeState* outer_scope_;
+    ScopeState** const scope_stack_;
+    ScopeState* const outer_scope_;
     Scope* scope_;
   };
 
@@ -301,6 +294,31 @@ class ParserBase : public Traits {
    public:
     BlockState(ScopeState** scope_stack, Scope* scope)
         : ScopeState(scope_stack, scope) {}
+
+    // BlockState(ScopeState**) automatically manages Scope(BLOCK_SCOPE)
+    // allocation.
+    // TODO(verwaest): Move to LazyBlockState class that only allocates the
+    // scope when needed.
+    explicit BlockState(ScopeState** scope_stack)
+        : ScopeState(scope_stack, NewScope(*scope_stack)) {}
+
+    void SetNonlinear() { this->scope()->SetNonlinear(); }
+    void set_start_position(int pos) { this->scope()->set_start_position(pos); }
+    void set_end_position(int pos) { this->scope()->set_end_position(pos); }
+    void set_is_hidden() { this->scope()->set_is_hidden(); }
+    Scope* FinalizedBlockScope() const {
+      return this->scope()->FinalizeBlockScope();
+    }
+    LanguageMode language_mode() const {
+      return this->scope()->language_mode();
+    }
+
+   private:
+    Scope* NewScope(ScopeState* outer_state) {
+      Scope* parent = outer_state->scope();
+      Zone* zone = outer_state->zone();
+      return new (zone) Scope(zone, parent, BLOCK_SCOPE, kNormalFunction);
+    }
   };
 
   struct DestructuringAssignment {
@@ -446,7 +464,11 @@ class ParserBase : public Traits {
       return &non_patterns_to_rewrite_;
     }
 
-    void next_function_is_parenthesized(bool parenthesized) {
+    bool next_function_is_parenthesized() const {
+      return next_function_is_parenthesized_;
+    }
+
+    void set_next_function_is_parenthesized(bool parenthesized) {
       next_function_is_parenthesized_ = parenthesized;
     }
 
@@ -1015,8 +1037,7 @@ class ParserBase : public Traits {
 
   IdentifierT ParseIdentifierName(bool* ok);
 
-  ExpressionT ParseRegExpLiteral(bool seen_equal,
-                                 ExpressionClassifier* classifier, bool* ok);
+  ExpressionT ParseRegExpLiteral(bool seen_equal, bool* ok);
 
   ExpressionT ParsePrimaryExpression(ExpressionClassifier* classifier,
                                      bool* is_async, bool* ok);
@@ -1078,8 +1099,7 @@ class ParserBase : public Traits {
   ExpressionT ParseTemplateLiteral(ExpressionT tag, int start,
                                    ExpressionClassifier* classifier, bool* ok);
   void AddTemplateExpression(ExpressionT);
-  ExpressionT ParseSuperExpression(bool is_new,
-                                   ExpressionClassifier* classifier, bool* ok);
+  ExpressionT ParseSuperExpression(bool is_new, bool* ok);
   ExpressionT ParseNewTargetExpression(bool* ok);
 
   void ParseFormalParameter(FormalParametersT* parameters,
@@ -1221,6 +1241,8 @@ class ParserBase : public Traits {
   bool allow_harmony_async_await_;
   bool allow_harmony_restrictive_generators_;
   bool allow_harmony_trailing_commas_;
+
+  friend class DiscardableZoneScope;
 };
 
 template <class Traits>
@@ -1454,10 +1476,9 @@ ParserBase<Traits>::ParseIdentifierName(bool* ok) {
   return this->GetSymbol(scanner());
 }
 
-
 template <class Traits>
 typename ParserBase<Traits>::ExpressionT ParserBase<Traits>::ParseRegExpLiteral(
-    bool seen_equal, ExpressionClassifier* classifier, bool* ok) {
+    bool seen_equal, bool* ok) {
   int pos = peek_position();
   if (!scanner()->ScanRegExpPattern(seen_equal)) {
     Next();
@@ -1553,12 +1574,12 @@ ParserBase<Traits>::ParsePrimaryExpression(ExpressionClassifier* classifier,
     case Token::ASSIGN_DIV:
       classifier->RecordBindingPatternError(
           scanner()->peek_location(), MessageTemplate::kUnexpectedTokenRegExp);
-      return this->ParseRegExpLiteral(true, classifier, ok);
+      return this->ParseRegExpLiteral(true, ok);
 
     case Token::DIV:
       classifier->RecordBindingPatternError(
           scanner()->peek_location(), MessageTemplate::kUnexpectedTokenRegExp);
-      return this->ParseRegExpLiteral(false, classifier, ok);
+      return this->ParseRegExpLiteral(false, ok);
 
     case Token::LBRACK:
       return this->ParseArrayLiteral(classifier, ok);
@@ -1615,8 +1636,8 @@ ParserBase<Traits>::ParsePrimaryExpression(ExpressionClassifier* classifier,
       }
       // Heuristically try to detect immediately called functions before
       // seeing the call parentheses.
-      function_state_->next_function_is_parenthesized(peek() ==
-                                                      Token::FUNCTION);
+      function_state_->set_next_function_is_parenthesized(peek() ==
+                                                          Token::FUNCTION);
       ExpressionT expr = this->ParseExpression(true, classifier, CHECK_OK);
       Expect(Token::RPAREN, CHECK_OK);
       return expr;
@@ -2950,7 +2971,7 @@ ParserBase<Traits>::ParseMemberWithNewPrefixesExpression(
     ExpressionT result;
     if (peek() == Token::SUPER) {
       const bool is_new = true;
-      result = ParseSuperExpression(is_new, classifier, CHECK_OK);
+      result = ParseSuperExpression(is_new, CHECK_OK);
     } else if (peek() == Token::PERIOD) {
       return ParseNewTargetExpression(CHECK_OK);
     } else {
@@ -3041,7 +3062,7 @@ ParserBase<Traits>::ParseMemberExpression(ExpressionClassifier* classifier,
         function_token_position, function_type, language_mode(), CHECK_OK);
   } else if (peek() == Token::SUPER) {
     const bool is_new = false;
-    result = ParseSuperExpression(is_new, classifier, CHECK_OK);
+    result = ParseSuperExpression(is_new, CHECK_OK);
   } else {
     result = ParsePrimaryExpression(classifier, is_async, CHECK_OK);
   }
@@ -3051,12 +3072,9 @@ ParserBase<Traits>::ParseMemberExpression(ExpressionClassifier* classifier,
   return result;
 }
 
-
 template <class Traits>
 typename ParserBase<Traits>::ExpressionT
-ParserBase<Traits>::ParseSuperExpression(bool is_new,
-                                         ExpressionClassifier* classifier,
-                                         bool* ok) {
+ParserBase<Traits>::ParseSuperExpression(bool is_new, bool* ok) {
   Expect(Token::SUPER, CHECK_OK);
   int pos = position();
 

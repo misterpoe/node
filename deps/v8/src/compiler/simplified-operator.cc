@@ -181,6 +181,12 @@ const ElementAccess& ElementAccessOf(const Operator* op) {
   return OpParameter<ElementAccess>(op);
 }
 
+ExternalArrayType ExternalArrayTypeOf(const Operator* op) {
+  DCHECK(op->opcode() == IrOpcode::kLoadTypedElement ||
+         op->opcode() == IrOpcode::kStoreTypedElement);
+  return OpParameter<ExternalArrayType>(op);
+}
+
 size_t hash_value(CheckFloat64HoleMode mode) {
   return static_cast<size_t>(mode);
 }
@@ -202,7 +208,9 @@ CheckFloat64HoleMode CheckFloat64HoleModeOf(const Operator* op) {
 }
 
 CheckForMinusZeroMode CheckMinusZeroModeOf(const Operator* op) {
-  DCHECK_EQ(IrOpcode::kCheckedInt32Mul, op->opcode());
+  DCHECK(op->opcode() == IrOpcode::kCheckedInt32Mul ||
+         op->opcode() == IrOpcode::kCheckedFloat64ToInt32 ||
+         op->opcode() == IrOpcode::kCheckedTaggedToInt32);
   return OpParameter<CheckForMinusZeroMode>(op);
 }
 
@@ -267,7 +275,12 @@ BinaryOperationHints::Hint BinaryOperationHintOf(const Operator* op) {
          op->opcode() == IrOpcode::kSpeculativeNumberMultiply ||
          op->opcode() == IrOpcode::kSpeculativeNumberDivide ||
          op->opcode() == IrOpcode::kSpeculativeNumberModulus ||
-         op->opcode() == IrOpcode::kSpeculativeNumberShiftLeft);
+         op->opcode() == IrOpcode::kSpeculativeNumberShiftLeft ||
+         op->opcode() == IrOpcode::kSpeculativeNumberShiftRight ||
+         op->opcode() == IrOpcode::kSpeculativeNumberShiftRightLogical ||
+         op->opcode() == IrOpcode::kSpeculativeNumberBitwiseAnd ||
+         op->opcode() == IrOpcode::kSpeculativeNumberBitwiseOr ||
+         op->opcode() == IrOpcode::kSpeculativeNumberBitwiseXor);
   return OpParameter<BinaryOperationHints::Hint>(op);
 }
 
@@ -357,31 +370,35 @@ CompareOperationHints::Hint CompareOperationHintOf(const Operator* op) {
   V(StringLessThan, Operator::kNoProperties, 2, 0)            \
   V(StringLessThanOrEqual, Operator::kNoProperties, 2, 0)
 
-#define SPECULATIVE_BINOP_LIST(V) \
-  V(SpeculativeNumberAdd)         \
-  V(SpeculativeNumberSubtract)    \
-  V(SpeculativeNumberDivide)      \
-  V(SpeculativeNumberMultiply)    \
-  V(SpeculativeNumberModulus)     \
-  V(SpeculativeNumberShiftLeft)
+#define SPECULATIVE_BINOP_LIST(V)       \
+  V(SpeculativeNumberAdd)               \
+  V(SpeculativeNumberSubtract)          \
+  V(SpeculativeNumberDivide)            \
+  V(SpeculativeNumberMultiply)          \
+  V(SpeculativeNumberModulus)           \
+  V(SpeculativeNumberShiftLeft)         \
+  V(SpeculativeNumberShiftRight)        \
+  V(SpeculativeNumberShiftRightLogical) \
+  V(SpeculativeNumberBitwiseAnd)        \
+  V(SpeculativeNumberBitwiseOr)         \
+  V(SpeculativeNumberBitwiseXor)
 
-#define CHECKED_OP_LIST(V)        \
-  V(CheckBounds, 2, 1)            \
-  V(CheckIf, 1, 0)                \
-  V(CheckNumber, 1, 1)            \
-  V(CheckString, 1, 1)            \
-  V(CheckTaggedPointer, 1, 1)     \
-  V(CheckTaggedSigned, 1, 1)      \
-  V(CheckedInt32Add, 2, 1)        \
-  V(CheckedInt32Sub, 2, 1)        \
-  V(CheckedInt32Div, 2, 1)        \
-  V(CheckedInt32Mod, 2, 1)        \
-  V(CheckedUint32Div, 2, 1)       \
-  V(CheckedUint32Mod, 2, 1)       \
-  V(CheckedUint32ToInt32, 1, 1)   \
-  V(CheckedFloat64ToInt32, 1, 1)  \
-  V(CheckedTaggedToInt32, 1, 1)   \
-  V(CheckedTaggedToFloat64, 1, 1) \
+#define CHECKED_OP_LIST(V)            \
+  V(CheckBounds, 2, 1)                \
+  V(CheckIf, 1, 0)                    \
+  V(CheckNumber, 1, 1)                \
+  V(CheckString, 1, 1)                \
+  V(CheckTaggedPointer, 1, 1)         \
+  V(CheckTaggedSigned, 1, 1)          \
+  V(CheckedInt32Add, 2, 1)            \
+  V(CheckedInt32Sub, 2, 1)            \
+  V(CheckedInt32Div, 2, 1)            \
+  V(CheckedInt32Mod, 2, 1)            \
+  V(CheckedUint32Div, 2, 1)           \
+  V(CheckedUint32Mod, 2, 1)           \
+  V(CheckedUint32ToInt32, 1, 1)       \
+  V(CheckedTaggedSignedToInt32, 1, 1) \
+  V(CheckedTaggedToFloat64, 1, 1)     \
   V(CheckedTruncateTaggedToWord32, 1, 1)
 
 struct SimplifiedOperatorGlobalCache final {
@@ -419,6 +436,34 @@ struct SimplifiedOperatorGlobalCache final {
       kCheckedInt32MulCheckForMinusZeroOperator;
   CheckedInt32MulOperator<CheckForMinusZeroMode::kDontCheckForMinusZero>
       kCheckedInt32MulDontCheckForMinusZeroOperator;
+
+  template <CheckForMinusZeroMode kMode>
+  struct CheckedFloat64ToInt32Operator final
+      : public Operator1<CheckForMinusZeroMode> {
+    CheckedFloat64ToInt32Operator()
+        : Operator1<CheckForMinusZeroMode>(
+              IrOpcode::kCheckedFloat64ToInt32,
+              Operator::kFoldable | Operator::kNoThrow, "CheckedFloat64ToInt32",
+              1, 1, 1, 1, 1, 0, kMode) {}
+  };
+  CheckedFloat64ToInt32Operator<CheckForMinusZeroMode::kCheckForMinusZero>
+      kCheckedFloat64ToInt32CheckForMinusZeroOperator;
+  CheckedFloat64ToInt32Operator<CheckForMinusZeroMode::kDontCheckForMinusZero>
+      kCheckedFloat64ToInt32DontCheckForMinusZeroOperator;
+
+  template <CheckForMinusZeroMode kMode>
+  struct CheckedTaggedToInt32Operator final
+      : public Operator1<CheckForMinusZeroMode> {
+    CheckedTaggedToInt32Operator()
+        : Operator1<CheckForMinusZeroMode>(
+              IrOpcode::kCheckedTaggedToInt32,
+              Operator::kFoldable | Operator::kNoThrow, "CheckedTaggedToInt32",
+              1, 1, 1, 1, 1, 0, kMode) {}
+  };
+  CheckedTaggedToInt32Operator<CheckForMinusZeroMode::kCheckForMinusZero>
+      kCheckedTaggedToInt32CheckForMinusZeroOperator;
+  CheckedTaggedToInt32Operator<CheckForMinusZeroMode::kDontCheckForMinusZero>
+      kCheckedTaggedToInt32DontCheckForMinusZeroOperator;
 
   template <CheckFloat64HoleMode kMode>
   struct CheckFloat64HoleNaNOperator final
@@ -505,6 +550,42 @@ const Operator* SimplifiedOperatorBuilder::CheckedInt32Mul(
   }
   UNREACHABLE();
   return nullptr;
+}
+
+const Operator* SimplifiedOperatorBuilder::CheckedFloat64ToInt32(
+    CheckForMinusZeroMode mode) {
+  switch (mode) {
+    case CheckForMinusZeroMode::kCheckForMinusZero:
+      return &cache_.kCheckedFloat64ToInt32CheckForMinusZeroOperator;
+    case CheckForMinusZeroMode::kDontCheckForMinusZero:
+      return &cache_.kCheckedFloat64ToInt32DontCheckForMinusZeroOperator;
+  }
+  UNREACHABLE();
+  return nullptr;
+}
+
+const Operator* SimplifiedOperatorBuilder::CheckedTaggedToInt32(
+    CheckForMinusZeroMode mode) {
+  switch (mode) {
+    case CheckForMinusZeroMode::kCheckForMinusZero:
+      return &cache_.kCheckedTaggedToInt32CheckForMinusZeroOperator;
+    case CheckForMinusZeroMode::kDontCheckForMinusZero:
+      return &cache_.kCheckedTaggedToInt32DontCheckForMinusZeroOperator;
+  }
+  UNREACHABLE();
+  return nullptr;
+}
+
+const Operator* SimplifiedOperatorBuilder::CheckMaps(int map_input_count) {
+  // TODO(bmeurer): Cache the most important versions of this operator.
+  DCHECK_LT(0, map_input_count);
+  int const value_input_count = 1 + map_input_count;
+  return new (zone()) Operator1<int>(           // --
+      IrOpcode::kCheckMaps,                     // opcode
+      Operator::kNoThrow | Operator::kNoWrite,  // flags
+      "CheckMaps",                              // name
+      value_input_count, 1, 1, 0, 1, 0,         // counts
+      map_input_count);                         // parameter
 }
 
 const Operator* SimplifiedOperatorBuilder::CheckFloat64Hole(
@@ -618,11 +699,13 @@ const Operator* SimplifiedOperatorBuilder::SpeculativeNumberLessThanOrEqual(
       "SpeculativeNumberLessThanOrEqual", 2, 1, 1, 1, 1, 0, hint);
 }
 
-#define ACCESS_OP_LIST(V)                                    \
-  V(LoadField, FieldAccess, Operator::kNoWrite, 1, 1, 1)     \
-  V(StoreField, FieldAccess, Operator::kNoRead, 2, 1, 0)     \
-  V(LoadElement, ElementAccess, Operator::kNoWrite, 2, 1, 1) \
-  V(StoreElement, ElementAccess, Operator::kNoRead, 3, 1, 0)
+#define ACCESS_OP_LIST(V)                                             \
+  V(LoadField, FieldAccess, Operator::kNoWrite, 1, 1, 1)              \
+  V(StoreField, FieldAccess, Operator::kNoRead, 2, 1, 0)              \
+  V(LoadElement, ElementAccess, Operator::kNoWrite, 2, 1, 1)          \
+  V(StoreElement, ElementAccess, Operator::kNoRead, 3, 1, 0)          \
+  V(LoadTypedElement, ExternalArrayType, Operator::kNoWrite, 4, 1, 1) \
+  V(StoreTypedElement, ExternalArrayType, Operator::kNoRead, 5, 1, 0)
 
 #define ACCESS(Name, Type, properties, value_input_count, control_input_count, \
                output_count)                                                   \

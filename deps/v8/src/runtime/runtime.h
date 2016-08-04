@@ -55,7 +55,8 @@ namespace internal {
   F(GetCachedArrayIndex, 1, 1)       \
   F(FixedArrayGet, 2, 1)             \
   F(FixedArraySet, 3, 1)             \
-  F(ArraySpeciesConstructor, 1, 1)
+  F(ArraySpeciesConstructor, 1, 1)   \
+  F(ArrayIncludes_Slow, 3, 1)
 
 #define FOR_EACH_INTRINSIC_ATOMICS(F)           \
   F(ThrowNotIntegerSharedTypedArrayError, 1, 1) \
@@ -197,6 +198,8 @@ namespace internal {
   F(GetWasmFunctionOffsetTable, 1, 1)           \
   F(DisassembleWasmFunction, 1, 1)
 
+#define FOR_EACH_INTRINSIC_ERROR(F) F(ErrorToString, 1, 1)
+
 #define FOR_EACH_INTRINSIC_FORIN(F) \
   F(ForInDone, 2, 1)                \
   F(ForInEnumerate, 1, 1)           \
@@ -219,7 +222,6 @@ namespace internal {
   F(FunctionGetScript, 1, 1)               \
   F(FunctionGetSourceCode, 1, 1)           \
   F(FunctionGetScriptSourcePosition, 1, 1) \
-  F(FunctionGetPositionForOffset, 2, 1)    \
   F(FunctionGetContextData, 1, 1)          \
   F(FunctionSetInstanceClassName, 2, 1)    \
   F(FunctionSetLength, 2, 1)               \
@@ -312,7 +314,6 @@ namespace internal {
   F(AllocateSeqTwoByteString, 1, 1)                 \
   F(MessageGetStartPosition, 1, 1)                  \
   F(MessageGetScript, 1, 1)                         \
-  F(FormatMessageString, 4, 1)                      \
   F(IS_VAR, 1, 1)                                   \
   F(ThrowConstructedNonConstructable, 1, 1)         \
   F(ThrowDerivedConstructorReturnedNonObject, 0, 1) \
@@ -844,6 +845,7 @@ namespace internal {
   F(GetOptimizationCount, 1, 1)               \
   F(GetUndetectable, 0, 1)                    \
   F(ClearFunctionTypeFeedback, 1, 1)          \
+  F(CheckWasmWrapperElision, 2, 1)            \
   F(NotifyContextDisposed, 0, 1)              \
   F(SetAllocationTimeout, -1 /* 2 || 3 */, 1) \
   F(DebugPrint, 1, 1)                         \
@@ -959,6 +961,7 @@ namespace internal {
   FOR_EACH_INTRINSIC_COMPILER(F)            \
   FOR_EACH_INTRINSIC_DATE(F)                \
   FOR_EACH_INTRINSIC_DEBUG(F)               \
+  FOR_EACH_INTRINSIC_ERROR(F)               \
   FOR_EACH_INTRINSIC_FORIN(F)               \
   FOR_EACH_INTRINSIC_INTERPRETER(F)         \
   FOR_EACH_INTRINSIC_FUNCTION(F)            \

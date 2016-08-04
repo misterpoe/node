@@ -531,7 +531,7 @@ void EffectControlLinearizer::ProcessNode(Node* node, Node** frame_state,
     // Unlink the check point; effect uses will be updated to the incoming
     // effect that is passed. The frame state is preserved for lowering.
     DCHECK_EQ(RegionObservability::kObservable, region_observability_);
-    *frame_state = NodeProperties::GetFrameStateInput(node, 0);
+    *frame_state = NodeProperties::GetFrameStateInput(node);
     return;
   }
 
@@ -622,6 +622,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
     case IrOpcode::kCheckBounds:
       state = LowerCheckBounds(node, frame_state, *effect, *control);
       break;
+    case IrOpcode::kCheckMaps:
+      state = LowerCheckMaps(node, frame_state, *effect, *control);
+      break;
     case IrOpcode::kCheckNumber:
       state = LowerCheckNumber(node, frame_state, *effect, *control);
       break;
@@ -663,6 +666,10 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kCheckedFloat64ToInt32:
       state = LowerCheckedFloat64ToInt32(node, frame_state, *effect, *control);
+      break;
+    case IrOpcode::kCheckedTaggedSignedToInt32:
+      state =
+          LowerCheckedTaggedSignedToInt32(node, frame_state, *effect, *control);
       break;
     case IrOpcode::kCheckedTaggedToInt32:
       state = LowerCheckedTaggedToInt32(node, frame_state, *effect, *control);
@@ -718,6 +725,12 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kTransitionElementsKind:
       state = LowerTransitionElementsKind(node, *effect, *control);
+      break;
+    case IrOpcode::kLoadTypedElement:
+      state = LowerLoadTypedElement(node, *effect, *control);
+      break;
+    case IrOpcode::kStoreTypedElement:
+      state = LowerStoreTypedElement(node, *effect, *control);
       break;
     default:
       return false;
@@ -1023,6 +1036,43 @@ EffectControlLinearizer::LowerCheckBounds(Node* node, Node* frame_state,
 }
 
 EffectControlLinearizer::ValueEffectControl
+EffectControlLinearizer::LowerCheckMaps(Node* node, Node* frame_state,
+                                        Node* effect, Node* control) {
+  Node* value = node->InputAt(0);
+
+  // Load the current map of the {value}.
+  Node* value_map = effect = graph()->NewNode(
+      simplified()->LoadField(AccessBuilder::ForMap()), value, effect, control);
+
+  int const map_count = node->op()->ValueInputCount() - 1;
+  Node** controls = temp_zone()->NewArray<Node*>(map_count);
+  Node** effects = temp_zone()->NewArray<Node*>(map_count + 1);
+
+  for (int i = 0; i < map_count; ++i) {
+    Node* map = node->InputAt(1 + i);
+
+    Node* check = graph()->NewNode(machine()->WordEqual(), value_map, map);
+    if (i == map_count - 1) {
+      controls[i] = effects[i] = graph()->NewNode(
+          common()->DeoptimizeUnless(DeoptimizeReason::kWrongMap), check,
+          frame_state, effect, control);
+    } else {
+      control = graph()->NewNode(common()->Branch(), check, control);
+      controls[i] = graph()->NewNode(common()->IfTrue(), control);
+      control = graph()->NewNode(common()->IfFalse(), control);
+      effects[i] = effect;
+    }
+  }
+
+  control = graph()->NewNode(common()->Merge(map_count), map_count, controls);
+  effects[map_count] = control;
+  effect =
+      graph()->NewNode(common()->EffectPhi(map_count), map_count + 1, effects);
+
+  return ValueEffectControl(value, effect, control);
+}
+
+EffectControlLinearizer::ValueEffectControl
 EffectControlLinearizer::LowerCheckNumber(Node* node, Node* frame_state,
                                           Node* effect, Node* control) {
   Node* value = node->InputAt(0);
@@ -1245,17 +1295,31 @@ EffectControlLinearizer::LowerCheckedInt32Mod(Node* node, Node* frame_state,
   Node* minusone = jsgraph()->Int32Constant(-1);
   Node* minint = jsgraph()->Int32Constant(std::numeric_limits<int32_t>::min());
 
+  // General case for signed integer modulus, with optimization for (unknown)
+  // power of 2 right hand side.
+  //
+  //   if 0 < rhs then
+  //     msk = rhs - 1
+  //     if rhs & msk == 0 then
+  //       if lhs < 0 then
+  //         -(-lhs & msk)
+  //       else
+  //         lhs & msk
+  //     else
+  //       lhs % rhs
+  //   else
+  //     if rhs < -1 then
+  //       lhs % rhs
+  //     else
+  //       deopt if rhs == 0
+  //       deopt if lhs == minint
+  //       zero
+  //
   Node* lhs = node->InputAt(0);
   Node* rhs = node->InputAt(1);
 
-  // Ensure that {rhs} is not zero, otherwise we'd have to return NaN.
-  Node* check = graph()->NewNode(machine()->Word32Equal(), rhs, zero);
-  control = effect = graph()->NewNode(
-      common()->DeoptimizeIf(DeoptimizeReason::kDivisionByZero), check,
-      frame_state, effect, control);
-
-  // Check if {lhs} is positive or zero.
-  Node* check0 = graph()->NewNode(machine()->Int32LessThanOrEqual(), zero, lhs);
+  // Check if {rhs} is strictly positive.
+  Node* check0 = graph()->NewNode(machine()->Int32LessThan(), zero, rhs);
   Node* branch0 =
       graph()->NewNode(common()->Branch(BranchHint::kTrue), check0, control);
 
@@ -1263,46 +1327,90 @@ EffectControlLinearizer::LowerCheckedInt32Mod(Node* node, Node* frame_state,
   Node* etrue0 = effect;
   Node* vtrue0;
   {
-    // Fast case, no additional checking required.
-    vtrue0 = graph()->NewNode(machine()->Int32Mod(), lhs, rhs, if_true0);
+    Node* msk = graph()->NewNode(machine()->Int32Add(), rhs, minusone);
+
+    // Check if {rhs} minus one is a valid mask.
+    Node* check1 = graph()->NewNode(
+        machine()->Word32Equal(),
+        graph()->NewNode(machine()->Word32And(), rhs, msk), zero);
+    Node* branch1 = graph()->NewNode(common()->Branch(), check1, if_true0);
+
+    Node* if_true1 = graph()->NewNode(common()->IfTrue(), branch1);
+    Node* vtrue1;
+    {
+      // Check if {lhs} is negative.
+      Node* check2 = graph()->NewNode(machine()->Int32LessThan(), lhs, zero);
+      Node* branch2 = graph()->NewNode(common()->Branch(BranchHint::kFalse),
+                                       check2, if_true1);
+
+      // Compute the remainder as {-(-lhs & msk)}.
+      Node* if_true2 = graph()->NewNode(common()->IfTrue(), branch2);
+      Node* vtrue2 = graph()->NewNode(
+          machine()->Int32Sub(), zero,
+          graph()->NewNode(machine()->Word32And(),
+                           graph()->NewNode(machine()->Int32Sub(), zero, lhs),
+                           msk));
+
+      // Compute the remainder as {lhs & msk}.
+      Node* if_false2 = graph()->NewNode(common()->IfFalse(), branch2);
+      Node* vfalse2 = graph()->NewNode(machine()->Word32And(), lhs, msk);
+
+      if_true1 = graph()->NewNode(common()->Merge(2), if_true2, if_false2);
+      vtrue1 =
+          graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2),
+                           vtrue2, vfalse2, if_true1);
+    }
+
+    // Compute the remainder using the generic {lhs % rhs}.
+    Node* if_false1 = graph()->NewNode(common()->IfFalse(), branch1);
+    Node* vfalse1 =
+        graph()->NewNode(machine()->Int32Mod(), lhs, rhs, if_false1);
+
+    if_true0 = graph()->NewNode(common()->Merge(2), if_true1, if_false1);
+    vtrue0 = graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2),
+                              vtrue1, vfalse1, if_true0);
   }
 
   Node* if_false0 = graph()->NewNode(common()->IfFalse(), branch0);
   Node* efalse0 = effect;
   Node* vfalse0;
   {
-    // Check if {lhs} is kMinInt and {rhs} is -1, in which case we'd have
-    // to return -0.
-    Node* check1 = graph()->NewNode(machine()->Word32Equal(), lhs, minint);
-    Node* branch1 = graph()->NewNode(common()->Branch(BranchHint::kFalse),
+    // Check if {rhs} is strictly less than -1.
+    Node* check1 = graph()->NewNode(machine()->Int32LessThan(), rhs, minusone);
+    Node* branch1 = graph()->NewNode(common()->Branch(BranchHint::kTrue),
                                      check1, if_false0);
 
+    // Compute the remainder using the generic {lhs % rhs}.
     Node* if_true1 = graph()->NewNode(common()->IfTrue(), branch1);
     Node* etrue1 = efalse0;
-    {
-      // Check if {rhs} is -1.
-      Node* check = graph()->NewNode(machine()->Word32Equal(), rhs, minusone);
-      if_true1 = etrue1 =
-          graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kMinusZero),
-                           check, frame_state, etrue1, if_true1);
-    }
+    Node* vtrue1 = graph()->NewNode(machine()->Int32Mod(), lhs, rhs, if_true1);
 
     Node* if_false1 = graph()->NewNode(common()->IfFalse(), branch1);
     Node* efalse1 = efalse0;
+    Node* vfalse1;
+    {
+      // Ensure that {rhs} is not zero.
+      Node* check2 = graph()->NewNode(machine()->Word32Equal(), rhs, zero);
+      if_false1 = efalse1 = graph()->NewNode(
+          common()->DeoptimizeIf(DeoptimizeReason::kDivisionByZero), check2,
+          frame_state, efalse1, if_false1);
+
+      // Now we know that {rhs} is -1, so make sure {lhs} is not kMinInt, as
+      // we would otherwise have to return -0.
+      Node* check3 = graph()->NewNode(machine()->Word32Equal(), lhs, minint);
+      if_false1 = efalse1 =
+          graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kMinusZero),
+                           check3, frame_state, efalse1, if_false1);
+
+      // The remainder is zero.
+      vfalse1 = zero;
+    }
 
     if_false0 = graph()->NewNode(common()->Merge(2), if_true1, if_false1);
     efalse0 =
         graph()->NewNode(common()->EffectPhi(2), etrue1, efalse1, if_false0);
-
-    // Perform the actual integer modulos.
-    vfalse0 = graph()->NewNode(machine()->Int32Mod(), lhs, rhs, if_false0);
-
-    // Check if the result is zero, because in that case we'd have to return
-    // -0 here since we always take the signe of the {lhs} which is negative.
-    Node* check = graph()->NewNode(machine()->Word32Equal(), vfalse0, zero);
-    if_false0 = efalse0 =
-        graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kMinusZero),
-                         check, frame_state, efalse0, if_false0);
+    vfalse0 = graph()->NewNode(common()->Phi(MachineRepresentation::kWord32, 2),
+                               vtrue1, vfalse1, if_false0);
   }
 
   control = graph()->NewNode(common()->Merge(2), if_true0, if_false0);
@@ -1424,7 +1532,8 @@ EffectControlLinearizer::LowerCheckedUint32ToInt32(Node* node,
 }
 
 EffectControlLinearizer::ValueEffectControl
-EffectControlLinearizer::BuildCheckedFloat64ToInt32(Node* value,
+EffectControlLinearizer::BuildCheckedFloat64ToInt32(CheckForMinusZeroMode mode,
+                                                    Node* value,
                                                     Node* frame_state,
                                                     Node* effect,
                                                     Node* control) {
@@ -1436,32 +1545,33 @@ EffectControlLinearizer::BuildCheckedFloat64ToInt32(Node* value,
       common()->DeoptimizeUnless(DeoptimizeReason::kLostPrecisionOrNaN),
       check_same, frame_state, effect, control);
 
-  // Check if {value} is -0.
-  Node* check_zero = graph()->NewNode(machine()->Word32Equal(), value32,
-                                      jsgraph()->Int32Constant(0));
-  Node* branch_zero = graph()->NewNode(common()->Branch(BranchHint::kFalse),
-                                       check_zero, control);
+  if (mode == CheckForMinusZeroMode::kCheckForMinusZero) {
+    // Check if {value} is -0.
+    Node* check_zero = graph()->NewNode(machine()->Word32Equal(), value32,
+                                        jsgraph()->Int32Constant(0));
+    Node* branch_zero = graph()->NewNode(common()->Branch(BranchHint::kFalse),
+                                         check_zero, control);
 
-  Node* if_zero = graph()->NewNode(common()->IfTrue(), branch_zero);
-  Node* if_notzero = graph()->NewNode(common()->IfFalse(), branch_zero);
+    Node* if_zero = graph()->NewNode(common()->IfTrue(), branch_zero);
+    Node* if_notzero = graph()->NewNode(common()->IfFalse(), branch_zero);
 
-  // In case of 0, we need to check the high bits for the IEEE -0 pattern.
-  Node* check_negative = graph()->NewNode(
-      machine()->Int32LessThan(),
-      graph()->NewNode(machine()->Float64ExtractHighWord32(), value),
-      jsgraph()->Int32Constant(0));
+    // In case of 0, we need to check the high bits for the IEEE -0 pattern.
+    Node* check_negative = graph()->NewNode(
+        machine()->Int32LessThan(),
+        graph()->NewNode(machine()->Float64ExtractHighWord32(), value),
+        jsgraph()->Int32Constant(0));
 
-  Node* deopt_minus_zero =
-      graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kMinusZero),
-                       check_negative, frame_state, effect, if_zero);
+    Node* deopt_minus_zero =
+        graph()->NewNode(common()->DeoptimizeIf(DeoptimizeReason::kMinusZero),
+                         check_negative, frame_state, effect, if_zero);
 
-  Node* merge =
-      graph()->NewNode(common()->Merge(2), deopt_minus_zero, if_notzero);
+    control =
+        graph()->NewNode(common()->Merge(2), deopt_minus_zero, if_notzero);
+    effect = graph()->NewNode(common()->EffectPhi(2), deopt_minus_zero, effect,
+                              control);
+  }
 
-  effect =
-      graph()->NewNode(common()->EffectPhi(2), deopt_minus_zero, effect, merge);
-
-  return ValueEffectControl(value32, effect, merge);
+  return ValueEffectControl(value32, effect, control);
 }
 
 EffectControlLinearizer::ValueEffectControl
@@ -1469,9 +1579,26 @@ EffectControlLinearizer::LowerCheckedFloat64ToInt32(Node* node,
                                                     Node* frame_state,
                                                     Node* effect,
                                                     Node* control) {
+  CheckForMinusZeroMode mode = CheckMinusZeroModeOf(node->op());
   Node* value = node->InputAt(0);
 
-  return BuildCheckedFloat64ToInt32(value, frame_state, effect, control);
+  return BuildCheckedFloat64ToInt32(mode, value, frame_state, effect, control);
+}
+
+EffectControlLinearizer::ValueEffectControl
+EffectControlLinearizer::LowerCheckedTaggedSignedToInt32(Node* node,
+                                                         Node* frame_state,
+                                                         Node* effect,
+                                                         Node* control) {
+  Node* value = node->InputAt(0);
+
+  Node* check = ObjectIsSmi(value);
+  control = effect =
+      graph()->NewNode(common()->DeoptimizeUnless(DeoptimizeReason::kNotASmi),
+                       check, frame_state, effect, control);
+  value = ChangeSmiToInt32(value);
+
+  return ValueEffectControl(value, effect, control);
 }
 
 EffectControlLinearizer::ValueEffectControl
@@ -1479,6 +1606,7 @@ EffectControlLinearizer::LowerCheckedTaggedToInt32(Node* node,
                                                    Node* frame_state,
                                                    Node* effect,
                                                    Node* control) {
+  CheckForMinusZeroMode mode = CheckMinusZeroModeOf(node->op());
   Node* value = node->InputAt(0);
 
   Node* check = ObjectIsSmi(value);
@@ -1508,7 +1636,7 @@ EffectControlLinearizer::LowerCheckedTaggedToInt32(Node* node,
         simplified()->LoadField(AccessBuilder::ForHeapNumberValue()), value,
         efalse, if_false);
     ValueEffectControl state =
-        BuildCheckedFloat64ToInt32(vfalse, frame_state, efalse, if_false);
+        BuildCheckedFloat64ToInt32(mode, vfalse, frame_state, efalse, if_false);
     if_false = state.control;
     efalse = state.effect;
     vfalse = state.value;
@@ -2517,6 +2645,59 @@ EffectControlLinearizer::LowerTransitionElementsKind(Node* node, Node* effect,
 
   control = graph()->NewNode(common()->Merge(2), if_true, if_false);
   effect = graph()->NewNode(common()->EffectPhi(2), etrue, efalse, control);
+
+  return ValueEffectControl(nullptr, effect, control);
+}
+
+EffectControlLinearizer::ValueEffectControl
+EffectControlLinearizer::LowerLoadTypedElement(Node* node, Node* effect,
+                                               Node* control) {
+  ExternalArrayType array_type = ExternalArrayTypeOf(node->op());
+  Node* buffer = node->InputAt(0);
+  Node* base = node->InputAt(1);
+  Node* external = node->InputAt(2);
+  Node* index = node->InputAt(3);
+
+  // We need to keep the {buffer} alive so that the GC will not release the
+  // ArrayBuffer (if there's any) as long as we are still operating on it.
+  effect = graph()->NewNode(common()->Retain(), buffer, effect);
+
+  // Compute the effective storage pointer.
+  Node* storage = effect = graph()->NewNode(machine()->UnsafePointerAdd(), base,
+                                            external, effect, control);
+
+  // Perform the actual typed element access.
+  Node* value = effect = graph()->NewNode(
+      simplified()->LoadElement(
+          AccessBuilder::ForTypedArrayElement(array_type, true)),
+      storage, index, effect, control);
+
+  return ValueEffectControl(value, effect, control);
+}
+
+EffectControlLinearizer::ValueEffectControl
+EffectControlLinearizer::LowerStoreTypedElement(Node* node, Node* effect,
+                                                Node* control) {
+  ExternalArrayType array_type = ExternalArrayTypeOf(node->op());
+  Node* buffer = node->InputAt(0);
+  Node* base = node->InputAt(1);
+  Node* external = node->InputAt(2);
+  Node* index = node->InputAt(3);
+  Node* value = node->InputAt(4);
+
+  // We need to keep the {buffer} alive so that the GC will not release the
+  // ArrayBuffer (if there's any) as long as we are still operating on it.
+  effect = graph()->NewNode(common()->Retain(), buffer, effect);
+
+  // Compute the effective storage pointer.
+  Node* storage = effect = graph()->NewNode(machine()->UnsafePointerAdd(), base,
+                                            external, effect, control);
+
+  // Perform the actual typed element access.
+  effect = graph()->NewNode(
+      simplified()->StoreElement(
+          AccessBuilder::ForTypedArrayElement(array_type, true)),
+      storage, index, value, effect, control);
 
   return ValueEffectControl(nullptr, effect, control);
 }

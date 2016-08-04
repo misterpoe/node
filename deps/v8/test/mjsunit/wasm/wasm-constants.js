@@ -100,6 +100,11 @@ var kSig_l_ll = makeSig([kAstI64, kAstI64], [kAstI64]);
 var kSig_i_dd = makeSig([kAstF64, kAstF64], [kAstI32]);
 var kSig_v_v = makeSig([], []);
 var kSig_i_v = makeSig([], [kAstI32]);
+var kSig_v_i = makeSig([kAstI32], []);
+var kSig_v_ii = makeSig([kAstI32, kAstI32], []);
+var kSig_v_iii = makeSig([kAstI32, kAstI32, kAstI32], []);
+var kSig_v_d = makeSig([kAstF64], []);
+var kSig_v_dd = makeSig([kAstF64, kAstF64], []);
 
 function makeSig(params, results) {
   return {params: params, results: results};
@@ -149,8 +154,8 @@ var kExprCallFunction = 0x16;
 var kExprCallIndirect = 0x17;
 var kExprCallImport = 0x18;
 var kExprI8Const = 0xcb;
-var kExprLoadGlobal = 0xcc;
-var kExprStoreGlobal = 0xcd;
+var kExprGetGlobal = 0xbb;
+var kExprSetGlobal = 0xbc;
 
 var kExprI32LoadMem8S = 0x20;
 var kExprI32LoadMem8U = 0x21;
@@ -316,8 +321,7 @@ var kTrapRemByZero            = 4;
 var kTrapFloatUnrepresentable = 5;
 var kTrapFuncInvalid          = 6;
 var kTrapFuncSigMismatch      = 7;
-var kTrapMemAllocationFail    = 8;
-var kTrapInvalidIndex         = 9;
+var kTrapInvalidIndex         = 8;
 
 var kTrapMsgs = [
   "unreachable",
@@ -328,7 +332,6 @@ var kTrapMsgs = [
   "integer result unrepresentable",
   "invalid function",
   "function signature mismatch",
-  "failed to allocate memory",
   "invalid index into function table"
 ];
 
