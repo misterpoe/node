@@ -219,6 +219,155 @@ MaybeHandle<String> Object::ToString(Isolate* isolate, Handle<Object> input) {
   }
 }
 
+namespace {
+
+bool IsErrorObject(Isolate* isolate, Handle<Object> object) {
+  if (!object->IsJSReceiver()) return false;
+  Handle<Symbol> symbol = isolate->factory()->stack_trace_symbol();
+  return JSReceiver::HasOwnProperty(Handle<JSReceiver>::cast(object), symbol)
+      .FromMaybe(false);
+}
+
+Handle<String> AsStringOrEmpty(Isolate* isolate, Handle<Object> object) {
+  return object->IsString() ? Handle<String>::cast(object)
+                            : isolate->factory()->empty_string();
+}
+
+Handle<String> NoSideEffectsErrorToString(Isolate* isolate,
+                                          Handle<Object> input) {
+  Handle<JSReceiver> receiver = Handle<JSReceiver>::cast(input);
+
+  Handle<Name> name_key = isolate->factory()->name_string();
+  Handle<Object> name = JSReceiver::GetDataProperty(receiver, name_key);
+  Handle<String> name_str = AsStringOrEmpty(isolate, name);
+
+  Handle<Name> msg_key = isolate->factory()->message_string();
+  Handle<Object> msg = JSReceiver::GetDataProperty(receiver, msg_key);
+  Handle<String> msg_str = AsStringOrEmpty(isolate, msg);
+
+  if (name_str->length() == 0) return msg_str;
+  if (msg_str->length() == 0) return name_str;
+
+  IncrementalStringBuilder builder(isolate);
+  builder.AppendString(name_str);
+  builder.AppendCString(": ");
+  builder.AppendString(msg_str);
+
+  return builder.Finish().ToHandleChecked();
+}
+
+}  // namespace
+
+// static
+Handle<String> Object::NoSideEffectsToString(Isolate* isolate,
+                                             Handle<Object> input) {
+  DisallowJavascriptExecution no_js(isolate);
+
+  if (input->IsString() || input->IsNumber() || input->IsOddball() ||
+      input->IsSimd128Value()) {
+    return Object::ToString(isolate, input).ToHandleChecked();
+  } else if (input->IsFunction()) {
+    // -- F u n c t i o n
+    Handle<String> fun_str;
+    if (input->IsJSBoundFunction()) {
+      fun_str = JSBoundFunction::ToString(Handle<JSBoundFunction>::cast(input));
+    } else {
+      DCHECK(input->IsJSFunction());
+      fun_str = JSFunction::ToString(Handle<JSFunction>::cast(input));
+    }
+
+    if (fun_str->length() > 128) {
+      IncrementalStringBuilder builder(isolate);
+      builder.AppendString(isolate->factory()->NewSubString(fun_str, 0, 111));
+      builder.AppendCString("...<omitted>...");
+      builder.AppendString(isolate->factory()->NewSubString(
+          fun_str, fun_str->length() - 2, fun_str->length()));
+
+      return builder.Finish().ToHandleChecked();
+    }
+    return fun_str;
+  } else if (input->IsSymbol()) {
+    // -- S y m b o l
+    Handle<Symbol> symbol = Handle<Symbol>::cast(input);
+
+    IncrementalStringBuilder builder(isolate);
+    builder.AppendCString("Symbol(");
+    if (symbol->name()->IsString()) {
+      builder.AppendString(handle(String::cast(symbol->name()), isolate));
+    }
+    builder.AppendCharacter(')');
+
+    return builder.Finish().ToHandleChecked();
+  } else if (input->IsJSReceiver()) {
+    // -- J S R e c e i v e r
+    Handle<JSReceiver> receiver = Handle<JSReceiver>::cast(input);
+    Handle<Object> to_string = JSReceiver::GetDataProperty(
+        receiver, isolate->factory()->toString_string());
+
+    if (IsErrorObject(isolate, input) ||
+        *to_string == *isolate->error_to_string()) {
+      // When internally formatting error objects, use a side-effects-free
+      // version of Error.prototype.toString independent of the actually
+      // installed toString method.
+      return NoSideEffectsErrorToString(isolate, input);
+    } else if (*to_string == *isolate->object_to_string()) {
+      Handle<Object> ctor = JSReceiver::GetDataProperty(
+          receiver, isolate->factory()->constructor_string());
+      if (ctor->IsFunction()) {
+        Handle<String> ctor_name;
+        if (ctor->IsJSBoundFunction()) {
+          ctor_name = JSBoundFunction::GetName(
+                          isolate, Handle<JSBoundFunction>::cast(ctor))
+                          .ToHandleChecked();
+        } else if (ctor->IsJSFunction()) {
+          Handle<Object> ctor_name_obj =
+              JSFunction::GetName(isolate, Handle<JSFunction>::cast(ctor));
+          ctor_name = AsStringOrEmpty(isolate, ctor_name_obj);
+        }
+
+        if (ctor_name->length() != 0) {
+          IncrementalStringBuilder builder(isolate);
+          builder.AppendCString("#<");
+          builder.AppendString(ctor_name);
+          builder.AppendCString(">");
+
+          return builder.Finish().ToHandleChecked();
+        }
+      }
+    }
+  }
+
+  // At this point, input is either none of the above or a JSReceiver.
+
+  Handle<JSReceiver> receiver;
+  if (input->IsJSReceiver()) {
+    receiver = Handle<JSReceiver>::cast(input);
+  } else {
+    // This is the only case where Object::ToObject throws.
+    DCHECK(!input->IsSmi());
+    int constructor_function_index =
+        Handle<HeapObject>::cast(input)->map()->GetConstructorFunctionIndex();
+    if (constructor_function_index == Map::kNoConstructorFunctionIndex) {
+      return isolate->factory()->NewStringFromAsciiChecked("[object Unknown]");
+    }
+
+    receiver = Object::ToObject(isolate, input, isolate->native_context())
+                   .ToHandleChecked();
+  }
+
+  Handle<String> builtin_tag = handle(receiver->class_name(), isolate);
+  Handle<Object> tag_obj = JSReceiver::GetDataProperty(
+      receiver, isolate->factory()->to_string_tag_symbol());
+  Handle<String> tag =
+      tag_obj->IsString() ? Handle<String>::cast(tag_obj) : builtin_tag;
+
+  IncrementalStringBuilder builder(isolate);
+  builder.AppendCString("[object ");
+  builder.AppendString(tag);
+  builder.AppendCString("]");
+
+  return builder.Finish().ToHandleChecked();
+}
 
 // static
 MaybeHandle<Object> Object::ToLength(Isolate* isolate, Handle<Object> input) {
@@ -1029,6 +1178,26 @@ bool FunctionTemplateInfo::IsTemplateFor(Map* map) {
   return false;
 }
 
+
+// static
+Handle<TemplateList> TemplateList::New(Isolate* isolate, int size) {
+  Handle<FixedArray> list =
+      isolate->factory()->NewFixedArray(kLengthIndex + size);
+  list->set(kLengthIndex, Smi::FromInt(0));
+  return Handle<TemplateList>::cast(list);
+}
+
+// static
+Handle<TemplateList> TemplateList::Add(Isolate* isolate,
+                                       Handle<TemplateList> list,
+                                       Handle<i::Object> value) {
+  STATIC_ASSERT(kFirstElementIndex == 1);
+  int index = list->length() + 1;
+  Handle<i::FixedArray> fixed_array = Handle<FixedArray>::cast(list);
+  fixed_array = FixedArray::SetAndGrow(fixed_array, index, value);
+  fixed_array->set(kLengthIndex, Smi::FromInt(index));
+  return Handle<TemplateList>::cast(fixed_array);
+}
 
 // static
 MaybeHandle<JSObject> JSObject::New(Handle<JSFunction> constructor,
@@ -4771,9 +4940,8 @@ void Map::EnsureDescriptorSlack(Handle<Map> map, int slack) {
   map->UpdateDescriptors(*new_descriptors, layout_descriptor);
 }
 
-
-template<class T>
-static int AppendUniqueCallbacks(NeanderArray* callbacks,
+template <class T>
+static int AppendUniqueCallbacks(Handle<TemplateList> callbacks,
                                  Handle<typename T::Array> array,
                                  int valid_descriptors) {
   int nof_callbacks = callbacks->length();
@@ -4852,9 +5020,9 @@ void Map::AppendCallbackDescriptors(Handle<Map> map,
                                     Handle<Object> descriptors) {
   int nof = map->NumberOfOwnDescriptors();
   Handle<DescriptorArray> array(map->instance_descriptors());
-  NeanderArray callbacks(descriptors);
-  DCHECK(array->NumberOfSlackDescriptors() >= callbacks.length());
-  nof = AppendUniqueCallbacks<DescriptorArrayAppender>(&callbacks, array, nof);
+  Handle<TemplateList> callbacks = Handle<TemplateList>::cast(descriptors);
+  DCHECK_GE(array->NumberOfSlackDescriptors(), callbacks->length());
+  nof = AppendUniqueCallbacks<DescriptorArrayAppender>(callbacks, array, nof);
   map->SetNumberOfOwnDescriptors(nof);
 }
 
@@ -4862,10 +5030,9 @@ void Map::AppendCallbackDescriptors(Handle<Map> map,
 int AccessorInfo::AppendUnique(Handle<Object> descriptors,
                                Handle<FixedArray> array,
                                int valid_descriptors) {
-  NeanderArray callbacks(descriptors);
-  DCHECK(array->length() >= callbacks.length() + valid_descriptors);
-  return AppendUniqueCallbacks<FixedArrayAppender>(&callbacks,
-                                                   array,
+  Handle<TemplateList> callbacks = Handle<TemplateList>::cast(descriptors);
+  DCHECK_GE(array->length(), callbacks->length() + valid_descriptors);
+  return AppendUniqueCallbacks<FixedArrayAppender>(callbacks, array,
                                                    valid_descriptors);
 }
 
@@ -6236,11 +6403,9 @@ MaybeHandle<Object> JSReceiver::DefineProperties(Isolate* isolate,
   // 2. Let props be ToObject(Properties).
   // 3. ReturnIfAbrupt(props).
   Handle<JSReceiver> props;
-  if (!Object::ToObject(isolate, properties).ToHandle(&props)) {
-    THROW_NEW_ERROR(isolate,
-                    NewTypeError(MessageTemplate::kUndefinedOrNullToObject),
-                    Object);
-  }
+  ASSIGN_RETURN_ON_EXCEPTION(isolate, props,
+                             Object::ToObject(isolate, properties), Object);
+
   // 4. Let keys be props.[[OwnPropertyKeys]]().
   // 5. ReturnIfAbrupt(keys).
   Handle<FixedArray> keys;
@@ -9755,6 +9920,24 @@ Code* CodeCacheHashTable::Lookup(Name* name, Code::Flags flags) {
   return Code::cast(FixedArray::cast(get(EntryToIndex(entry)))->get(1));
 }
 
+Handle<FixedArray> FixedArray::SetAndGrow(Handle<FixedArray> array, int index,
+                                          Handle<Object> value) {
+  if (index < array->length()) {
+    array->set(index, *value);
+    return array;
+  }
+  int capacity = array->length();
+  do {
+    capacity = JSObject::NewElementsCapacity(capacity);
+  } while (capacity <= index);
+  Handle<FixedArray> new_array =
+      array->GetIsolate()->factory()->NewUninitializedFixedArray(capacity);
+  array->CopyTo(0, *new_array, 0, array->length());
+  new_array->FillWithHoles(array->length(), new_array->length());
+  new_array->set(index, *value);
+  return new_array;
+}
+
 void FixedArray::Shrink(int new_length) {
   DCHECK(0 <= new_length && new_length <= length());
   if (new_length < length()) {
@@ -10193,14 +10376,11 @@ int HandlerTable::LookupRange(int pc_offset, int* data_out,
 
 
 // TODO(turbofan): Make sure table is sorted and use binary search.
-int HandlerTable::LookupReturn(int pc_offset, CatchPrediction* prediction_out) {
+int HandlerTable::LookupReturn(int pc_offset) {
   for (int i = 0; i < length(); i += kReturnEntrySize) {
     int return_offset = Smi::cast(get(i + kReturnOffsetIndex))->value();
     int handler_field = Smi::cast(get(i + kReturnHandlerIndex))->value();
     if (pc_offset == return_offset) {
-      if (prediction_out) {
-        *prediction_out = HandlerPredictionField::decode(handler_field);
-      }
       return HandlerOffsetField::decode(handler_field);
     }
   }
@@ -11624,8 +11804,8 @@ Handle<LiteralsArray> SharedFunctionInfo::FindOrCreateLiterals(
 
   Handle<TypeFeedbackVector> feedback_vector =
       TypeFeedbackVector::New(isolate, handle(shared->feedback_metadata()));
-  Handle<LiteralsArray> literals = LiteralsArray::New(
-      isolate, feedback_vector, shared->num_literals(), TENURED);
+  Handle<LiteralsArray> literals =
+      LiteralsArray::New(isolate, feedback_vector, shared->num_literals());
   Handle<Code> code;
   if (result.code != nullptr) {
     code = Handle<Code>(result.code, isolate);
@@ -13238,6 +13418,8 @@ void SetExpectedNofPropertiesFromEstimate(Handle<SharedFunctionInfo> shared,
 
 void SharedFunctionInfo::InitFromFunctionLiteral(
     Handle<SharedFunctionInfo> shared_info, FunctionLiteral* lit) {
+  // When adding fields here, make sure Scope::AnalyzePartially is updated
+  // accordingly.
   shared_info->set_length(lit->scope()->default_function_length());
   shared_info->set_internal_formal_parameter_count(lit->parameter_count());
   shared_info->set_function_token_position(lit->function_token_position());
@@ -13687,6 +13869,12 @@ uint32_t Code::TranslateAstIdToPcOffset(BailoutId ast_id) {
   return 0;
 }
 
+int Code::LookupRangeInHandlerTable(int code_offset, int* data,
+                                    HandlerTable::CatchPrediction* prediction) {
+  DCHECK(!is_optimized_code());
+  HandlerTable* table = HandlerTable::cast(handler_table());
+  return table->LookupRange(code_offset, data, prediction);
+}
 
 void Code::MakeCodeAgeSequenceYoung(byte* sequence, Isolate* isolate) {
   PatchPlatformCodeAge(isolate, sequence, kNoAgeCodeAge, NO_MARKING_PARITY);
@@ -14439,6 +14627,13 @@ void BytecodeArray::CopyBytecodesTo(BytecodeArray* to) {
   DCHECK_EQ(from->length(), to->length());
   CopyBytes(to->GetFirstBytecodeAddress(), from->GetFirstBytecodeAddress(),
             from->length());
+}
+
+int BytecodeArray::LookupRangeInHandlerTable(
+    int code_offset, int* data, HandlerTable::CatchPrediction* prediction) {
+  HandlerTable* table = HandlerTable::cast(handler_table());
+  code_offset++;  // Point after current bytecode.
+  return table->LookupRange(code_offset, data, prediction);
 }
 
 // static
@@ -16425,20 +16620,23 @@ template class Dictionary<UnseededNumberDictionary,
                           uint32_t>;
 
 template Handle<SeededNumberDictionary>
-Dictionary<SeededNumberDictionary, SeededNumberDictionaryShape, uint32_t>::
-    New(Isolate*, int at_least_space_for, PretenureFlag pretenure);
+Dictionary<SeededNumberDictionary, SeededNumberDictionaryShape, uint32_t>::New(
+    Isolate*, int at_least_space_for, PretenureFlag pretenure,
+    MinimumCapacity capacity_option);
 
 template Handle<UnseededNumberDictionary>
-Dictionary<UnseededNumberDictionary, UnseededNumberDictionaryShape, uint32_t>::
-    New(Isolate*, int at_least_space_for, PretenureFlag pretenure);
+Dictionary<UnseededNumberDictionary, UnseededNumberDictionaryShape,
+           uint32_t>::New(Isolate*, int at_least_space_for,
+                          PretenureFlag pretenure,
+                          MinimumCapacity capacity_option);
 
 template Handle<NameDictionary>
-Dictionary<NameDictionary, NameDictionaryShape, Handle<Name> >::
-    New(Isolate*, int n, PretenureFlag pretenure);
+Dictionary<NameDictionary, NameDictionaryShape, Handle<Name>>::New(
+    Isolate*, int n, PretenureFlag pretenure, MinimumCapacity capacity_option);
 
 template Handle<GlobalDictionary>
-Dictionary<GlobalDictionary, GlobalDictionaryShape, Handle<Name> >::New(
-    Isolate*, int n, PretenureFlag pretenure);
+Dictionary<GlobalDictionary, GlobalDictionaryShape, Handle<Name>>::New(
+    Isolate*, int n, PretenureFlag pretenure, MinimumCapacity capacity_option);
 
 template Handle<SeededNumberDictionary>
 Dictionary<SeededNumberDictionary, SeededNumberDictionaryShape, uint32_t>::
@@ -17230,17 +17428,13 @@ void CompilationCacheTable::Remove(Object* value) {
   return;
 }
 
-
-template<typename Derived, typename Shape, typename Key>
+template <typename Derived, typename Shape, typename Key>
 Handle<Derived> Dictionary<Derived, Shape, Key>::New(
-    Isolate* isolate,
-    int at_least_space_for,
-    PretenureFlag pretenure) {
+    Isolate* isolate, int at_least_space_for, PretenureFlag pretenure,
+    MinimumCapacity capacity_option) {
   DCHECK(0 <= at_least_space_for);
-  Handle<Derived> dict = DerivedHashTable::New(isolate,
-                                               at_least_space_for,
-                                               USE_DEFAULT_MINIMUM_CAPACITY,
-                                               pretenure);
+  Handle<Derived> dict = DerivedHashTable::New(isolate, at_least_space_for,
+                                               capacity_option, pretenure);
 
   // Initialize the next enumeration index.
   dict->SetNextEnumerationIndex(PropertyDetails::kInitialIndex);

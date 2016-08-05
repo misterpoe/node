@@ -19,6 +19,9 @@ import("//build_overrides/v8.gni")
 import("snapshot_toolchain.gni")
 
 declare_args() {
+  # Print to stdout on Android.
+  v8_android_log_stdout = false
+
   # Sets -DVERIFY_HEAP.
   v8_enable_verify_heap = false
 
@@ -32,7 +35,7 @@ declare_args() {
   v8_embed_script = ""
 
   # Sets -dENABLE_DISASSEMBLER.
-  v8_enable_disassembler = false
+  v8_enable_disassembler = ""
 
   # Sets -dENABLE_GDB_JIT_INTERFACE.
   v8_enable_gdbjit = ""
@@ -52,7 +55,7 @@ declare_args() {
   v8_interpreted_regexp = false
 
   # Sets -dOBJECT_PRINT.
-  v8_object_print = false
+  v8_object_print = ""
 
   # With post mortem support enabled, metadata is embedded into libv8 that
   # describes various parameters of the VM for use by debuggers. See
@@ -81,6 +84,14 @@ if (v8_enable_gdbjit == "") {
   } else {
     v8_enable_gdbjit = false
   }
+}
+
+# Derived defaults.
+if (v8_object_print == "") {
+  v8_object_print = is_debug && !v8_optimized_debug
+}
+if (v8_enable_disassembler == "") {
+  v8_enable_disassembler = is_debug && !v8_optimized_debug
 }
 
 v8_generated_peephole_source = "$target_gen_dir/bytecode-peephole-table.cc"
@@ -304,6 +315,9 @@ config("toolchain") {
       # ldflags are not pushed to dependants.
       ldflags += [ "/STACK:2097152" ]
     }
+  }
+  if (is_android && v8_android_log_stdout) {
+    defines += [ "V8_ANDROID_LOG_STDOUT" ]
   }
 
   # TODO(jochen): Support v8_enable_prof on Windows.
@@ -848,6 +862,8 @@ v8_source_set("v8_base") {
     "src/ast/ast-value-factory.h",
     "src/ast/ast.cc",
     "src/ast/ast.h",
+    "src/ast/context-slot-cache.cc",
+    "src/ast/context-slot-cache.h",
     "src/ast/modules.cc",
     "src/ast/modules.h",
     "src/ast/prettyprinter.cc",
@@ -872,9 +888,11 @@ v8_source_set("v8_base") {
     "src/bit-vector.h",
     "src/bootstrapper.cc",
     "src/bootstrapper.h",
+    "src/builtins/builtins-api.cc",
     "src/builtins/builtins-array.cc",
     "src/builtins/builtins-arraybuffer.cc",
     "src/builtins/builtins-boolean.cc",
+    "src/builtins/builtins-call.cc",
     "src/builtins/builtins-callsite.cc",
     "src/builtins/builtins-conversion.cc",
     "src/builtins/builtins-dataview.cc",
@@ -882,6 +900,7 @@ v8_source_set("v8_base") {
     "src/builtins/builtins-debug.cc",
     "src/builtins/builtins-error.cc",
     "src/builtins/builtins-function.cc",
+    "src/builtins/builtins-generator.cc",
     "src/builtins/builtins-global.cc",
     "src/builtins/builtins-handler.cc",
     "src/builtins/builtins-internal.cc",
@@ -1046,6 +1065,9 @@ v8_source_set("v8_base") {
     "src/compiler/loop-analysis.cc",
     "src/compiler/loop-analysis.h",
     "src/compiler/loop-peeling.cc",
+    "src/compiler/loop-peeling.h",
+    "src/compiler/loop-variable-optimizer.cc",
+    "src/compiler/loop-variable-optimizer.h",
     "src/compiler/machine-operator-reducer.cc",
     "src/compiler/machine-operator-reducer.h",
     "src/compiler/machine-operator.cc",
@@ -1509,6 +1531,7 @@ v8_source_set("v8_base") {
     "src/runtime/runtime-compiler.cc",
     "src/runtime/runtime-date.cc",
     "src/runtime/runtime-debug.cc",
+    "src/runtime/runtime-error.cc",
     "src/runtime/runtime-forin.cc",
     "src/runtime/runtime-function.cc",
     "src/runtime/runtime-futex.cc",
@@ -2000,7 +2023,6 @@ v8_source_set("v8_libbase") {
     "src/base/atomicops_internals_mac.h",
     "src/base/atomicops_internals_mips64_gcc.h",
     "src/base/atomicops_internals_mips_gcc.h",
-    "src/base/atomicops_internals_portable.h",
     "src/base/atomicops_internals_s390_gcc.h",
     "src/base/atomicops_internals_tsan.h",
     "src/base/atomicops_internals_x86_gcc.cc",
@@ -2100,11 +2122,20 @@ v8_source_set("v8_libbase") {
 
 v8_source_set("v8_libplatform") {
   sources = [
+    "//base/trace_event/common/trace_event_common.h",
     "include/libplatform/libplatform.h",
+    "include/libplatform/v8-tracing.h",
     "src/libplatform/default-platform.cc",
     "src/libplatform/default-platform.h",
     "src/libplatform/task-queue.cc",
     "src/libplatform/task-queue.h",
+    "src/libplatform/tracing/trace-buffer.cc",
+    "src/libplatform/tracing/trace-buffer.h",
+    "src/libplatform/tracing/trace-config.cc",
+    "src/libplatform/tracing/trace-object.cc",
+    "src/libplatform/tracing/trace-writer.cc",
+    "src/libplatform/tracing/trace-writer.h",
+    "src/libplatform/tracing/tracing-controller.cc",
     "src/libplatform/worker-thread.cc",
     "src/libplatform/worker-thread.h",
   ]

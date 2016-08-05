@@ -1277,9 +1277,11 @@ static void CallStubInRecordCallTarget(MacroAssembler* masm, CodeStub* stub) {
     __ push(edi);
     __ push(edx);
     __ push(ebx);
+    __ push(esi);
 
     __ CallStub(stub);
 
+    __ pop(esi);
     __ pop(ebx);
     __ pop(edx);
     __ pop(edi);
@@ -1575,7 +1577,9 @@ void CallICStub::Generate(MacroAssembler* masm) {
     FrameScope scope(masm, StackFrame::INTERNAL);
     CreateWeakCellStub create_stub(isolate);
     __ push(edi);
+    __ push(esi);
     __ CallStub(&create_stub);
+    __ pop(esi);
     __ pop(edi);
   }
 
@@ -1625,7 +1629,6 @@ void CodeStub::GenerateStubsAheadOfTime(Isolate* isolate) {
   BinaryOpICStub::GenerateAheadOfTime(isolate);
   BinaryOpICWithAllocationSiteStub::GenerateAheadOfTime(isolate);
   StoreFastElementStub::GenerateAheadOfTime(isolate);
-  TypeofStub::GenerateAheadOfTime(isolate);
 }
 
 
@@ -1843,10 +1846,6 @@ void JSEntryStub::Generate(MacroAssembler* masm) {
   // Invoke: Link this frame into the handler chain.
   __ bind(&invoke);
   __ PushStackHandler();
-
-  // Clear any pending exceptions.
-  __ mov(edx, Immediate(isolate()->factory()->the_hole_value()));
-  __ mov(Operand::StaticVariable(pending_exception), edx);
 
   // Fake a receiver (NULL).
   __ push(Immediate(0));  // receiver

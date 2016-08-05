@@ -9,7 +9,6 @@
 
 #include "src/allocation-site-scopes.h"
 #include "src/ast/ast-numbering.h"
-#include "src/ast/scopeinfo.h"
 #include "src/code-factory.h"
 #include "src/crankshaft/hydrogen-bce.h"
 #include "src/crankshaft/hydrogen-canonicalize.h"
@@ -116,7 +115,11 @@ class HOptimizedGraphBuilderWithPositions : public HOptimizedGraphBuilder {
 };
 
 HCompilationJob::Status HCompilationJob::CreateGraphImpl() {
-  bool dont_crankshaft = info()->shared_info()->dont_crankshaft();
+  if (!isolate()->use_crankshaft() ||
+      info()->shared_info()->dont_crankshaft()) {
+    // Crankshaft is entirely disabled.
+    return FAILED;
+  }
 
   // Optimization requires a version of fullcode with deoptimization support.
   // Recompile the unoptimized version of the code if the current version
@@ -138,11 +141,6 @@ HCompilationJob::Status HCompilationJob::CreateGraphImpl() {
   }
   DCHECK(info()->shared_info()->has_deoptimization_support());
   DCHECK(!info()->shared_info()->never_compiled());
-
-  if (!isolate()->use_crankshaft() || dont_crankshaft) {
-    // Crankshaft is entirely disabled.
-    return FAILED;
-  }
 
   // Check the whitelist for Crankshaft.
   if (!info()->shared_info()->PassesFilter(FLAG_hydrogen_filter)) {
@@ -1360,6 +1358,7 @@ void HGraphBuilder::LoopBuilder::EndBody() {
 
 
 HGraph* HGraphBuilder::CreateGraph() {
+  DCHECK(!FLAG_minimal);
   graph_ = new (zone()) HGraph(info_, descriptor_);
   if (FLAG_hydrogen_stats) isolate()->GetHStatistics()->Initialize(info_);
   if (!info_->IsStub() && info_->is_tracking_positions()) {

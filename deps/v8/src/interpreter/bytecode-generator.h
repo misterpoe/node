@@ -51,6 +51,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 
   void GenerateBytecode();
   void GenerateBytecodeBody();
+  void FinalizeBytecode();
 
   DEFINE_AST_VISITOR_SUBCLASS_MEMBERS();
 
@@ -127,7 +128,6 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   void VisitArgumentsObject(Variable* variable);
   void VisitRestArgumentsArray(Variable* rest);
   void VisitCallSuper(Call* call);
-  void VisitClassLiteralContents(ClassLiteral* expr);
   void VisitClassLiteralForRuntimeDefinition(ClassLiteral* expr);
   void VisitClassLiteralProperties(ClassLiteral* expr, Register literal,
                                    Register prototype);
@@ -209,12 +209,16 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   Scope* scope_;
   GlobalDeclarationsBuilder* globals_builder_;
   ZoneVector<GlobalDeclarationsBuilder*> global_declarations_;
+  ZoneVector<std::pair<FunctionLiteral*, size_t>> function_literals_;
+  ZoneVector<std::pair<NativeFunctionLiteral*, size_t>>
+      native_function_literals_;
   ControlScope* execution_control_;
   ContextScope* execution_context_;
   ExpressionResultScope* execution_result_;
   RegisterAllocationScope* register_allocator_;
   ZoneVector<BytecodeLabel> generator_resume_points_;
   Register generator_state_;
+  int loop_depth_;
 };
 
 }  // namespace interpreter

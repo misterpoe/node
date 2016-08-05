@@ -11,7 +11,6 @@
 #include "src/asmjs/asm-typer.h"
 #include "src/ast/ast-numbering.h"
 #include "src/ast/prettyprinter.h"
-#include "src/ast/scopeinfo.h"
 #include "src/ast/scopes.h"
 #include "src/bootstrapper.h"
 #include "src/codegen.h"
@@ -442,6 +441,8 @@ void EnsureFeedbackMetadata(CompilationInfo* info) {
 }
 
 bool ShouldUseIgnition(CompilationInfo* info) {
+  if (!FLAG_ignition) return false;
+
   DCHECK(info->has_shared_info());
 
   // When requesting debug code as a replacement for existing code, we provide
@@ -484,7 +485,7 @@ bool GenerateUnoptimizedCode(CompilationInfo* info) {
       return true;
     }
   }
-  if (FLAG_ignition && ShouldUseIgnition(info)) {
+  if (ShouldUseIgnition(info)) {
     success = interpreter::Interpreter::MakeBytecode(info);
   } else {
     success = FullCodeGenerator::MakeCode(info);
@@ -584,6 +585,10 @@ void InsertCodeIntoOptimizedCodeMap(CompilationInfo* info) {
   if (info->is_function_context_specializing()) return;
   // Frame specialization implies function context specialization.
   DCHECK(!info->is_frame_specializing());
+
+  // TODO(4764): When compiling for OSR from bytecode, BailoutId might derive
+  // from bytecode offset and overlap with actual BailoutId. No caching!
+  if (info->is_osr() && info->is_optimizing_from_bytecode()) return;
 
   // Cache optimized context-specific code.
   Handle<JSFunction> function = info->closure();
@@ -745,8 +750,18 @@ MaybeHandle<Code> GetOptimizedCode(Handle<JSFunction> function,
   Isolate* isolate = function->GetIsolate();
   Handle<SharedFunctionInfo> shared(function->shared(), isolate);
 
+  bool ignition_osr = osr_frame && osr_frame->is_interpreted();
+  DCHECK_IMPLIES(ignition_osr, !osr_ast_id.IsNone());
+  DCHECK_IMPLIES(ignition_osr, FLAG_ignition_osr);
+
+  // Flag combination --ignition-osr --no-turbo-from-bytecode is unsupported.
+  if (ignition_osr && !FLAG_turbo_from_bytecode) return MaybeHandle<Code>();
+
   Handle<Code> cached_code;
-  if (GetCodeFromOptimizedCodeMap(function, osr_ast_id)
+  // TODO(4764): When compiling for OSR from bytecode, BailoutId might derive
+  // from bytecode offset and overlap with actual BailoutId. No lookup!
+  if (!ignition_osr &&
+      GetCodeFromOptimizedCodeMap(function, osr_ast_id)
           .ToHandle(&cached_code)) {
     if (FLAG_trace_opt) {
       PrintF("[found optimized code for ");
@@ -767,7 +782,7 @@ MaybeHandle<Code> GetOptimizedCode(Handle<JSFunction> function,
   VMState<COMPILER> state(isolate);
   DCHECK(!isolate->has_pending_exception());
   PostponeInterruptsScope postpone(isolate);
-  bool use_turbofan = UseTurboFan(shared);
+  bool use_turbofan = UseTurboFan(shared) || ignition_osr;
   std::unique_ptr<CompilationJob> job(
       use_turbofan ? compiler::Pipeline::NewCompilationJob(function)
                    : new HCompilationJob(function));

@@ -361,15 +361,11 @@ class AstGraphBuilder::ControlScopeForCatch : public ControlScope {
  public:
   ControlScopeForCatch(AstGraphBuilder* owner, TryCatchStatement* stmt,
                        TryCatchBuilder* control)
-      : ControlScope(owner),
-        control_(control),
-        outer_prediction_(owner->try_catch_prediction_) {
+      : ControlScope(owner), control_(control) {
     builder()->try_nesting_level_++;  // Increment nesting.
-    builder()->try_catch_prediction_ = stmt->catch_prediction();
   }
   ~ControlScopeForCatch() {
     builder()->try_nesting_level_--;  // Decrement nesting.
-    builder()->try_catch_prediction_ = outer_prediction_;
   }
 
  protected:
@@ -388,7 +384,6 @@ class AstGraphBuilder::ControlScopeForCatch : public ControlScope {
 
  private:
   TryCatchBuilder* control_;
-  HandlerTable::CatchPrediction outer_prediction_;
 };
 
 
@@ -397,16 +392,11 @@ class AstGraphBuilder::ControlScopeForFinally : public ControlScope {
  public:
   ControlScopeForFinally(AstGraphBuilder* owner, TryFinallyStatement* stmt,
                          DeferredCommands* commands, TryFinallyBuilder* control)
-      : ControlScope(owner),
-        commands_(commands),
-        control_(control),
-        outer_prediction_(owner->try_catch_prediction_) {
+      : ControlScope(owner), commands_(commands), control_(control) {
     builder()->try_nesting_level_++;  // Increment nesting.
-    builder()->try_catch_prediction_ = stmt->catch_prediction();
   }
   ~ControlScopeForFinally() {
     builder()->try_nesting_level_--;  // Decrement nesting.
-    builder()->try_catch_prediction_ = outer_prediction_;
   }
 
  protected:
@@ -419,62 +409,8 @@ class AstGraphBuilder::ControlScopeForFinally : public ControlScope {
  private:
   DeferredCommands* commands_;
   TryFinallyBuilder* control_;
-  HandlerTable::CatchPrediction outer_prediction_;
 };
 
-
-// Helper for generating before and after frame states.
-class AstGraphBuilder::FrameStateBeforeAndAfter {
- public:
-  FrameStateBeforeAndAfter(AstGraphBuilder* builder, BailoutId id_before)
-      : builder_(builder), frame_state_before_(nullptr) {
-    frame_state_before_ = id_before == BailoutId::None()
-                              ? builder_->GetEmptyFrameState()
-                              : builder_->environment()->Checkpoint(id_before);
-    if (id_before != BailoutId::None()) {
-      // Create an explicit checkpoint node for before the operation.
-      Node* node = builder_->NewNode(builder_->common()->Checkpoint());
-      DCHECK_EQ(IrOpcode::kDead,
-                NodeProperties::GetFrameStateInput(node, 0)->opcode());
-      NodeProperties::ReplaceFrameStateInput(node, 0, frame_state_before_);
-    }
-  }
-
-  void AddToNode(
-      Node* node, BailoutId id_after,
-      OutputFrameStateCombine combine = OutputFrameStateCombine::Ignore()) {
-    int count = OperatorProperties::GetFrameStateInputCount(node->op());
-    DCHECK_LE(count, 2);
-
-    if (count >= 1) {
-      // Add the frame state for after the operation.
-      DCHECK_EQ(IrOpcode::kDead,
-                NodeProperties::GetFrameStateInput(node, 0)->opcode());
-
-      bool node_has_exception = NodeProperties::IsExceptionalCall(node);
-
-      Node* frame_state_after =
-          id_after == BailoutId::None()
-              ? builder_->GetEmptyFrameState()
-              : builder_->environment()->Checkpoint(id_after, combine,
-                                                    node_has_exception);
-
-      NodeProperties::ReplaceFrameStateInput(node, 0, frame_state_after);
-    }
-
-    if (count >= 2) {
-      // Add the frame state for before the operation.
-      // TODO(mstarzinger): Get rid of frame state input before!
-      DCHECK_EQ(IrOpcode::kDead,
-                NodeProperties::GetFrameStateInput(node, 1)->opcode());
-      NodeProperties::ReplaceFrameStateInput(node, 1, frame_state_before_);
-    }
-  }
-
- private:
-  AstGraphBuilder* builder_;
-  Node* frame_state_before_;
-};
 
 AstGraphBuilder::AstGraphBuilder(Zone* local_zone, CompilationInfo* info,
                                  JSGraph* jsgraph, LoopAssignmentAnalysis* loop,
@@ -489,7 +425,6 @@ AstGraphBuilder::AstGraphBuilder(Zone* local_zone, CompilationInfo* info,
       execution_control_(nullptr),
       execution_context_(nullptr),
       try_nesting_level_(0),
-      try_catch_prediction_(HandlerTable::UNCAUGHT),
       input_buffer_size_(0),
       input_buffer_(nullptr),
       exit_controls_(local_zone),
@@ -1635,20 +1570,6 @@ void AstGraphBuilder::VisitFunctionLiteral(FunctionLiteral* expr) {
 
 
 void AstGraphBuilder::VisitClassLiteral(ClassLiteral* expr) {
-  // Visit declarations and class literal in a block scope.
-  if (expr->scope()->ContextLocalCount() > 0) {
-    Node* context = BuildLocalBlockContext(expr->scope());
-    ContextScope scope(this, expr->scope(), context);
-    VisitDeclarations(expr->scope()->declarations());
-    VisitClassLiteralContents(expr);
-  } else {
-    VisitDeclarations(expr->scope()->declarations());
-    VisitClassLiteralContents(expr);
-  }
-}
-
-
-void AstGraphBuilder::VisitClassLiteralContents(ClassLiteral* expr) {
   VisitForValueOrTheHole(expr->extends());
   VisitForValue(expr->constructor());
 
@@ -1888,12 +1809,16 @@ void AstGraphBuilder::VisitObjectLiteral(ObjectLiteral* expr) {
       }
       case ObjectLiteral::Property::GETTER:
         if (property->emit_store()) {
-          accessor_table.lookup(key)->second->getter = property;
+          AccessorTable::Iterator it = accessor_table.lookup(key);
+          it->second->bailout_id = expr->GetIdForPropertySet(property_index);
+          it->second->getter = property;
         }
         break;
       case ObjectLiteral::Property::SETTER:
         if (property->emit_store()) {
-          accessor_table.lookup(key)->second->setter = property;
+          AccessorTable::Iterator it = accessor_table.lookup(key);
+          it->second->bailout_id = expr->GetIdForPropertySet(property_index);
+          it->second->setter = property;
         }
         break;
     }
@@ -1914,8 +1839,7 @@ void AstGraphBuilder::VisitObjectLiteral(ObjectLiteral* expr) {
     const Operator* op =
         javascript()->CallRuntime(Runtime::kDefineAccessorPropertyUnchecked);
     Node* call = NewNode(op, literal, name, getter, setter, attr);
-    // This should not lazy deopt on a new literal.
-    PrepareFrameState(call, BailoutId::None());
+    PrepareFrameState(call, it->second->bailout_id);
   }
 
   // Object literals have two parts. The "static" part on the left contains no
@@ -2221,17 +2145,13 @@ void AstGraphBuilder::VisitAssignment(Assignment* expr) {
     }
     environment()->Push(old_value);
     VisitForValue(expr->value());
-    Node* value;
-    {
-      FrameStateBeforeAndAfter states(this, expr->value()->id());
-      Node* right = environment()->Pop();
-      Node* left = environment()->Pop();
-      value =
-          BuildBinaryOp(left, right, expr->binary_op(),
-                        expr->binary_operation()->BinaryOperationFeedbackId());
-      states.AddToNode(value, expr->binary_operation()->id(),
-                       OutputFrameStateCombine::Push());
-    }
+    Node* right = environment()->Pop();
+    Node* left = environment()->Pop();
+    Node* value =
+        BuildBinaryOp(left, right, expr->binary_op(),
+                      expr->binary_operation()->BinaryOperationFeedbackId());
+    PrepareFrameState(value, expr->binary_operation()->id(),
+                      OutputFrameStateCombine::Push());
     environment()->Push(value);
     if (needs_frame_state_before) {
       PrepareEagerCheckpoint(expr->binary_operation()->id());
@@ -2254,14 +2174,16 @@ void AstGraphBuilder::VisitAssignment(Assignment* expr) {
       Node* object = environment()->Pop();
       Handle<Name> name = property->key()->AsLiteral()->AsPropertyName();
       Node* store = BuildNamedStore(object, name, value, feedback);
-      PrepareFrameState(store, expr->id(), ast_context()->GetStateCombine());
+      PrepareFrameState(store, expr->AssignmentId(),
+                        OutputFrameStateCombine::Push());
       break;
     }
     case KEYED_PROPERTY: {
       Node* key = environment()->Pop();
       Node* object = environment()->Pop();
       Node* store = BuildKeyedStore(object, key, value, feedback);
-      PrepareFrameState(store, expr->id(), ast_context()->GetStateCombine());
+      PrepareFrameState(store, expr->AssignmentId(),
+                        OutputFrameStateCombine::Push());
       break;
     }
     case NAMED_SUPER_PROPERTY: {
@@ -2314,7 +2236,7 @@ void AstGraphBuilder::VisitProperty(Property* expr) {
       Node* object = environment()->Pop();
       Handle<Name> name = expr->key()->AsLiteral()->AsPropertyName();
       value = BuildNamedLoad(object, name, pair);
-      PrepareFrameState(value, expr->id(), ast_context()->GetStateCombine());
+      PrepareFrameState(value, expr->LoadId(), OutputFrameStateCombine::Push());
       break;
     }
     case KEYED_PROPERTY: {
@@ -2323,7 +2245,7 @@ void AstGraphBuilder::VisitProperty(Property* expr) {
       Node* key = environment()->Pop();
       Node* object = environment()->Pop();
       value = BuildKeyedLoad(object, key, pair);
-      PrepareFrameState(value, expr->id(), ast_context()->GetStateCombine());
+      PrepareFrameState(value, expr->LoadId(), OutputFrameStateCombine::Push());
       break;
     }
     case NAMED_SUPER_PROPERTY: {
@@ -2333,7 +2255,7 @@ void AstGraphBuilder::VisitProperty(Property* expr) {
       Node* receiver = environment()->Pop();
       Handle<Name> name = expr->key()->AsLiteral()->AsPropertyName();
       value = BuildNamedSuperLoad(receiver, home_object, name, pair);
-      PrepareFrameState(value, expr->id(), ast_context()->GetStateCombine());
+      PrepareFrameState(value, expr->LoadId(), OutputFrameStateCombine::Push());
       break;
     }
     case KEYED_SUPER_PROPERTY: {
@@ -2344,7 +2266,7 @@ void AstGraphBuilder::VisitProperty(Property* expr) {
       Node* home_object = environment()->Pop();
       Node* receiver = environment()->Pop();
       value = BuildKeyedSuperLoad(receiver, home_object, key, pair);
-      PrepareFrameState(value, expr->id(), ast_context()->GetStateCombine());
+      PrepareFrameState(value, expr->LoadId(), OutputFrameStateCombine::Push());
       break;
     }
   }
@@ -2768,20 +2690,16 @@ void AstGraphBuilder::VisitCountOperation(CountOperation* expr) {
       Node* object = environment()->Pop();
       Handle<Name> name = property->key()->AsLiteral()->AsPropertyName();
       Node* store = BuildNamedStore(object, name, value, feedback);
-      environment()->Push(value);
       PrepareFrameState(store, expr->AssignmentId(),
-                        OutputFrameStateCombine::Ignore());
-      environment()->Pop();
+                        OutputFrameStateCombine::Push());
       break;
     }
     case KEYED_PROPERTY: {
       Node* key = environment()->Pop();
       Node* object = environment()->Pop();
       Node* store = BuildKeyedStore(object, key, value, feedback);
-      environment()->Push(value);
       PrepareFrameState(store, expr->AssignmentId(),
-                        OutputFrameStateCombine::Ignore());
-      environment()->Pop();
+                        OutputFrameStateCombine::Push());
       break;
     }
     case NAMED_SUPER_PROPERTY: {
@@ -2789,10 +2707,8 @@ void AstGraphBuilder::VisitCountOperation(CountOperation* expr) {
       Node* receiver = environment()->Pop();
       Handle<Name> name = property->key()->AsLiteral()->AsPropertyName();
       Node* store = BuildNamedSuperStore(receiver, home_object, name, value);
-      environment()->Push(value);
       PrepareFrameState(store, expr->AssignmentId(),
-                        OutputFrameStateCombine::Ignore());
-      environment()->Pop();
+                        OutputFrameStateCombine::Push());
       break;
     }
     case KEYED_SUPER_PROPERTY: {
@@ -2800,10 +2716,8 @@ void AstGraphBuilder::VisitCountOperation(CountOperation* expr) {
       Node* home_object = environment()->Pop();
       Node* receiver = environment()->Pop();
       Node* store = BuildKeyedSuperStore(receiver, home_object, key, value);
-      environment()->Push(value);
       PrepareFrameState(store, expr->AssignmentId(),
-                        OutputFrameStateCombine::Ignore());
-      environment()->Pop();
+                        OutputFrameStateCombine::Push());
       break;
     }
   }
@@ -2825,12 +2739,11 @@ void AstGraphBuilder::VisitBinaryOperation(BinaryOperation* expr) {
     default: {
       VisitForValue(expr->left());
       VisitForValue(expr->right());
-      FrameStateBeforeAndAfter states(this, expr->right()->id());
       Node* right = environment()->Pop();
       Node* left = environment()->Pop();
       Node* value = BuildBinaryOp(left, right, expr->op(),
                                   expr->BinaryOperationFeedbackId());
-      states.AddToNode(value, expr->id(), ast_context()->GetStateCombine());
+      PrepareFrameState(value, expr->id(), ast_context()->GetStateCombine());
       ast_context()->ProduceValue(expr, value);
     }
   }
@@ -4081,14 +3994,14 @@ bool AstGraphBuilder::CheckOsrEntry(IterationStatement* stmt) {
 
 void AstGraphBuilder::PrepareFrameState(Node* node, BailoutId ast_id,
                                         OutputFrameStateCombine combine) {
-  if (OperatorProperties::GetFrameStateInputCount(node->op()) > 0) {
+  if (OperatorProperties::HasFrameStateInput(node->op())) {
     DCHECK(ast_id.IsNone() || info()->shared_info()->VerifyBailoutId(ast_id));
     DCHECK_EQ(1, OperatorProperties::GetFrameStateInputCount(node->op()));
     DCHECK_EQ(IrOpcode::kDead,
-              NodeProperties::GetFrameStateInput(node, 0)->opcode());
+              NodeProperties::GetFrameStateInput(node)->opcode());
     bool has_exception = NodeProperties::IsExceptionalCall(node);
     Node* state = environment()->Checkpoint(ast_id, combine, has_exception);
-    NodeProperties::ReplaceFrameStateInput(node, 0, state);
+    NodeProperties::ReplaceFrameStateInput(node, state);
   }
 }
 
@@ -4102,9 +4015,9 @@ void AstGraphBuilder::PrepareEagerCheckpoint(BailoutId ast_id) {
     DCHECK(info()->shared_info()->VerifyBailoutId(ast_id));
     Node* node = NewNode(common()->Checkpoint());
     DCHECK_EQ(IrOpcode::kDead,
-              NodeProperties::GetFrameStateInput(node, 0)->opcode());
+              NodeProperties::GetFrameStateInput(node)->opcode());
     Node* state = environment()->Checkpoint(ast_id);
-    NodeProperties::ReplaceFrameStateInput(node, 0, state);
+    NodeProperties::ReplaceFrameStateInput(node, state);
   }
 }
 
@@ -4130,7 +4043,7 @@ Node* AstGraphBuilder::MakeNode(const Operator* op, int value_input_count,
   DCHECK_EQ(op->ValueInputCount(), value_input_count);
 
   bool has_context = OperatorProperties::HasContextInput(op);
-  int frame_state_count = OperatorProperties::GetFrameStateInputCount(op);
+  bool has_frame_state = OperatorProperties::HasFrameStateInput(op);
   bool has_control = op->ControlInputCount() == 1;
   bool has_effect = op->EffectInputCount() == 1;
 
@@ -4138,13 +4051,13 @@ Node* AstGraphBuilder::MakeNode(const Operator* op, int value_input_count,
   DCHECK(op->EffectInputCount() < 2);
 
   Node* result = nullptr;
-  if (!has_context && frame_state_count == 0 && !has_control && !has_effect) {
+  if (!has_context && !has_frame_state && !has_control && !has_effect) {
     result = graph()->NewNode(op, value_input_count, value_inputs, incomplete);
   } else {
     bool inside_try_scope = try_nesting_level_ > 0;
     int input_count_with_deps = value_input_count;
     if (has_context) ++input_count_with_deps;
-    input_count_with_deps += frame_state_count;
+    if (has_frame_state) ++input_count_with_deps;
     if (has_control) ++input_count_with_deps;
     if (has_effect) ++input_count_with_deps;
     Node** buffer = EnsureInputBufferSize(input_count_with_deps);
@@ -4153,7 +4066,7 @@ Node* AstGraphBuilder::MakeNode(const Operator* op, int value_input_count,
     if (has_context) {
       *current_input++ = current_context();
     }
-    for (int i = 0; i < frame_state_count; i++) {
+    if (has_frame_state) {
       // The frame state will be inserted later. Here we misuse
       // the {Dead} node as a sentinel to be later overwritten
       // with the real frame state.
@@ -4177,12 +4090,9 @@ Node* AstGraphBuilder::MakeNode(const Operator* op, int value_input_count,
       }
       // Add implicit exception continuation for throwing nodes.
       if (!result->op()->HasProperty(Operator::kNoThrow) && inside_try_scope) {
-        // Conservative prediction whether caught locally.
-        IfExceptionHint hint =
-            ExceptionHintFromCatchPrediction(try_catch_prediction_);
         // Copy the environment for the success continuation.
         Environment* success_env = environment()->CopyForConditional();
-        const Operator* op = common()->IfException(hint);
+        const Operator* op = common()->IfException();
         Node* effect = environment()->GetEffectDependency();
         Node* on_exception = graph()->NewNode(op, effect, result);
         environment_->UpdateControlDependency(on_exception);

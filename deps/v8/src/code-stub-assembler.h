@@ -124,6 +124,22 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   void BranchIfToBooleanIsTrue(compiler::Node* value, Label* if_true,
                                Label* if_false);
 
+  void BranchIfSimd128Equal(compiler::Node* lhs, compiler::Node* lhs_map,
+                            compiler::Node* rhs, compiler::Node* rhs_map,
+                            Label* if_equal, Label* if_notequal);
+  void BranchIfSimd128Equal(compiler::Node* lhs, compiler::Node* rhs,
+                            Label* if_equal, Label* if_notequal) {
+    BranchIfSimd128Equal(lhs, LoadMap(lhs), rhs, LoadMap(rhs), if_equal,
+                         if_notequal);
+  }
+
+  void BranchIfSameValueZero(compiler::Node* a, compiler::Node* b,
+                             compiler::Node* context, Label* if_true,
+                             Label* if_false);
+
+  void BranchIfFastJSArray(compiler::Node* object, compiler::Node* context,
+                           Label* if_true, Label* if_false);
+
   // Load value from current frame by given offset in bytes.
   compiler::Node* LoadFromFrame(int offset,
                                 MachineType rep = MachineType::AnyTagged());
@@ -220,6 +236,8 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   // Store the Map of an HeapObject.
   compiler::Node* StoreMapNoWriteBarrier(compiler::Node* object,
                                          compiler::Node* map);
+  compiler::Node* StoreObjectFieldRoot(compiler::Node* object, int offset,
+                                       Heap::RootListIndex root);
   // Store an array element to a FixedArray.
   compiler::Node* StoreFixedArrayElement(
       compiler::Node* object, compiler::Node* index, compiler::Node* value,
@@ -449,6 +467,9 @@ class CodeStubAssembler : public compiler::CodeAssembler {
                              Variable* var_handler, Label* if_miss,
                              int unroll_count);
 
+  void HandleLoadICHandlerCase(const LoadICParameters* p,
+                               compiler::Node* handler, Label* miss);
+
   compiler::Node* StubCachePrimaryOffset(compiler::Node* name,
                                          compiler::Node* map);
 
@@ -471,6 +492,7 @@ class CodeStubAssembler : public compiler::CodeAssembler {
 
   void LoadIC(const LoadICParameters* p);
   void LoadGlobalIC(const LoadICParameters* p);
+  void KeyedLoadIC(const LoadICParameters* p);
 
   // Get the enumerable length from |map| and return the result as a Smi.
   compiler::Node* EnumLength(compiler::Node* map);
@@ -480,6 +502,12 @@ class CodeStubAssembler : public compiler::CodeAssembler {
   void CheckEnumCache(compiler::Node* receiver,
                       CodeStubAssembler::Label* use_cache,
                       CodeStubAssembler::Label* use_runtime);
+
+  // Create a new weak cell with a specified value and install it into a
+  // feedback vector.
+  compiler::Node* CreateWeakCellInFeedbackVector(
+      compiler::Node* feedback_vector, compiler::Node* slot,
+      compiler::Node* value);
 
  private:
   compiler::Node* ElementOffsetFromIndex(compiler::Node* index,

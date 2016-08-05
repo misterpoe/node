@@ -146,7 +146,6 @@ function FulfillPromise(promise, status, value, promiseQueue) {
   if (GET_PRIVATE(promise, promiseStateSymbol) === kPending) {
     var tasks = GET_PRIVATE(promise, promiseQueue);
     if (!IS_UNDEFINED(tasks)) {
-      var tasks = GET_PRIVATE(promise, promiseQueue);
       var deferreds = GET_PRIVATE(promise, promiseDeferredReactionsSymbol);
       PromiseEnqueue(value, tasks, deferreds, status);
     }
@@ -449,6 +448,13 @@ function PromiseResolve(x) {
     throw MakeTypeError(kCalledOnNonObject, PromiseResolve);
   }
   if (IsPromise(x) && x.constructor === this) return x;
+
+  // Avoid creating resolving functions.
+  if (this === GlobalPromise) {
+    var promise = PromiseInit(new GlobalPromise(promiseRawSymbol));
+    var resolveResult = ResolvePromise(promise, x);
+    return promise;
+  }
 
   var promiseCapability = NewPromiseCapability(this);
   var resolveResult = %_Call(promiseCapability.resolve, UNDEFINED, x);

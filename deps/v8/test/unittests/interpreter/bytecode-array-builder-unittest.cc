@@ -99,10 +99,10 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .StoreLookupSlot(name, LanguageMode::STRICT);
 
   // Emit closure operations.
-  Handle<SharedFunctionInfo> shared_info = factory->NewSharedFunctionInfo(
-      factory->NewStringFromStaticChars("function_a"), MaybeHandle<Code>(),
-      false);
-  builder.CreateClosure(shared_info, NOT_TENURED);
+  builder.CreateClosure(0, NOT_TENURED);
+
+  // Emit create context operation.
+  builder.CreateFunctionContext(1);
 
   // Emit literal creation operations.
   builder.CreateRegExpLiteral(factory->NewStringFromStaticChars("a"), 0, 0)
@@ -181,7 +181,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
 
   // Emit cast operator invocations.
   builder.CastAccumulatorToNumber(reg)
-      .CastAccumulatorToJSObject()
+      .CastAccumulatorToJSObject(reg)
       .CastAccumulatorToName(reg);
 
   // Emit control flow. Return must be the last instruction.
@@ -257,6 +257,9 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   // Emit stack check bytecode.
   builder.StackCheck(0);
 
+  // Emit an OSR poll bytecode.
+  builder.OsrPoll(1);
+
   // Emit throw and re-throw in it's own basic block so that the rest of the
   // code isn't omitted due to being dead.
   BytecodeLabel after_throw;
@@ -264,11 +267,11 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
   BytecodeLabel after_rethrow;
   builder.ReThrow().Bind(&after_rethrow);
 
-  builder.ForInPrepare(reg)
+  builder.ForInPrepare(reg, reg)
       .ForInDone(reg, reg)
       .ForInNext(reg, reg, reg, 1)
       .ForInStep(reg);
-  builder.ForInPrepare(wide)
+  builder.ForInPrepare(reg, wide)
       .ForInDone(reg, other)
       .ForInNext(wide, wide, wide, 1024)
       .ForInStep(reg);
@@ -322,10 +325,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .StoreAccumulatorInRegister(reg);
 
   // CreateClosureWide
-  Handle<SharedFunctionInfo> shared_info2 = factory->NewSharedFunctionInfo(
-      factory->NewStringFromStaticChars("function_b"), MaybeHandle<Code>(),
-      false);
-  builder.CreateClosure(shared_info2, NOT_TENURED);
+  builder.CreateClosure(1000, NOT_TENURED);
 
   // Emit wide variant of literal creation operations.
   builder.CreateRegExpLiteral(factory->NewStringFromStaticChars("wide_literal"),

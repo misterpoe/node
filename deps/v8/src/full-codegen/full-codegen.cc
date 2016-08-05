@@ -7,7 +7,6 @@
 #include "src/ast/ast-numbering.h"
 #include "src/ast/ast.h"
 #include "src/ast/prettyprinter.h"
-#include "src/ast/scopeinfo.h"
 #include "src/ast/scopes.h"
 #include "src/code-factory.h"
 #include "src/codegen.h"
@@ -29,6 +28,7 @@ namespace internal {
 bool FullCodeGenerator::MakeCode(CompilationInfo* info) {
   Isolate* isolate = info->isolate();
 
+  DCHECK(!FLAG_minimal);
   RuntimeCallTimerScope runtimeTimer(isolate,
                                      &RuntimeCallStats::CompileFullCode);
   TimerEventScope<TimerEventCompileFullCode> timer(info->isolate());
@@ -1030,6 +1030,7 @@ void FullCodeGenerator::EmitKeyedPropertyLoad(Property* prop) {
   __ Move(LoadDescriptor::SlotRegister(),
           SmiFromSlot(prop->PropertyFeedbackSlot()));
   CallIC(ic);
+  if (FLAG_tf_load_ic_stub) RestoreContext();
 }
 
 void FullCodeGenerator::EmitKeyedSuperPropertyLoad(Property* prop) {
@@ -1446,45 +1447,38 @@ void FullCodeGenerator::VisitFunctionLiteral(FunctionLiteral* expr) {
 void FullCodeGenerator::VisitClassLiteral(ClassLiteral* lit) {
   Comment cmnt(masm_, "[ ClassLiteral");
 
-  {
-    NestedClassLiteral nested_class_literal(this, lit);
-    EnterBlockScopeIfNeeded block_scope_state(
-        this, lit->scope(), lit->EntryId(), lit->DeclsId(), lit->ExitId());
+  if (lit->extends() != NULL) {
+    VisitForStackValue(lit->extends());
+  } else {
+    PushOperand(isolate()->factory()->the_hole_value());
+  }
 
-    if (lit->extends() != NULL) {
-      VisitForStackValue(lit->extends());
-    } else {
-      PushOperand(isolate()->factory()->the_hole_value());
-    }
+  VisitForStackValue(lit->constructor());
 
-    VisitForStackValue(lit->constructor());
+  PushOperand(Smi::FromInt(lit->start_position()));
+  PushOperand(Smi::FromInt(lit->end_position()));
 
-    PushOperand(Smi::FromInt(lit->start_position()));
-    PushOperand(Smi::FromInt(lit->end_position()));
+  CallRuntimeWithOperands(Runtime::kDefineClass);
+  PrepareForBailoutForId(lit->CreateLiteralId(), BailoutState::TOS_REGISTER);
+  PushOperand(result_register());
 
-    CallRuntimeWithOperands(Runtime::kDefineClass);
-    PrepareForBailoutForId(lit->CreateLiteralId(), BailoutState::TOS_REGISTER);
-    PushOperand(result_register());
+  // Load the "prototype" from the constructor.
+  __ Move(LoadDescriptor::ReceiverRegister(), result_register());
+  __ LoadRoot(LoadDescriptor::NameRegister(), Heap::kprototype_stringRootIndex);
+  __ Move(LoadDescriptor::SlotRegister(), SmiFromSlot(lit->PrototypeSlot()));
+  CallLoadIC();
+  PrepareForBailoutForId(lit->PrototypeId(), BailoutState::TOS_REGISTER);
+  PushOperand(result_register());
 
-    // Load the "prototype" from the constructor.
-    __ Move(LoadDescriptor::ReceiverRegister(), result_register());
-    __ LoadRoot(LoadDescriptor::NameRegister(),
-                Heap::kprototype_stringRootIndex);
-    __ Move(LoadDescriptor::SlotRegister(), SmiFromSlot(lit->PrototypeSlot()));
-    CallLoadIC();
-    PrepareForBailoutForId(lit->PrototypeId(), BailoutState::TOS_REGISTER);
-    PushOperand(result_register());
+  EmitClassDefineProperties(lit);
+  DropOperands(1);
 
-    EmitClassDefineProperties(lit);
-    DropOperands(1);
+  // Set the constructor to have fast properties.
+  CallRuntimeWithOperands(Runtime::kToFastProperties);
 
-    // Set the constructor to have fast properties.
-    CallRuntimeWithOperands(Runtime::kToFastProperties);
-
-    if (lit->class_variable_proxy() != nullptr) {
-      EmitVariableAssignment(lit->class_variable_proxy()->var(), Token::INIT,
-                             lit->ProxySlot());
-    }
+  if (lit->class_variable_proxy() != nullptr) {
+    EmitVariableAssignment(lit->class_variable_proxy()->var(), Token::INIT,
+                           lit->ProxySlot());
   }
 
   context()->Plug(result_register());
@@ -1501,6 +1495,11 @@ void FullCodeGenerator::VisitRegExpLiteral(RegExpLiteral* expr) {
   __ Move(descriptor.GetRegisterParameter(2), expr->pattern());
   __ Move(descriptor.GetRegisterParameter(3), Smi::FromInt(expr->flags()));
   __ Call(callable.code(), RelocInfo::CODE_TARGET);
+
+  // Reload the context register after the call as i.e. TurboFan code stubs
+  // won't preserve the context register.
+  LoadFromFrameField(StandardFrameConstants::kContextOffset,
+                     context_register());
   context()->Plug(result_register());
 }
 

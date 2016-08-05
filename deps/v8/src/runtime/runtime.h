@@ -55,7 +55,8 @@ namespace internal {
   F(GetCachedArrayIndex, 1, 1)       \
   F(FixedArrayGet, 2, 1)             \
   F(FixedArraySet, 3, 1)             \
-  F(ArraySpeciesConstructor, 1, 1)
+  F(ArraySpeciesConstructor, 1, 1)   \
+  F(ArrayIncludes_Slow, 3, 1)
 
 #define FOR_EACH_INTRINSIC_ATOMICS(F)           \
   F(ThrowNotIntegerSharedTypedArrayError, 1, 1) \
@@ -197,6 +198,8 @@ namespace internal {
   F(GetWasmFunctionOffsetTable, 1, 1)           \
   F(DisassembleWasmFunction, 1, 1)
 
+#define FOR_EACH_INTRINSIC_ERROR(F) F(ErrorToString, 1, 1)
+
 #define FOR_EACH_INTRINSIC_FORIN(F) \
   F(ForInDone, 2, 1)                \
   F(ForInEnumerate, 1, 1)           \
@@ -219,7 +222,6 @@ namespace internal {
   F(FunctionGetScript, 1, 1)               \
   F(FunctionGetSourceCode, 1, 1)           \
   F(FunctionGetScriptSourcePosition, 1, 1) \
-  F(FunctionGetPositionForOffset, 2, 1)    \
   F(FunctionGetContextData, 1, 1)          \
   F(FunctionSetInstanceClassName, 2, 1)    \
   F(FunctionSetLength, 2, 1)               \
@@ -312,7 +314,6 @@ namespace internal {
   F(AllocateSeqTwoByteString, 1, 1)                 \
   F(MessageGetStartPosition, 1, 1)                  \
   F(MessageGetScript, 1, 1)                         \
-  F(FormatMessageString, 4, 1)                      \
   F(IS_VAR, 1, 1)                                   \
   F(ThrowConstructedNonConstructable, 1, 1)         \
   F(ThrowDerivedConstructorReturnedNonObject, 0, 1) \
@@ -324,7 +325,8 @@ namespace internal {
   F(EnqueueMicrotask, 1, 1)                         \
   F(RunMicrotasks, 0, 1)                            \
   F(OrdinaryHasInstance, 2, 1)                      \
-  F(IsWasmObject, 1, 1)
+  F(IsWasmObject, 1, 1)                             \
+  F(Typeof, 1, 1)
 
 #define FOR_EACH_INTRINSIC_LITERALS(F) \
   F(CreateRegExpLiteral, 4, 1)         \
@@ -843,6 +845,7 @@ namespace internal {
   F(GetOptimizationCount, 1, 1)               \
   F(GetUndetectable, 0, 1)                    \
   F(ClearFunctionTypeFeedback, 1, 1)          \
+  F(CheckWasmWrapperElision, 2, 1)            \
   F(NotifyContextDisposed, 0, 1)              \
   F(SetAllocationTimeout, -1 /* 2 || 3 */, 1) \
   F(DebugPrint, 1, 1)                         \
@@ -924,28 +927,29 @@ namespace internal {
 
 // Most intrinsics are implemented in the runtime/ directory, but ICs are
 // implemented in ic.cc for now.
-#define FOR_EACH_INTRINSIC_IC(F)             \
-  F(BinaryOpIC_Miss, 2, 1)                   \
-  F(BinaryOpIC_MissWithAllocationSite, 3, 1) \
-  F(CallIC_Miss, 3, 1)                       \
-  F(CompareIC_Miss, 3, 1)                    \
-  F(ElementsTransitionAndStoreIC_Miss, 5, 1) \
-  F(KeyedLoadIC_Miss, 4, 1)                  \
-  F(KeyedLoadIC_MissFromStubFailure, 4, 1)   \
-  F(KeyedStoreIC_Miss, 5, 1)                 \
-  F(KeyedStoreIC_MissFromStubFailure, 5, 1)  \
-  F(KeyedStoreIC_Slow, 5, 1)                 \
-  F(LoadElementWithInterceptor, 2, 1)        \
-  F(LoadGlobalIC_Miss, 2, 1)                 \
-  F(LoadIC_Miss, 4, 1)                       \
-  F(LoadIC_MissFromStubFailure, 4, 1)        \
-  F(LoadPropertyWithInterceptor, 3, 1)       \
-  F(LoadPropertyWithInterceptorOnly, 3, 1)   \
-  F(StoreCallbackProperty, 6, 1)             \
-  F(StoreIC_Miss, 5, 1)                      \
-  F(StoreIC_MissFromStubFailure, 5, 1)       \
-  F(StorePropertyWithInterceptor, 3, 1)      \
-  F(ToBooleanIC_Miss, 1, 1)                  \
+#define FOR_EACH_INTRINSIC_IC(F)                 \
+  F(BinaryOpIC_Miss, 2, 1)                       \
+  F(BinaryOpIC_MissWithAllocationSite, 3, 1)     \
+  F(CallIC_Miss, 3, 1)                           \
+  F(CompareIC_Miss, 3, 1)                        \
+  F(ElementsTransitionAndStoreIC_Miss, 5, 1)     \
+  F(KeyedLoadIC_Miss, 4, 1)                      \
+  F(KeyedLoadIC_MissFromStubFailure, 4, 1)       \
+  F(KeyedStoreIC_Miss, 5, 1)                     \
+  F(KeyedStoreIC_MissFromStubFailure, 5, 1)      \
+  F(KeyedStoreIC_Slow, 5, 1)                     \
+  F(LoadElementWithInterceptor, 2, 1)            \
+  F(LoadGlobalIC_Miss, 2, 1)                     \
+  F(LoadIC_Miss, 4, 1)                           \
+  F(LoadIC_MissFromStubFailure, 4, 1)            \
+  F(LoadPropertyWithInterceptor, 3, 1)           \
+  F(LoadPropertyWithInterceptorOnly, 3, 1)       \
+  F(StoreCallbackProperty, 6, 1)                 \
+  F(StoreIC_Miss, 5, 1)                          \
+  F(StoreIC_MissFromStubFailure, 5, 1)           \
+  F(TransitionStoreIC_MissFromStubFailure, 6, 1) \
+  F(StorePropertyWithInterceptor, 3, 1)          \
+  F(ToBooleanIC_Miss, 1, 1)                      \
   F(Unreachable, 0, 1)
 
 #define FOR_EACH_INTRINSIC_RETURN_OBJECT(F) \
@@ -957,6 +961,7 @@ namespace internal {
   FOR_EACH_INTRINSIC_COMPILER(F)            \
   FOR_EACH_INTRINSIC_DATE(F)                \
   FOR_EACH_INTRINSIC_DEBUG(F)               \
+  FOR_EACH_INTRINSIC_ERROR(F)               \
   FOR_EACH_INTRINSIC_FORIN(F)               \
   FOR_EACH_INTRINSIC_INTERPRETER(F)         \
   FOR_EACH_INTRINSIC_FUNCTION(F)            \

@@ -76,20 +76,6 @@ std::ostream& operator<<(std::ostream&, DeoptimizeParameters p);
 
 DeoptimizeParameters const& DeoptimizeParametersOf(Operator const* const);
 
-// Prediction whether throw-site is surrounded by any local catch-scope.
-enum class IfExceptionHint {
-  kLocallyUncaught,
-  kLocallyCaught,
-  kLocallyCaughtForPromiseReject
-};
-
-IfExceptionHint ExceptionHintFromCatchPrediction(
-    HandlerTable::CatchPrediction prediction);
-
-size_t hash_value(IfExceptionHint hint);
-
-std::ostream& operator<<(std::ostream&, IfExceptionHint);
-
 
 class SelectParameters final {
  public:
@@ -195,7 +181,7 @@ class CommonOperatorBuilder final : public ZoneObject {
   const Operator* IfTrue();
   const Operator* IfFalse();
   const Operator* IfSuccess();
-  const Operator* IfException(IfExceptionHint hint);
+  const Operator* IfException();
   const Operator* Switch(size_t control_output_count);
   const Operator* IfValue(int32_t value);
   const Operator* IfDefault();
@@ -232,6 +218,7 @@ class CommonOperatorBuilder final : public ZoneObject {
   const Operator* Phi(MachineRepresentation representation,
                       int value_input_count);
   const Operator* EffectPhi(int effect_input_count);
+  const Operator* InductionVariablePhi(int value_input_count);
   const Operator* LoopExit();
   const Operator* LoopExitValue();
   const Operator* LoopExitEffect();
@@ -247,6 +234,7 @@ class CommonOperatorBuilder final : public ZoneObject {
   const Operator* Call(const CallDescriptor* descriptor);
   const Operator* TailCall(const CallDescriptor* descriptor);
   const Operator* Projection(size_t index);
+  const Operator* Retain();
 
   // Constructs a new merge or phi operator with the same opcode as {op}, but
   // with {size} inputs.

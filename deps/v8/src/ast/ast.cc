@@ -141,8 +141,8 @@ bool Expression::IsValidReferenceExpressionOrThis() const {
 bool Expression::IsAnonymousFunctionDefinition() const {
   return (IsFunctionLiteral() &&
           AsFunctionLiteral()->IsAnonymousFunctionDefinition()) ||
-         (IsClassLiteral() &&
-          AsClassLiteral()->IsAnonymousFunctionDefinition());
+         (IsDoExpression() &&
+          AsDoExpression()->IsAnonymousFunctionDefinition());
 }
 
 void Expression::MarkTail() {
@@ -153,6 +153,12 @@ void Expression::MarkTail() {
   } else if (IsBinaryOperation()) {
     AsBinaryOperation()->MarkTail();
   }
+}
+
+bool DoExpression::IsAnonymousFunctionDefinition() const {
+  // This is specifically to allow DoExpressions to represent ClassLiterals.
+  return represented_function_ != nullptr &&
+         represented_function_->raw_name()->length() == 0;
 }
 
 bool Statement::IsJump() const {
@@ -197,6 +203,18 @@ VariableProxy::VariableProxy(Zone* zone, const AstRawString* name,
       end_position_(end_position),
       raw_name_(name),
       next_unresolved_(nullptr) {}
+
+VariableProxy::VariableProxy(Zone* zone, const VariableProxy* copy_from)
+    : Expression(zone, copy_from->position(), kVariableProxy),
+      bit_field_(copy_from->bit_field_),
+      end_position_(copy_from->end_position_),
+      next_unresolved_(nullptr) {
+  if (copy_from->is_resolved()) {
+    var_ = copy_from->var_;
+  } else {
+    raw_name_ = copy_from->raw_name_;
+  }
+}
 
 void VariableProxy::BindTo(Variable* var) {
   DCHECK((is_this() && var->is_this()) || raw_name() == var->raw_name());

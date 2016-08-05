@@ -5,7 +5,6 @@
 #include "src/builtins/builtins.h"
 #include "src/builtins/builtins-utils.h"
 
-#include "src/bootstrapper.h"
 #include "src/messages.h"
 #include "src/property-descriptor.h"
 #include "src/string-builder.h"
@@ -16,11 +15,23 @@ namespace internal {
 // ES6 section 19.5.1.1 Error ( message )
 BUILTIN(ErrorConstructor) {
   HandleScope scope(isolate);
+
+  FrameSkipMode mode = SKIP_FIRST;
+  Handle<Object> caller;
+
+  // When we're passed a JSFunction as new target, we can skip frames until that
+  // specific function is seen instead of unconditionally skipping the first
+  // frame.
+  if (args.new_target()->IsJSFunction()) {
+    mode = SKIP_UNTIL_SEEN;
+    caller = args.new_target();
+  }
+
   RETURN_RESULT_OR_FAILURE(
-      isolate,
-      ConstructError(isolate, args.target<JSFunction>(),
-                     Handle<Object>::cast(args.new_target()),
-                     args.atOrUndefined(isolate, 1), SKIP_FIRST, false));
+      isolate, ErrorUtils::Construct(isolate, args.target<JSFunction>(),
+                                     Handle<Object>::cast(args.new_target()),
+                                     args.atOrUndefined(isolate, 1), mode,
+                                     caller, false));
 }
 
 // static
@@ -44,14 +55,16 @@ BUILTIN(ErrorCaptureStackTrace) {
 
   Handle<Object> stack_trace =
       isolate->CaptureSimpleStackTrace(object, mode, caller);
+  if (!stack_trace->IsJSArray()) return *isolate->factory()->undefined_value();
 
   Handle<Object> formatted_stack_trace;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, formatted_stack_trace,
-      FormatStackTrace(isolate, object, stack_trace));
+      ErrorUtils::FormatStackTrace(isolate, object, stack_trace));
 
   PropertyDescriptor desc;
   desc.set_configurable(true);
+  desc.set_writable(true);
   desc.set_value(formatted_stack_trace);
   Maybe<bool> status = JSReceiver::DefineOwnProperty(
       isolate, object, isolate->factory()->stack_string(), &desc,
@@ -61,69 +74,30 @@ BUILTIN(ErrorCaptureStackTrace) {
   return isolate->heap()->undefined_value();
 }
 
-namespace {
-
-MaybeHandle<String> GetStringPropertyOrDefault(Isolate* isolate,
-                                               Handle<JSReceiver> recv,
-                                               Handle<String> key,
-                                               Handle<String> default_str) {
-  Handle<Object> obj;
-  ASSIGN_RETURN_ON_EXCEPTION(isolate, obj, JSObject::GetProperty(recv, key),
-                             String);
-
-  Handle<String> str;
-  if (obj->IsUndefined(isolate)) {
-    str = default_str;
-  } else {
-    ASSIGN_RETURN_ON_EXCEPTION(isolate, str, Object::ToString(isolate, obj),
-                               String);
-  }
-
-  return str;
-}
-
-}  // namespace
-
 // ES6 section 19.5.3.4 Error.prototype.toString ( )
 BUILTIN(ErrorPrototypeToString) {
   HandleScope scope(isolate);
+  RETURN_RESULT_OR_FAILURE(isolate,
+                           ErrorUtils::ToString(isolate, args.receiver()));
+}
 
-  // 1. Let O be the this value.
-  // 2. If Type(O) is not Object, throw a TypeError exception.
-  CHECK_RECEIVER(JSReceiver, receiver, "Error.prototype.toString");
+BUILTIN(MakeGenericError) {
+  HandleScope scope(isolate);
 
-  // 3. Let name be ? Get(O, "name").
-  // 4. If name is undefined, let name be "Error"; otherwise let name be
-  // ? ToString(name).
-  Handle<String> name_key = isolate->factory()->name_string();
-  Handle<String> name_default = isolate->factory()->Error_string();
-  Handle<String> name;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, name,
-      GetStringPropertyOrDefault(isolate, receiver, name_key, name_default));
+  Handle<Object> constructor = args.atOrUndefined(isolate, 1);
+  Handle<Object> template_index = args.atOrUndefined(isolate, 2);
+  Handle<Object> arg0 = args.atOrUndefined(isolate, 3);
+  Handle<Object> arg1 = args.atOrUndefined(isolate, 4);
+  Handle<Object> arg2 = args.atOrUndefined(isolate, 5);
 
-  // 5. Let msg be ? Get(O, "message").
-  // 6. If msg is undefined, let msg be the empty String; otherwise let msg be
-  // ? ToString(msg).
-  Handle<String> msg_key = isolate->factory()->message_string();
-  Handle<String> msg_default = isolate->factory()->empty_string();
-  Handle<String> msg;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, msg,
-      GetStringPropertyOrDefault(isolate, receiver, msg_key, msg_default));
+  DCHECK(constructor->IsJSFunction());
+  DCHECK(template_index->IsSmi());
 
-  // 7. If name is the empty String, return msg.
-  // 8. If msg is the empty String, return name.
-  if (name->length() == 0) return *msg;
-  if (msg->length() == 0) return *name;
-
-  // 9. Return the result of concatenating name, the code unit 0x003A (COLON),
-  // the code unit 0x0020 (SPACE), and msg.
-  IncrementalStringBuilder builder(isolate);
-  builder.AppendString(name);
-  builder.AppendCString(": ");
-  builder.AppendString(msg);
-  RETURN_RESULT_OR_FAILURE(isolate, builder.Finish());
+  RETURN_RESULT_OR_FAILURE(
+      isolate,
+      ErrorUtils::MakeGenericError(
+          isolate, Handle<JSFunction>::cast(constructor),
+          Smi::cast(*template_index)->value(), arg0, arg1, arg2, SKIP_FIRST));
 }
 
 }  // namespace internal

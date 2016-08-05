@@ -4,7 +4,6 @@
 
 #include "src/debug/liveedit.h"
 
-#include "src/ast/scopeinfo.h"
 #include "src/ast/scopes.h"
 #include "src/code-stubs.h"
 #include "src/compilation-cache.h"
@@ -882,7 +881,7 @@ class LiteralFixer {
         Handle<TypeFeedbackVector> vector =
             TypeFeedbackVector::New(isolate, feedback_metadata);
         Handle<LiteralsArray> new_literals =
-            LiteralsArray::New(isolate, vector, new_literal_count, TENURED);
+            LiteralsArray::New(isolate, vector, new_literal_count);
         fun->set_literals(*new_literals);
       }
 

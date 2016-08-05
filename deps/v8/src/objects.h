@@ -89,8 +89,9 @@
 //         - Context
 //         - TypeFeedbackMetadata
 //         - TypeFeedbackVector
-//         - ScopeInfo
+//         - TemplateList
 //         - TransitionArray
+//         - ScopeInfo
 //         - ScriptContextTable
 //         - WeakFixedArray
 //       - FixedDoubleArray
@@ -767,35 +768,47 @@ STATIC_ASSERT(FOREIGN_TYPE == Internals::kForeignType);
 
 std::ostream& operator<<(std::ostream& os, InstanceType instance_type);
 
-#define FIXED_ARRAY_SUB_INSTANCE_TYPE_LIST(V) \
-  V(CODE_STUBS_TABLE_SUB_TYPE)                \
-  V(CONTEXT_SUB_TYPE)                         \
-  V(COPY_ON_WRITE_SUB_TYPE)                   \
-  V(DEOPTIMIZATION_DATA_SUB_TYPE)             \
-  V(DESCRIPTOR_ARRAY_SUB_TYPE)                \
-  V(EMBEDDED_OBJECT_SUB_TYPE)                 \
-  V(ENUM_CACHE_SUB_TYPE)                      \
-  V(ENUM_INDICES_CACHE_SUB_TYPE)              \
-  V(DICTIONARY_ELEMENTS_SUB_TYPE)             \
-  V(DICTIONARY_PROPERTIES_SUB_TYPE)           \
-  V(FAST_ELEMENTS_SUB_TYPE)                   \
-  V(FAST_PROPERTIES_SUB_TYPE)                 \
-  V(INTRINSIC_FUNCTION_NAMES_SUB_TYPE)        \
-  V(LITERALS_ARRAY_SUB_TYPE)                  \
-  V(MAP_CODE_CACHE_SUB_TYPE)                  \
-  V(NUMBER_STRING_CACHE_SUB_TYPE)             \
-  V(OBJECT_TO_CODE_SUB_TYPE)                  \
-  V(REGEXP_MULTIPLE_CACHE_SUB_TYPE)           \
-  V(SCOPE_INFO_SUB_TYPE)                      \
-  V(SERIALIZED_TEMPLATES_SUB_TYPE)            \
-  V(SHARED_FUNCTION_INFOS_SUB_TYPE)           \
-  V(SINGLE_CHARACTER_STRING_CACHE_SUB_TYPE)   \
-  V(STRING_SPLIT_CACHE_SUB_TYPE)              \
-  V(STRING_TABLE_SUB_TYPE)                    \
-  V(TEMPLATE_INSTANTIATIONS_CACHE_SUB_TYPE)   \
-  V(TYPE_FEEDBACK_VECTOR_SUB_TYPE)            \
-  V(TYPE_FEEDBACK_METADATA_SUB_TYPE)          \
-  V(WEAK_COLLECTION_SUB_TYPE)                 \
+#define FIXED_ARRAY_SUB_INSTANCE_TYPE_LIST(V)    \
+  V(BYTECODE_ARRAY_CONSTANT_POOL_SUB_TYPE)       \
+  V(BYTECODE_ARRAY_HANDLER_TABLE_SUB_TYPE)       \
+  V(CODE_STUBS_TABLE_SUB_TYPE)                   \
+  V(CONTEXT_SUB_TYPE)                            \
+  V(COPY_ON_WRITE_SUB_TYPE)                      \
+  V(DEOPTIMIZATION_DATA_SUB_TYPE)                \
+  V(DESCRIPTOR_ARRAY_SUB_TYPE)                   \
+  V(EMBEDDED_OBJECT_SUB_TYPE)                    \
+  V(ENUM_CACHE_SUB_TYPE)                         \
+  V(ENUM_INDICES_CACHE_SUB_TYPE)                 \
+  V(DEPENDENT_CODE_SUB_TYPE)                     \
+  V(DICTIONARY_ELEMENTS_SUB_TYPE)                \
+  V(DICTIONARY_PROPERTIES_SUB_TYPE)              \
+  V(EMPTY_PROPERTIES_DICTIONARY_SUB_TYPE)        \
+  V(FAST_ELEMENTS_SUB_TYPE)                      \
+  V(FAST_PROPERTIES_SUB_TYPE)                    \
+  V(FAST_TEMPLATE_INSTANTIATIONS_CACHE_SUB_TYPE) \
+  V(HANDLER_TABLE_SUB_TYPE)                      \
+  V(INTRINSIC_FUNCTION_NAMES_SUB_TYPE)           \
+  V(JS_COLLECTION_SUB_TYPE)                      \
+  V(JS_WEAK_COLLECTION_SUB_TYPE)                 \
+  V(LITERALS_ARRAY_SUB_TYPE)                     \
+  V(MAP_CODE_CACHE_SUB_TYPE)                     \
+  V(NOSCRIPT_SHARED_FUNCTION_INFOS_SUB_TYPE)     \
+  V(NUMBER_STRING_CACHE_SUB_TYPE)                \
+  V(OBJECT_TO_CODE_SUB_TYPE)                     \
+  V(OPTIMIZED_CODE_MAP_SUB_TYPE)                 \
+  V(PROTOTYPE_USERS_SUB_TYPE)                    \
+  V(REGEXP_MULTIPLE_CACHE_SUB_TYPE)              \
+  V(RETAINED_MAPS_SUB_TYPE)                      \
+  V(SCOPE_INFO_SUB_TYPE)                         \
+  V(SCRIPT_LIST_SUB_TYPE)                        \
+  V(SERIALIZED_TEMPLATES_SUB_TYPE)               \
+  V(SHARED_FUNCTION_INFOS_SUB_TYPE)              \
+  V(SINGLE_CHARACTER_STRING_CACHE_SUB_TYPE)      \
+  V(SLOW_TEMPLATE_INSTANTIATIONS_CACHE_SUB_TYPE) \
+  V(STRING_SPLIT_CACHE_SUB_TYPE)                 \
+  V(STRING_TABLE_SUB_TYPE)                       \
+  V(TYPE_FEEDBACK_VECTOR_SUB_TYPE)               \
+  V(TYPE_FEEDBACK_METADATA_SUB_TYPE)             \
   V(WEAK_NEW_SPACE_OBJECT_TO_CODE_SUB_TYPE)
 
 enum FixedArraySubInstanceType {
@@ -873,7 +886,7 @@ class TypeFeedbackMetadata;
 class TypeFeedbackVector;
 class WeakCell;
 class TransitionArray;
-
+class TemplateList;
 
 // A template-ized version of the IsXXX functions.
 template <class C> inline bool Is(Object* obj);
@@ -975,6 +988,7 @@ template <class C> inline bool Is(Object* obj);
   V(JSArray)                     \
   V(JSArrayBuffer)               \
   V(JSArrayBufferView)           \
+  V(JSCollection)                \
   V(JSTypedArray)                \
   V(JSDataView)                  \
   V(JSProxy)                     \
@@ -1010,6 +1024,7 @@ template <class C> inline bool Is(Object* obj);
   V(External)                    \
   V(Struct)                      \
   V(Cell)                        \
+  V(TemplateList)                \
   V(PropertyCell)                \
   V(WeakCell)                    \
   V(ObjectHashTable)             \
@@ -1178,6 +1193,9 @@ class Object {
   // ES6 section 7.1.12 ToString
   MUST_USE_RESULT static MaybeHandle<String> ToString(Isolate* isolate,
                                                       Handle<Object> input);
+
+  static Handle<String> NoSideEffectsToString(Isolate* isolate,
+                                              Handle<Object> input);
 
   // ES6 section 7.1.14 ToPropertyKey
   MUST_USE_RESULT static MaybeHandle<Object> ToPropertyKey(
@@ -2195,6 +2213,9 @@ class JSObject: public JSReceiver {
   static bool UnregisterPrototypeUser(Handle<Map> user, Isolate* isolate);
   static void InvalidatePrototypeChains(Map* map);
 
+  // Utility used by many Array builtins and runtime functions
+  static inline bool PrototypeHasNoElements(Isolate* isolate, JSObject* object);
+
   // Alternative implementation of WeakFixedArray::NullCallback.
   class PrototypeRegistryCompactionCallback {
    public:
@@ -2661,10 +2682,14 @@ class FixedArray: public FixedArrayBase {
   static inline Handle<Object> get(FixedArray* array, int index,
                                    Isolate* isolate);
   template <class T>
-  MaybeHandle<T> GetValue(int index) const;
+  MaybeHandle<T> GetValue(Isolate* isolate, int index) const;
 
   template <class T>
-  Handle<T> GetValueChecked(int index) const;
+  Handle<T> GetValueChecked(Isolate* isolate, int index) const;
+
+  // Return a grown copy if the index is bigger than the array's length.
+  static Handle<FixedArray> SetAndGrow(Handle<FixedArray> array, int index,
+                                       Handle<Object> value);
 
   // Setter that uses write barrier.
   inline void set(int index, Object* value);
@@ -3502,9 +3527,9 @@ class Dictionary: public HashTable<Derived, Shape, Key> {
 
   // Creates a new dictionary.
   MUST_USE_RESULT static Handle<Derived> New(
-      Isolate* isolate,
-      int at_least_space_for,
-      PretenureFlag pretenure = NOT_TENURED);
+      Isolate* isolate, int at_least_space_for,
+      PretenureFlag pretenure = NOT_TENURED,
+      MinimumCapacity capacity_option = USE_DEFAULT_MINIMUM_CAPACITY);
 
   // Ensures that a new dictionary is created when the capacity is checked.
   void SetRequiresCopyOnCapacityChange();
@@ -4429,6 +4454,83 @@ class NormalizedMapCache: public FixedArray {
   void set(int index, Object* value);
 };
 
+// HandlerTable is a fixed array containing entries for exception handlers in
+// the code object it is associated with. The tables comes in two flavors:
+// 1) Based on ranges: Used for unoptimized code. Contains one entry per
+//    exception handler and a range representing the try-block covered by that
+//    handler. Layout looks as follows:
+//      [ range-start , range-end , handler-offset , handler-data ]
+// 2) Based on return addresses: Used for turbofanned code. Contains one entry
+//    per call-site that could throw an exception. Layout looks as follows:
+//      [ return-address-offset , handler-offset ]
+class HandlerTable : public FixedArray {
+ public:
+  // Conservative prediction whether a given handler will locally catch an
+  // exception or cause a re-throw to outside the code boundary. Since this is
+  // undecidable it is merely an approximation (e.g. useful for debugger).
+  enum CatchPrediction {
+    UNCAUGHT,    // The handler will (likely) rethrow the exception.
+    CAUGHT,      // The exception will be caught by the handler.
+    PROMISE,     // The exception will be caught and cause a promise rejection.
+    DESUGARING,  // The exception will be caught, but both the exception and the
+                 // catching are part of a desugaring and should therefore not
+                 // be visible to the user (we won't notify the debugger of such
+                 // exceptions).
+  };
+
+  // Getters for handler table based on ranges.
+  inline int GetRangeStart(int index) const;
+  inline int GetRangeEnd(int index) const;
+  inline int GetRangeHandler(int index) const;
+  inline int GetRangeData(int index) const;
+
+  // Setters for handler table based on ranges.
+  inline void SetRangeStart(int index, int value);
+  inline void SetRangeEnd(int index, int value);
+  inline void SetRangeHandler(int index, int offset, CatchPrediction pred);
+  inline void SetRangeData(int index, int value);
+
+  // Setters for handler table based on return addresses.
+  inline void SetReturnOffset(int index, int value);
+  inline void SetReturnHandler(int index, int offset);
+
+  // Lookup handler in a table based on ranges.
+  int LookupRange(int pc_offset, int* data, CatchPrediction* prediction);
+
+  // Lookup handler in a table based on return addresses.
+  int LookupReturn(int pc_offset);
+
+  // Returns the number of entries in the table.
+  inline int NumberOfRangeEntries() const;
+
+  // Returns the required length of the underlying fixed array.
+  static int LengthForRange(int entries) { return entries * kRangeEntrySize; }
+  static int LengthForReturn(int entries) { return entries * kReturnEntrySize; }
+
+  DECLARE_CAST(HandlerTable)
+
+#ifdef ENABLE_DISASSEMBLER
+  void HandlerTableRangePrint(std::ostream& os);   // NOLINT
+  void HandlerTableReturnPrint(std::ostream& os);  // NOLINT
+#endif
+
+ private:
+  // Layout description for handler table based on ranges.
+  static const int kRangeStartIndex = 0;
+  static const int kRangeEndIndex = 1;
+  static const int kRangeHandlerIndex = 2;
+  static const int kRangeDataIndex = 3;
+  static const int kRangeEntrySize = 4;
+
+  // Layout description for handler table based on return addresses.
+  static const int kReturnOffsetIndex = 0;
+  static const int kReturnHandlerIndex = 1;
+  static const int kReturnEntrySize = 2;
+
+  // Encoding of the {handler} field.
+  class HandlerPredictionField : public BitField<CatchPrediction, 0, 2> {};
+  class HandlerOffsetField : public BitField<int, 2, 30> {};
+};
 
 // ByteArray represents fixed sized byte arrays.  Used for the relocation info
 // that is attached to code objects.
@@ -4552,6 +4654,9 @@ class BytecodeArray : public FixedArrayBase {
 
   void CopyBytecodesTo(BytecodeArray* to);
 
+  int LookupRangeInHandlerTable(int code_offset, int* data,
+                                HandlerTable::CatchPrediction* prediction);
+
   // Layout description.
   static const int kConstantPoolOffset = FixedArrayBase::kHeaderSize;
   static const int kHandlerTableOffset = kConstantPoolOffset + kPointerSize;
@@ -4560,10 +4665,8 @@ class BytecodeArray : public FixedArrayBase {
   static const int kFrameSizeOffset = kSourcePositionTableOffset + kPointerSize;
   static const int kParameterSizeOffset = kFrameSizeOffset + kIntSize;
   static const int kInterruptBudgetOffset = kParameterSizeOffset + kIntSize;
-  // TODO(4764): The OSR nesting level is guaranteed to be in [0;6] bounds and
-  // could potentially be merged with another field (e.g. parameter_size).
   static const int kOSRNestingLevelOffset = kInterruptBudgetOffset + kIntSize;
-  static const int kHeaderSize = kOSRNestingLevelOffset + kIntSize;
+  static const int kHeaderSize = kOSRNestingLevelOffset + kCharSize;
 
   // Maximal memory consumption for a single BytecodeArray.
   static const int kMaxSize = 512 * MB;
@@ -4849,7 +4952,7 @@ class LiteralsArray : public FixedArray {
   static Handle<LiteralsArray> New(Isolate* isolate,
                                    Handle<TypeFeedbackVector> vector,
                                    int number_of_literals,
-                                   PretenureFlag pretenure);
+                                   PretenureFlag pretenure = TENURED);
 
   DECLARE_CAST(LiteralsArray)
 
@@ -4861,83 +4964,20 @@ class LiteralsArray : public FixedArray {
 };
 
 
-// HandlerTable is a fixed array containing entries for exception handlers in
-// the code object it is associated with. The tables comes in two flavors:
-// 1) Based on ranges: Used for unoptimized code. Contains one entry per
-//    exception handler and a range representing the try-block covered by that
-//    handler. Layout looks as follows:
-//      [ range-start , range-end , handler-offset , handler-data ]
-// 2) Based on return addresses: Used for turbofanned code. Contains one entry
-//    per call-site that could throw an exception. Layout looks as follows:
-//      [ return-address-offset , handler-offset ]
-class HandlerTable : public FixedArray {
+class TemplateList : public FixedArray {
  public:
-  // Conservative prediction whether a given handler will locally catch an
-  // exception or cause a re-throw to outside the code boundary. Since this is
-  // undecidable it is merely an approximation (e.g. useful for debugger).
-  enum CatchPrediction {
-    UNCAUGHT,  // the handler will (likely) rethrow the exception.
-    CAUGHT,    // the exception will be caught by the handler.
-    PROMISE    // the exception will be caught and cause a promise rejection.
-  };
-
-  // Getters for handler table based on ranges.
-  inline int GetRangeStart(int index) const;
-  inline int GetRangeEnd(int index) const;
-  inline int GetRangeHandler(int index) const;
-  inline int GetRangeData(int index) const;
-
-  // Setters for handler table based on ranges.
-  inline void SetRangeStart(int index, int value);
-  inline void SetRangeEnd(int index, int value);
-  inline void SetRangeHandler(int index, int offset, CatchPrediction pred);
-  inline void SetRangeData(int index, int value);
-
-  // Setters for handler table based on return addresses.
-  inline void SetReturnOffset(int index, int value);
-  inline void SetReturnHandler(int index, int offset, CatchPrediction pred);
-
-  // Lookup handler in a table based on ranges.
-  int LookupRange(int pc_offset, int* data, CatchPrediction* prediction);
-
-  // Lookup handler in a table based on return addresses.
-  int LookupReturn(int pc_offset, CatchPrediction* prediction);
-
-  // Returns the conservative catch predication.
-  inline CatchPrediction GetRangePrediction(int index) const;
-
-  // Returns the number of entries in the table.
-  inline int NumberOfRangeEntries() const;
-
-  // Returns the required length of the underlying fixed array.
-  static int LengthForRange(int entries) { return entries * kRangeEntrySize; }
-  static int LengthForReturn(int entries) { return entries * kReturnEntrySize; }
-
-  DECLARE_CAST(HandlerTable)
-
-#ifdef ENABLE_DISASSEMBLER
-  void HandlerTableRangePrint(std::ostream& os);   // NOLINT
-  void HandlerTableReturnPrint(std::ostream& os);  // NOLINT
-#endif
-
+  static Handle<TemplateList> New(Isolate* isolate, int size);
+  inline int length() const;
+  inline Object* get(int index) const;
+  inline void set(int index, Object* value);
+  static Handle<TemplateList> Add(Isolate* isolate, Handle<TemplateList> list,
+                                  Handle<Object> value);
+  DECLARE_CAST(TemplateList)
  private:
-  // Layout description for handler table based on ranges.
-  static const int kRangeStartIndex = 0;
-  static const int kRangeEndIndex = 1;
-  static const int kRangeHandlerIndex = 2;
-  static const int kRangeDataIndex = 3;
-  static const int kRangeEntrySize = 4;
-
-  // Layout description for handler table based on return addresses.
-  static const int kReturnOffsetIndex = 0;
-  static const int kReturnHandlerIndex = 1;
-  static const int kReturnEntrySize = 2;
-
-  // Encoding of the {handler} field.
-  class HandlerPredictionField : public BitField<CatchPrediction, 0, 2> {};
-  class HandlerOffsetField : public BitField<int, 2, 30> {};
+  static const int kLengthIndex = 0;
+  static const int kFirstElementIndex = kLengthIndex + 1;
+  DISALLOW_IMPLICIT_CONSTRUCTORS(TemplateList);
 };
-
 
 // Code describes objects with on-the-fly generated machine code.
 class Code: public HeapObject {
@@ -5310,6 +5350,9 @@ class Code: public HeapObject {
   BailoutId TranslatePcOffsetToAstId(uint32_t pc_offset);
   uint32_t TranslateAstIdToPcOffset(BailoutId ast_id);
 
+  int LookupRangeInHandlerTable(int code_offset, int* data,
+                                HandlerTable::CatchPrediction* prediction);
+
 #define DECLARE_CODE_AGE_ENUM(X) k##X##CodeAge,
   enum Age {
     kToBeExecutedOnceCodeAge = -3,
@@ -5523,6 +5566,10 @@ class AbstractCode : public HeapObject {
   // Return the source position table.
   inline ByteArray* source_position_table();
 
+  // Return the exception handler table.
+  inline int LookupRangeInHandlerTable(
+      int code_offset, int* data, HandlerTable::CatchPrediction* prediction);
+
   // Returns the size of instructions and the metadata.
   inline int SizeIncludingMetadata();
 
@@ -5598,6 +5645,9 @@ class DependentCode: public FixedArray {
   };
 
   static const int kGroupCount = kAllocationSiteTransitionChangedGroup + 1;
+  static const int kNextLinkIndex = 0;
+  static const int kFlagsIndex = 1;
+  static const int kCodesStartIndex = 2;
 
   bool Contains(DependencyGroup group, WeakCell* code_cell);
   bool IsEmpty(DependencyGroup group);
@@ -5658,9 +5708,6 @@ class DependentCode: public FixedArray {
   class GroupField : public BitField<int, 0, 3> {};
   class CountField : public BitField<int, 3, 27> {};
   STATIC_ASSERT(kGroupCount <= GroupField::kMax + 1);
-  static const int kNextLinkIndex = 0;
-  static const int kFlagsIndex = 1;
-  static const int kCodesStartIndex = 2;
 };
 
 
@@ -6217,10 +6264,10 @@ class Map: public HeapObject {
   static const int kDescriptorsOffset =
       kTransitionsOrPrototypeInfoOffset + kPointerSize;
 #if V8_DOUBLE_FIELDS_UNBOXING
-  static const int kLayoutDecriptorOffset = kDescriptorsOffset + kPointerSize;
-  static const int kCodeCacheOffset = kLayoutDecriptorOffset + kPointerSize;
+  static const int kLayoutDescriptorOffset = kDescriptorsOffset + kPointerSize;
+  static const int kCodeCacheOffset = kLayoutDescriptorOffset + kPointerSize;
 #else
-  static const int kLayoutDecriptorOffset = 1;  // Must not be ever accessed.
+  static const int kLayoutDescriptorOffset = 1;  // Must not be ever accessed.
   static const int kCodeCacheOffset = kDescriptorsOffset + kPointerSize;
 #endif
   static const int kDependentCodeOffset = kCodeCacheOffset + kPointerSize;
@@ -7725,7 +7772,7 @@ class JSFunction: public JSObject {
   // necessary so that we do not dynamically lookup the object, regexp
   // or array functions.  Performing a dynamic lookup, we might end up
   // using the functions from a new context that we should not have
-  // access to.
+  // access to. For API objects we store the boilerplate in the literal array.
   DECL_ACCESSORS(literals, LiteralsArray)
 
   static void EnsureLiterals(Handle<JSFunction> function);
@@ -10681,6 +10728,8 @@ class TemplateInfo: public Struct {
       kPropertyAccessorsOffset + kPointerSize;
   static const int kHeaderSize = kPropertyIntrinsicsOffset + kPointerSize;
 
+  static const int kFastTemplateInstantiationsCacheSize = 1 * KB;
+
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(TemplateInfo);
 };
@@ -10699,6 +10748,7 @@ class FunctionTemplateInfo: public TemplateInfo {
   DECL_ACCESSORS(instance_call_handler, Object)
   DECL_ACCESSORS(access_check_info, Object)
   DECL_ACCESSORS(shared_function_info, Object)
+  DECL_ACCESSORS(js_function, Object)
   DECL_INT_ACCESSORS(flag)
 
   inline int length() const;
@@ -10745,6 +10795,8 @@ class FunctionTemplateInfo: public TemplateInfo {
 
   static Handle<SharedFunctionInfo> GetOrCreateSharedFunctionInfo(
       Isolate* isolate, Handle<FunctionTemplateInfo> info);
+  // Returns parent function template or null.
+  inline FunctionTemplateInfo* GetParent(Isolate* isolate);
   // Returns true if |object| is an instance of this function template.
   inline bool IsTemplateFor(JSObject* object);
   bool IsTemplateFor(Map* map);
@@ -10781,6 +10833,10 @@ class ObjectTemplateInfo: public TemplateInfo {
   // LSB is for immutable_proto, higher bits for internal_field_count
   static const int kDataOffset = kConstructorOffset + kPointerSize;
   static const int kSize = kDataOffset + kPointerSize;
+
+  // Starting from given object template's constructor walk up the inheritance
+  // chain till a function template that has an instance template is found.
+  inline ObjectTemplateInfo* GetParent(Isolate* isolate);
 
  private:
   class IsImmutablePrototype : public BitField<bool, 0, 1> {};

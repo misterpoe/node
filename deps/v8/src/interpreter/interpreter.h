@@ -65,6 +65,9 @@ class Interpreter {
     return reinterpret_cast<Address>(bytecode_dispatch_counters_table_.get());
   }
 
+  // TODO(ignition): Tune code size multiplier.
+  static const int kCodeSizeMultiplier = 32;
+
  private:
 // Bytecode handler generator functions.
 #define DECLARE_BYTECODE_HANDLER_GENERATOR(Name, ...) \
@@ -80,10 +83,6 @@ class Interpreter {
   // an immediate value rather the accumulator as the rhs operand.
   template <class Generator>
   void DoBinaryOpWithImmediate(InterpreterAssembler* assembler);
-
-  // Generates code to perform the unary operation via |callable| and stores
-  // the result to the accumulator.
-  void DoUnaryOp(Callable callable, InterpreterAssembler* assembler);
 
   // Generates code to perform the unary operation via |Generator|.
   template <class Generator>

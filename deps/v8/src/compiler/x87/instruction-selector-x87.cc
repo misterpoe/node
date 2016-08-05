@@ -696,6 +696,9 @@ void InstructionSelector::VisitWord32Ctz(Node* node) { UNREACHABLE(); }
 
 void InstructionSelector::VisitWord32ReverseBits(Node* node) { UNREACHABLE(); }
 
+void InstructionSelector::VisitWord64ReverseBytes(Node* node) { UNREACHABLE(); }
+
+void InstructionSelector::VisitWord32ReverseBytes(Node* node) { UNREACHABLE(); }
 
 void InstructionSelector::VisitWord32Popcnt(Node* node) {
   X87OperandGenerator g(this);
@@ -977,27 +980,11 @@ void InstructionSelector::VisitFloat64Mod(Node* node) {
 }
 
 
-void InstructionSelector::VisitFloat32Max(Node* node) {
-  X87OperandGenerator g(this);
-  Emit(kX87PushFloat32, g.NoOutput(), g.Use(node->InputAt(0)));
-  Emit(kX87PushFloat32, g.NoOutput(), g.Use(node->InputAt(1)));
-  Emit(kX87Float32Max, g.DefineAsFixed(node, stX_0), 0, nullptr);
-}
-
-
 void InstructionSelector::VisitFloat64Max(Node* node) {
   X87OperandGenerator g(this);
   Emit(kX87PushFloat64, g.NoOutput(), g.Use(node->InputAt(0)));
   Emit(kX87PushFloat64, g.NoOutput(), g.Use(node->InputAt(1)));
   Emit(kX87Float64Max, g.DefineAsFixed(node, stX_0), 0, nullptr);
-}
-
-
-void InstructionSelector::VisitFloat32Min(Node* node) {
-  X87OperandGenerator g(this);
-  Emit(kX87PushFloat32, g.NoOutput(), g.Use(node->InputAt(0)));
-  Emit(kX87PushFloat32, g.NoOutput(), g.Use(node->InputAt(1)));
-  Emit(kX87Float32Min, g.DefineAsFixed(node, stX_0), 0, nullptr);
 }
 
 
@@ -1224,10 +1211,7 @@ void VisitCompare(InstructionSelector* selector, InstructionCode opcode,
 // Tries to match the size of the given opcode to that of the operands, if
 // possible.
 InstructionCode TryNarrowOpcodeSize(InstructionCode opcode, Node* left,
-                                    Node* right) {
-  if (opcode != kX87Cmp && opcode != kX87Test) {
-    return opcode;
-  }
+                                    Node* right, FlagsContinuation* cont) {
   // Currently, if one of the two operands is not a Load, we don't know what its
   // machine representation is, so we bail out.
   // TODO(epertoso): we can probably get some size information out of immediates
@@ -1237,19 +1221,39 @@ InstructionCode TryNarrowOpcodeSize(InstructionCode opcode, Node* left,
   }
   // If the load representations don't match, both operands will be
   // zero/sign-extended to 32bit.
-  LoadRepresentation left_representation = LoadRepresentationOf(left->op());
-  if (left_representation != LoadRepresentationOf(right->op())) {
-    return opcode;
+  MachineType left_type = LoadRepresentationOf(left->op());
+  MachineType right_type = LoadRepresentationOf(right->op());
+  if (left_type == right_type) {
+    switch (left_type.representation()) {
+      case MachineRepresentation::kBit:
+      case MachineRepresentation::kWord8: {
+        if (opcode == kX87Test) return kX87Test8;
+        if (opcode == kX87Cmp) {
+          if (left_type.semantic() == MachineSemantic::kUint32) {
+            cont->OverwriteUnsignedIfSigned();
+          } else {
+            CHECK_EQ(MachineSemantic::kInt32, left_type.semantic());
+          }
+          return kX87Cmp8;
+        }
+        break;
+      }
+      case MachineRepresentation::kWord16:
+        if (opcode == kX87Test) return kX87Test16;
+        if (opcode == kX87Cmp) {
+          if (left_type.semantic() == MachineSemantic::kUint32) {
+            cont->OverwriteUnsignedIfSigned();
+          } else {
+            CHECK_EQ(MachineSemantic::kInt32, left_type.semantic());
+          }
+          return kX87Cmp16;
+        }
+        break;
+      default:
+        break;
+    }
   }
-  switch (left_representation.representation()) {
-    case MachineRepresentation::kBit:
-    case MachineRepresentation::kWord8:
-      return opcode == kX87Cmp ? kX87Cmp8 : kX87Test8;
-    case MachineRepresentation::kWord16:
-      return opcode == kX87Cmp ? kX87Cmp16 : kX87Test16;
-    default:
-      return opcode;
-  }
+  return opcode;
 }
 
 // Shared routine for multiple float32 compare operations (inputs commuted).
@@ -1300,7 +1304,8 @@ void VisitWordCompare(InstructionSelector* selector, Node* node,
   Node* left = node->InputAt(0);
   Node* right = node->InputAt(1);
 
-  InstructionCode narrowed_opcode = TryNarrowOpcodeSize(opcode, left, right);
+  InstructionCode narrowed_opcode =
+      TryNarrowOpcodeSize(opcode, left, right, cont);
 
   int effect_level = selector->GetEffectLevel(node);
   if (cont->IsBranch()) {
@@ -1710,10 +1715,6 @@ void InstructionSelector::VisitAtomicStore(Node* node) {
 MachineOperatorBuilder::Flags
 InstructionSelector::SupportedMachineOperatorFlags() {
   MachineOperatorBuilder::Flags flags =
-      MachineOperatorBuilder::kFloat32Max |
-      MachineOperatorBuilder::kFloat32Min |
-      MachineOperatorBuilder::kFloat64Max |
-      MachineOperatorBuilder::kFloat64Min |
       MachineOperatorBuilder::kWord32ShiftIsSafe;
   if (CpuFeatures::IsSupported(POPCNT)) {
     flags |= MachineOperatorBuilder::kWord32Popcnt;

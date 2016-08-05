@@ -130,6 +130,7 @@ namespace internal {
   ASM(InterpreterPushArgsAndTailCall)                                        \
   ASM(InterpreterPushArgsAndTailCallFunction)                                \
   ASM(InterpreterEnterBytecodeDispatch)                                      \
+  ASM(InterpreterOnStackReplacement)                                         \
                                                                              \
   /* Code life-cycle */                                                      \
   ASM(CompileLazy)                                                           \
@@ -183,6 +184,7 @@ namespace internal {
   CPP(Illegal)                                                               \
   CPP(RestrictedFunctionPropertiesThrower)                                   \
   CPP(RestrictedStrictArgumentsPropertiesThrower)                            \
+  CPP(UnsupportedThrower)                                                    \
                                                                              \
   /* Array */                                                                \
   ASM(ArrayCode)                                                             \
@@ -190,6 +192,8 @@ namespace internal {
   CPP(ArrayConcat)                                                           \
   /* ES6 section 22.1.2.2 Array.isArray */                                   \
   TFJ(ArrayIsArray, 2)                                                       \
+  /* ES7 #sec-array.prototype.includes */                                    \
+  TFJ(ArrayIncludes, 3)                                                      \
   CPP(ArrayPop)                                                              \
   CPP(ArrayPush)                                                             \
   CPP(ArrayShift)                                                            \
@@ -212,7 +216,6 @@ namespace internal {
   TFJ(BooleanPrototypeValueOf, 1)                                            \
                                                                              \
   /* CallSite */                                                             \
-  CPP(CallSiteConstructor)                                                   \
   CPP(CallSitePrototypeGetColumnNumber)                                      \
   CPP(CallSitePrototypeGetEvalOrigin)                                        \
   CPP(CallSitePrototypeGetFileName)                                          \
@@ -309,6 +312,7 @@ namespace internal {
   CPP(ErrorConstructor)                                                      \
   CPP(ErrorCaptureStackTrace)                                                \
   CPP(ErrorPrototypeToString)                                                \
+  CPP(MakeGenericError)                                                      \
                                                                              \
   /* Function */                                                             \
   CPP(FunctionConstructor)                                                   \
@@ -600,6 +604,9 @@ class Builtins {
 
   static void Generate_Adaptor(MacroAssembler* masm, Address builtin_address,
                                ExitFrameType exit_frame_type);
+
+  static bool AllowDynamicFunction(Isolate* isolate, Handle<JSFunction> target,
+                                   Handle<JSObject> target_global_proxy);
 
  private:
   Builtins();

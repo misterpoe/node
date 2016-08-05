@@ -58,6 +58,9 @@ class ParseInfo {
   FLAG_ACCESSOR(kAllowLazyParsing, allow_lazy_parsing, set_allow_lazy_parsing)
   FLAG_ACCESSOR(kAstValueFactoryOwned, ast_value_factory_owned,
                 set_ast_value_factory_owned)
+  FLAG_ACCESSOR(kIsNamedExpression, is_named_expression,
+                set_is_named_expression)
+  FLAG_ACCESSOR(kCallsEval, calls_eval, set_calls_eval)
 
 #undef FLAG_ACCESSOR
 
@@ -83,6 +86,11 @@ class ParseInfo {
   void set_source_stream_encoding(
       ScriptCompiler::StreamedSource::Encoding source_stream_encoding) {
     source_stream_encoding_ = source_stream_encoding;
+  }
+
+  Utf16CharacterStream* character_stream() const { return character_stream_; }
+  void set_character_stream(Utf16CharacterStream* character_stream) {
+    character_stream_ = character_stream;
   }
 
   v8::Extension* extension() { return extension_; }
@@ -120,6 +128,26 @@ class ParseInfo {
 
   uint32_t hash_seed() { return hash_seed_; }
   void set_hash_seed(uint32_t hash_seed) { hash_seed_ = hash_seed; }
+
+  int compiler_hints() const { return compiler_hints_; }
+  void set_compiler_hints(int compiler_hints) {
+    compiler_hints_ = compiler_hints;
+  }
+
+  int start_position() const { return start_position_; }
+  void set_start_position(int start_position) {
+    start_position_ = start_position;
+  }
+
+  int end_position() const { return end_position_; }
+  void set_end_position(int end_position) { end_position_ = end_position; }
+
+  // Getters for individual compiler hints.
+  bool is_declaration() const;
+  bool is_arrow() const;
+  bool is_async() const;
+  bool is_default_constructor() const;
+  FunctionKind function_kind() const;
 
   //--------------------------------------------------------------------------
   // TODO(titzer): these should not be part of ParseInfo.
@@ -166,8 +194,10 @@ class ParseInfo {
     kParseRestriction = 1 << 6,
     kModule = 1 << 7,
     kAllowLazyParsing = 1 << 8,
+    kIsNamedExpression = 1 << 9,
+    kCallsEval = 1 << 10,
     // ---------- Output flags --------------------------
-    kAstValueFactoryOwned = 1 << 9
+    kAstValueFactoryOwned = 1 << 11
   };
 
   //------------- Inputs to parsing and scope analysis -----------------------
@@ -175,12 +205,16 @@ class ParseInfo {
   unsigned flags_;
   ScriptCompiler::ExternalSourceStream* source_stream_;
   ScriptCompiler::StreamedSource::Encoding source_stream_encoding_;
+  Utf16CharacterStream* character_stream_;
   v8::Extension* extension_;
   ScriptCompiler::CompileOptions compile_options_;
   Scope* script_scope_;
   UnicodeCache* unicode_cache_;
   uintptr_t stack_limit_;
   uint32_t hash_seed_;
+  int compiler_hints_;
+  int start_position_;
+  int end_position_;
 
   // TODO(titzer): Move handles and isolate out of ParseInfo.
   Isolate* isolate_;
@@ -582,11 +616,11 @@ class ParserTraits {
       const ParserFormalParameters& parameters, FunctionKind kind,
       FunctionLiteral::FunctionType function_type, bool* ok);
 
-  ClassLiteral* ParseClassLiteral(Type::ExpressionClassifier* classifier,
-                                  const AstRawString* name,
-                                  Scanner::Location class_name_location,
-                                  bool name_is_strict_reserved, int pos,
-                                  bool* ok);
+  Expression* ParseClassLiteral(Type::ExpressionClassifier* classifier,
+                                const AstRawString* name,
+                                Scanner::Location class_name_location,
+                                bool name_is_strict_reserved, int pos,
+                                bool* ok);
 
   V8_INLINE void MarkCollectedTailCallExpressions();
   V8_INLINE void MarkTailPosition(Expression* expression);
@@ -711,6 +745,9 @@ class Parser : public ParserBase<ParserTraits> {
   bool Parse(ParseInfo* info);
   void ParseOnBackground(ParseInfo* info);
 
+  void DeserializeScopeChain(ParseInfo* info, Handle<Context> context,
+                             Scope::DeserializationMode deserialization_mode);
+
   // Handle errors detected during parsing, move statistics to Isolate,
   // internalize strings (move them to the heap).
   void Internalize(Isolate* isolate, Handle<Script> script, bool error);
@@ -718,7 +755,6 @@ class Parser : public ParserBase<ParserTraits> {
 
  private:
   friend class ParserTraits;
-  friend class DiscardableZoneScope;
 
   // Runtime encoding of different completion modes.
   enum CompletionKind {
@@ -740,8 +776,9 @@ class Parser : public ParserBase<ParserTraits> {
   FunctionLiteral* ParseProgram(Isolate* isolate, ParseInfo* info);
 
   FunctionLiteral* ParseLazy(Isolate* isolate, ParseInfo* info);
-  FunctionLiteral* ParseLazy(Isolate* isolate, ParseInfo* info,
-                             Utf16CharacterStream* source);
+  FunctionLiteral* DoParseLazy(Isolate* isolate, ParseInfo* info,
+                               const AstRawString* raw_name,
+                               Utf16CharacterStream* source);
 
   // Called by ParseProgram after setting up the scanner.
   FunctionLiteral* DoParseProgram(ParseInfo* info);
@@ -807,8 +844,6 @@ class Parser : public ParserBase<ParserTraits> {
                                    bool default_export, bool* ok);
   Statement* ParseNativeDeclaration(bool* ok);
   Block* ParseBlock(ZoneList<const AstRawString*>* labels, bool* ok);
-  Block* ParseBlock(ZoneList<const AstRawString*>* labels,
-                    bool finalize_block_scope, bool* ok);
   Block* ParseVariableStatement(VariableDeclarationContext var_context,
                                 ZoneList<const AstRawString*>* names,
                                 bool* ok);
@@ -1002,11 +1037,11 @@ class Parser : public ParserBase<ParserTraits> {
       int function_token_position, FunctionLiteral::FunctionType type,
       LanguageMode language_mode, bool* ok);
 
-  ClassLiteral* ParseClassLiteral(ExpressionClassifier* classifier,
-                                  const AstRawString* name,
-                                  Scanner::Location class_name_location,
-                                  bool name_is_strict_reserved, int pos,
-                                  bool* ok);
+  Expression* ParseClassLiteral(ExpressionClassifier* classifier,
+                                const AstRawString* name,
+                                Scanner::Location class_name_location,
+                                bool name_is_strict_reserved, int pos,
+                                bool* ok);
 
   // Magical syntax support.
   Expression* ParseV8Intrinsic(bool* ok);

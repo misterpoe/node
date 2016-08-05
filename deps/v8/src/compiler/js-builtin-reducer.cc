@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "src/compiler/js-builtin-reducer.h"
+
+#include "src/compiler/access-builder.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node-properties.h"
@@ -40,6 +42,10 @@ class JSCallReduction {
     return function->shared()->builtin_function_id();
   }
 
+  bool ReceiverMatches(Type* type) {
+    return NodeProperties::GetType(receiver())->Is(type);
+  }
+
   // Determines whether the call takes zero inputs.
   bool InputsMatchZero() { return GetJSCallArity() == 0; }
 
@@ -66,6 +72,7 @@ class JSCallReduction {
     return true;
   }
 
+  Node* receiver() { return NodeProperties::GetValueInput(node_, 1); }
   Node* left() { return GetJSCallInput(0); }
   Node* right() { return GetJSCallInput(1); }
 
@@ -534,6 +541,207 @@ Reduction JSBuiltinReducer::ReduceStringFromCharCode(Node* node) {
   return NoChange();
 }
 
+namespace {
+
+Node* GetStringWitness(Node* node) {
+  Node* receiver = NodeProperties::GetValueInput(node, 1);
+  Type* receiver_type = NodeProperties::GetType(receiver);
+  Node* effect = NodeProperties::GetEffectInput(node);
+  if (receiver_type->Is(Type::String())) return receiver;
+  // Check if the {node} is dominated by a CheckString renaming for
+  // it's {receiver}, and if so use that renaming as {receiver} for
+  // the lowering below.
+  for (Node* dominator = effect;;) {
+    if (dominator->opcode() == IrOpcode::kCheckString &&
+        dominator->InputAt(0) == receiver) {
+      return dominator;
+    }
+    if (dominator->op()->EffectInputCount() != 1) {
+      // Didn't find any appropriate CheckString node.
+      return nullptr;
+    }
+    dominator = NodeProperties::GetEffectInput(dominator);
+  }
+}
+
+}  // namespace
+
+// ES6 section 21.1.3.1 String.prototype.charAt ( pos )
+Reduction JSBuiltinReducer::ReduceStringCharAt(Node* node) {
+  // We need at least target, receiver and index parameters.
+  if (node->op()->ValueInputCount() >= 3) {
+    Node* index = NodeProperties::GetValueInput(node, 2);
+    Type* index_type = NodeProperties::GetType(index);
+    Node* effect = NodeProperties::GetEffectInput(node);
+    Node* control = NodeProperties::GetControlInput(node);
+
+    if (index_type->Is(Type::Unsigned32())) {
+      if (Node* receiver = GetStringWitness(node)) {
+        // Determine the {receiver} length.
+        Node* receiver_length = effect = graph()->NewNode(
+            simplified()->LoadField(AccessBuilder::ForStringLength()), receiver,
+            effect, control);
+
+        // Check if {index} is less than {receiver} length.
+        Node* check = graph()->NewNode(simplified()->NumberLessThan(), index,
+                                       receiver_length);
+        Node* branch = graph()->NewNode(common()->Branch(BranchHint::kTrue),
+                                        check, control);
+
+        Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
+        Node* vtrue;
+        {
+          // Load the character from the {receiver}.
+          vtrue = graph()->NewNode(simplified()->StringCharCodeAt(), receiver,
+                                   index, if_true);
+
+          // Return it as single character string.
+          vtrue = graph()->NewNode(simplified()->StringFromCharCode(), vtrue);
+        }
+
+        // Return the empty string otherwise.
+        Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
+        Node* vfalse = jsgraph()->EmptyStringConstant();
+
+        control = graph()->NewNode(common()->Merge(2), if_true, if_false);
+        Node* value =
+            graph()->NewNode(common()->Phi(MachineRepresentation::kTagged, 2),
+                             vtrue, vfalse, control);
+
+        ReplaceWithValue(node, value, effect, control);
+        return Replace(value);
+      }
+    }
+  }
+
+  return NoChange();
+}
+
+// ES6 section 21.1.3.2 String.prototype.charCodeAt ( pos )
+Reduction JSBuiltinReducer::ReduceStringCharCodeAt(Node* node) {
+  // We need at least target, receiver and index parameters.
+  if (node->op()->ValueInputCount() >= 3) {
+    Node* index = NodeProperties::GetValueInput(node, 2);
+    Type* index_type = NodeProperties::GetType(index);
+    Node* effect = NodeProperties::GetEffectInput(node);
+    Node* control = NodeProperties::GetControlInput(node);
+
+    if (index_type->Is(Type::Unsigned32())) {
+      if (Node* receiver = GetStringWitness(node)) {
+        // Determine the {receiver} length.
+        Node* receiver_length = effect = graph()->NewNode(
+            simplified()->LoadField(AccessBuilder::ForStringLength()), receiver,
+            effect, control);
+
+        // Check if {index} is less than {receiver} length.
+        Node* check = graph()->NewNode(simplified()->NumberLessThan(), index,
+                                       receiver_length);
+        Node* branch = graph()->NewNode(common()->Branch(BranchHint::kTrue),
+                                        check, control);
+
+        // Load the character from the {receiver}.
+        Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
+        Node* vtrue = graph()->NewNode(simplified()->StringCharCodeAt(),
+                                       receiver, index, if_true);
+
+        // Return NaN otherwise.
+        Node* if_false = graph()->NewNode(common()->IfFalse(), branch);
+        Node* vfalse = jsgraph()->NaNConstant();
+
+        control = graph()->NewNode(common()->Merge(2), if_true, if_false);
+        Node* value =
+            graph()->NewNode(common()->Phi(MachineRepresentation::kTagged, 2),
+                             vtrue, vfalse, control);
+
+        ReplaceWithValue(node, value, effect, control);
+        return Replace(value);
+      }
+    }
+  }
+
+  return NoChange();
+}
+
+namespace {
+
+bool HasInstanceTypeWitness(Node* receiver, Node* effect,
+                            InstanceType instance_type) {
+  for (Node* dominator = effect;;) {
+    if (dominator->opcode() == IrOpcode::kCheckMaps &&
+        dominator->InputAt(0) == receiver) {
+      // Check if all maps have the given {instance_type}.
+      for (int i = 1; i < dominator->op()->ValueInputCount(); ++i) {
+        Node* const map = NodeProperties::GetValueInput(dominator, i);
+        Type* const map_type = NodeProperties::GetType(map);
+        if (!map_type->IsConstant()) return false;
+        Handle<Map> const map_value =
+            Handle<Map>::cast(map_type->AsConstant()->Value());
+        if (map_value->instance_type() != instance_type) return false;
+      }
+      return true;
+    }
+    switch (dominator->opcode()) {
+      case IrOpcode::kStoreField: {
+        FieldAccess const& access = FieldAccessOf(dominator->op());
+        if (access.base_is_tagged == kTaggedBase &&
+            access.offset == HeapObject::kMapOffset) {
+          return false;
+        }
+        break;
+      }
+      case IrOpcode::kStoreElement:
+        break;
+      default: {
+        DCHECK_EQ(1, dominator->op()->EffectOutputCount());
+        if (dominator->op()->EffectInputCount() != 1 ||
+            !dominator->op()->HasProperty(Operator::kNoWrite)) {
+          // Didn't find any appropriate CheckMaps node.
+          return false;
+        }
+        break;
+      }
+    }
+    dominator = NodeProperties::GetEffectInput(dominator);
+  }
+}
+
+}  // namespace
+
+Reduction JSBuiltinReducer::ReduceArrayBufferViewAccessor(
+    Node* node, InstanceType instance_type, FieldAccess const& access) {
+  Node* receiver = NodeProperties::GetValueInput(node, 1);
+  Node* effect = NodeProperties::GetEffectInput(node);
+  Node* control = NodeProperties::GetControlInput(node);
+  if (HasInstanceTypeWitness(receiver, effect, instance_type)) {
+    // Load the {receiver}s field.
+    Node* receiver_length = effect = graph()->NewNode(
+        simplified()->LoadField(access), receiver, effect, control);
+
+    // Check if the {receiver}s buffer was neutered.
+    Node* receiver_buffer = effect = graph()->NewNode(
+        simplified()->LoadField(AccessBuilder::ForJSArrayBufferViewBuffer()),
+        receiver, effect, control);
+    Node* receiver_buffer_bitfield = effect = graph()->NewNode(
+        simplified()->LoadField(AccessBuilder::ForJSArrayBufferBitField()),
+        receiver_buffer, effect, control);
+    Node* check = graph()->NewNode(
+        simplified()->NumberEqual(),
+        graph()->NewNode(
+            simplified()->NumberBitwiseAnd(), receiver_buffer_bitfield,
+            jsgraph()->Constant(JSArrayBuffer::WasNeutered::kMask)),
+        jsgraph()->ZeroConstant());
+
+    // Default to zero if the {receiver}s buffer was neutered.
+    Node* value = graph()->NewNode(
+        common()->Select(MachineRepresentation::kTagged, BranchHint::kTrue),
+        check, receiver_length, jsgraph()->ZeroConstant());
+
+    ReplaceWithValue(node, value, effect, control);
+    return Replace(value);
+  }
+  return NoChange();
+}
+
 Reduction JSBuiltinReducer::Reduce(Node* node) {
   Reduction reduction = NoChange();
   JSCallReduction r(node);
@@ -646,6 +854,29 @@ Reduction JSBuiltinReducer::Reduce(Node* node) {
     case kStringFromCharCode:
       reduction = ReduceStringFromCharCode(node);
       break;
+    case kStringCharAt:
+      return ReduceStringCharAt(node);
+    case kStringCharCodeAt:
+      return ReduceStringCharCodeAt(node);
+    case kDataViewByteLength:
+      return ReduceArrayBufferViewAccessor(
+          node, JS_DATA_VIEW_TYPE,
+          AccessBuilder::ForJSArrayBufferViewByteLength());
+    case kDataViewByteOffset:
+      return ReduceArrayBufferViewAccessor(
+          node, JS_DATA_VIEW_TYPE,
+          AccessBuilder::ForJSArrayBufferViewByteOffset());
+    case kTypedArrayByteLength:
+      return ReduceArrayBufferViewAccessor(
+          node, JS_TYPED_ARRAY_TYPE,
+          AccessBuilder::ForJSArrayBufferViewByteLength());
+    case kTypedArrayByteOffset:
+      return ReduceArrayBufferViewAccessor(
+          node, JS_TYPED_ARRAY_TYPE,
+          AccessBuilder::ForJSArrayBufferViewByteOffset());
+    case kTypedArrayLength:
+      return ReduceArrayBufferViewAccessor(
+          node, JS_TYPED_ARRAY_TYPE, AccessBuilder::ForJSTypedArrayLength());
     default:
       break;
   }

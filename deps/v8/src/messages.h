@@ -51,6 +51,8 @@ class CallSite {
   Handle<Object> GetFunctionName();
   Handle<Object> GetScriptNameOrSourceUrl();
   Handle<Object> GetMethodName();
+  Handle<Object> GetTypeName();
+  Handle<Object> GetEvalOrigin();
   // Return 1-based line number, including line offset.
   int GetLineNumber();
   // Return 1-based column number, including column offset if first line.
@@ -74,11 +76,6 @@ class CallSite {
   uint32_t wasm_func_index_ = static_cast<uint32_t>(-1);
 };
 
-// Formats a textual stack trace from the given structured stack trace.
-// Note that this can call arbitrary JS code through Error.prepareStackTrace.
-MaybeHandle<Object> FormatStackTrace(Isolate* isolate, Handle<JSObject> error,
-                                     Handle<Object> stack_trace);
-
 // Determines how stack trace collection skips frames.
 enum FrameSkipMode {
   // Unconditionally skips the first frame. Used e.g. when the Error constructor
@@ -89,10 +86,36 @@ enum FrameSkipMode {
   SKIP_NONE,
 };
 
-MaybeHandle<Object> ConstructError(Isolate* isolate, Handle<JSFunction> target,
-                                   Handle<Object> new_target,
-                                   Handle<Object> message, FrameSkipMode mode,
-                                   bool suppress_detailed_trace);
+class ErrorUtils : public AllStatic {
+ public:
+  static MaybeHandle<Object> Construct(
+      Isolate* isolate, Handle<JSFunction> target, Handle<Object> new_target,
+      Handle<Object> message, FrameSkipMode mode, Handle<Object> caller,
+      bool suppress_detailed_trace);
+
+  static MaybeHandle<String> ToString(Isolate* isolate, Handle<Object> recv);
+
+  static MaybeHandle<Object> MakeGenericError(
+      Isolate* isolate, Handle<JSFunction> constructor, int template_index,
+      Handle<Object> arg0, Handle<Object> arg1, Handle<Object> arg2,
+      FrameSkipMode mode);
+
+  // Formats a textual stack trace from the given structured stack trace.
+  // Note that this can call arbitrary JS code through Error.prepareStackTrace.
+  static MaybeHandle<Object> FormatStackTrace(Isolate* isolate,
+                                              Handle<JSObject> error,
+                                              Handle<Object> stack_trace);
+};
+
+class CallSiteUtils : public AllStatic {
+ public:
+  static MaybeHandle<Object> Construct(Isolate* isolate,
+                                       Handle<Object> receiver,
+                                       Handle<Object> fun, Handle<Object> pos,
+                                       Handle<Object> strict_mode);
+
+  static MaybeHandle<String> ToString(Isolate* isolate, Handle<Object> recv);
+};
 
 #define MESSAGE_TEMPLATES(T)                                                   \
   /* Error */                                                                  \
@@ -515,7 +538,6 @@ MaybeHandle<Object> ConstructError(Isolate* isolate, Handle<JSFunction> target,
   T(WasmTrapFloatUnrepresentable, "integer result unrepresentable")            \
   T(WasmTrapFuncInvalid, "invalid function")                                   \
   T(WasmTrapFuncSigMismatch, "function signature mismatch")                    \
-  T(WasmTrapMemAllocationFail, "failed to allocate memory")                    \
   T(WasmTrapInvalidIndex, "invalid index into function table")
 
 class MessageTemplate {

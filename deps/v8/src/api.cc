@@ -900,7 +900,7 @@ EscapableHandleScope::EscapableHandleScope(Isolate* v8_isolate) {
 i::Object** EscapableHandleScope::Escape(i::Object** escape_value) {
   i::Heap* heap = reinterpret_cast<i::Isolate*>(GetIsolate())->heap();
   Utils::ApiCheck((*escape_slot_)->IsTheHole(heap->isolate()),
-                  "EscapeableHandleScope::Escape", "Escape value set twice");
+                  "EscapableHandleScope::Escape", "Escape value set twice");
   if (escape_value == NULL) {
     *escape_slot_ = heap->undefined_value();
     return NULL;
@@ -1028,70 +1028,6 @@ void Context::SetAlignedPointerInEmbedderData(int index, void* value) {
   i::Handle<i::FixedArray> data = EmbedderDataFor(this, index, true, location);
   data->set(index, EncodeAlignedAsSmi(value, location));
   DCHECK_EQ(value, GetAlignedPointerFromEmbedderData(index));
-}
-
-
-// --- N e a n d e r ---
-
-
-// A constructor cannot easily return an error value, therefore it is necessary
-// to check for a dead VM with ON_BAILOUT before constructing any Neander
-// objects.  To remind you about this there is no HandleScope in the
-// NeanderObject constructor.  When you add one to the site calling the
-// constructor you should check that you ensured the VM was not dead first.
-NeanderObject::NeanderObject(v8::internal::Isolate* isolate, int size) {
-  ENTER_V8(isolate);
-  value_ = isolate->factory()->NewNeanderObject();
-  i::Handle<i::FixedArray> elements = isolate->factory()->NewFixedArray(size);
-  value_->set_elements(*elements);
-}
-
-
-int NeanderObject::size() {
-  return i::FixedArray::cast(value_->elements())->length();
-}
-
-
-NeanderArray::NeanderArray(v8::internal::Isolate* isolate) : obj_(isolate, 2) {
-  obj_.set(0, i::Smi::FromInt(0));
-}
-
-
-int NeanderArray::length() {
-  return i::Smi::cast(obj_.get(0))->value();
-}
-
-
-i::Object* NeanderArray::get(int offset) {
-  DCHECK_LE(0, offset);
-  DCHECK_LT(offset, length());
-  return obj_.get(offset + 1);
-}
-
-
-// This method cannot easily return an error value, therefore it is necessary
-// to check for a dead VM with ON_BAILOUT before calling it.  To remind you
-// about this there is no HandleScope in this method.  When you add one to the
-// site calling this method you should check that you ensured the VM was not
-// dead first.
-void NeanderArray::add(i::Isolate* isolate, i::Handle<i::Object> value) {
-  int length = this->length();
-  int size = obj_.size();
-  if (length == size - 1) {
-    i::Factory* factory = isolate->factory();
-    i::Handle<i::FixedArray> new_elms = factory->NewFixedArray(2 * size);
-    for (int i = 0; i < length; i++)
-      new_elms->set(i + 1, get(i));
-    obj_.value()->set_elements(*new_elms);
-  }
-  obj_.set(length + 1, *value);
-  obj_.set(0, i::Smi::FromInt(length + 1));
-}
-
-
-void NeanderArray::set(int index, i::Object* value) {
-  if (index < 0 || index >= this->length()) return;
-  obj_.set(index + 1, value);
 }
 
 
@@ -3135,13 +3071,8 @@ MaybeLocal<String> Value::ToDetailString(Local<Context> context) const {
   i::Handle<i::Object> obj = Utils::OpenHandle(this);
   if (obj->IsString()) return ToApiHandle<String>(obj);
   PREPARE_FOR_EXECUTION(context, Object, ToDetailString, String);
-  Local<String> result;
-  i::Handle<i::Object> args[] = {obj};
-  has_pending_exception = !ToLocal<String>(
-      i::Execution::TryCall(isolate, isolate->no_side_effects_to_string_fun(),
-                            isolate->factory()->undefined_value(),
-                            arraysize(args), args),
-      &result);
+  Local<String> result =
+      Utils::ToLocal(i::Object::NoSideEffectsToString(isolate, obj));
   RETURN_ON_FAILED_EXECUTION(String);
   RETURN_ESCAPED(result);
 }
@@ -4479,7 +4410,6 @@ MaybeLocal<Value> Object::CallAsFunction(Local<Context> context,
                                          Local<Value> recv, int argc,
                                          Local<Value> argv[]) {
   PREPARE_FOR_EXECUTION_WITH_CALLBACK(context, Object, CallAsFunction, Value);
-  i::HistogramTimerScope execute_timer(isolate->counters()->execute(), true);
   i::TimerEventScope<i::TimerEventExecute> timer_scope(isolate);
   TRACE_EVENT0("v8", "V8.Execute");
   auto self = Utils::OpenHandle(this);
@@ -4507,7 +4437,6 @@ MaybeLocal<Value> Object::CallAsConstructor(Local<Context> context, int argc,
                                             Local<Value> argv[]) {
   PREPARE_FOR_EXECUTION_WITH_CALLBACK(context, Object, CallAsConstructor,
                                       Value);
-  i::HistogramTimerScope execute_timer(isolate->counters()->execute(), true);
   i::TimerEventScope<i::TimerEventExecute> timer_scope(isolate);
   TRACE_EVENT0("v8", "V8.Execute");
   auto self = Utils::OpenHandle(this);
@@ -4558,7 +4487,6 @@ Local<v8::Object> Function::NewInstance() const {
 MaybeLocal<Object> Function::NewInstance(Local<Context> context, int argc,
                                          v8::Local<v8::Value> argv[]) const {
   PREPARE_FOR_EXECUTION_WITH_CALLBACK(context, Function, NewInstance, Object);
-  i::HistogramTimerScope execute_timer(isolate->counters()->execute(), true);
   i::TimerEventScope<i::TimerEventExecute> timer_scope(isolate);
   TRACE_EVENT0("v8", "V8.Execute");
   auto self = Utils::OpenHandle(this);
@@ -4583,7 +4511,6 @@ MaybeLocal<v8::Value> Function::Call(Local<Context> context,
                                      v8::Local<v8::Value> recv, int argc,
                                      v8::Local<v8::Value> argv[]) {
   PREPARE_FOR_EXECUTION_WITH_CALLBACK(context, Function, Call, Value);
-  i::HistogramTimerScope execute_timer(isolate->counters()->execute(), true);
   i::TimerEventScope<i::TimerEventExecute> timer_scope(isolate);
   TRACE_EVENT0("v8", "V8.Execute");
   auto self = Utils::OpenHandle(this);
@@ -5548,7 +5475,6 @@ void* v8::Object::SlowGetAlignedPointerFromInternalField(int index) {
       i::Handle<i::JSObject>::cast(obj)->GetInternalField(index), location);
 }
 
-
 void v8::Object::SetAlignedPointerInInternalField(int index, void* value) {
   i::Handle<i::JSReceiver> obj = Utils::OpenHandle(this);
   const char* location = "v8::Object::SetAlignedPointerInInternalField()";
@@ -5558,6 +5484,24 @@ void v8::Object::SetAlignedPointerInInternalField(int index, void* value) {
   DCHECK_EQ(value, GetAlignedPointerFromInternalField(index));
 }
 
+void v8::Object::SetAlignedPointerInInternalFields(int argc, int indices[],
+                                                   void* values[]) {
+  i::Handle<i::JSReceiver> obj = Utils::OpenHandle(this);
+  const char* location = "v8::Object::SetAlignedPointerInInternalFields()";
+  i::DisallowHeapAllocation no_gc;
+  i::JSObject* object = i::JSObject::cast(*obj);
+  int nof_internal_fields = object->GetInternalFieldCount();
+  for (int i = 0; i < argc; i++) {
+    int index = indices[i];
+    if (!Utils::ApiCheck(index < nof_internal_fields, location,
+                         "Internal field out of bounds")) {
+      return;
+    }
+    void* value = values[i];
+    object->SetInternalField(index, EncodeAlignedAsSmi(value, location));
+    DCHECK_EQ(value, GetAlignedPointerFromInternalField(index));
+  }
+}
 
 static void* ExternalValue(i::Object* obj) {
   // Obscure semantics for undefined, but somehow checked in our unit tests...
@@ -7986,12 +7930,15 @@ bool Isolate::AddMessageListener(MessageCallback that, Local<Value> data) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
   ENTER_V8(isolate);
   i::HandleScope scope(isolate);
-  NeanderArray listeners(isolate->factory()->message_listeners());
-  NeanderObject obj(isolate, 2);
-  obj.set(0, *isolate->factory()->NewForeign(FUNCTION_ADDR(that)));
-  obj.set(1, data.IsEmpty() ? isolate->heap()->undefined_value()
-                            : *Utils::OpenHandle(*data));
-  listeners.add(isolate, obj.value());
+  i::Handle<i::TemplateList> list = isolate->factory()->message_listeners();
+  i::Handle<i::FixedArray> listener = isolate->factory()->NewFixedArray(2);
+  i::Handle<i::Foreign> foreign =
+      isolate->factory()->NewForeign(FUNCTION_ADDR(that));
+  listener->set(0, *foreign);
+  listener->set(1, data.IsEmpty() ? isolate->heap()->undefined_value()
+                                  : *Utils::OpenHandle(*data));
+  list = i::TemplateList::Add(isolate, list, listener);
+  isolate->heap()->SetMessageListeners(*list);
   return true;
 }
 
@@ -8000,14 +7947,14 @@ void Isolate::RemoveMessageListeners(MessageCallback that) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
   ENTER_V8(isolate);
   i::HandleScope scope(isolate);
-  NeanderArray listeners(isolate->factory()->message_listeners());
-  for (int i = 0; i < listeners.length(); i++) {
-    if (listeners.get(i)->IsUndefined(isolate)) continue;  // skip deleted ones
-
-    NeanderObject listener(i::JSObject::cast(listeners.get(i)));
-    i::Handle<i::Foreign> callback_obj(i::Foreign::cast(listener.get(0)));
+  i::DisallowHeapAllocation no_gc;
+  i::TemplateList* listeners = isolate->heap()->message_listeners();
+  for (int i = 0; i < listeners->length(); i++) {
+    if (listeners->get(i)->IsUndefined(isolate)) continue;  // skip deleted ones
+    i::FixedArray* listener = i::FixedArray::cast(listeners->get(i));
+    i::Foreign* callback_obj = i::Foreign::cast(listener->get(0));
     if (callback_obj->foreign_address() == FUNCTION_ADDR(that)) {
-      listeners.set(i, isolate->heap()->undefined_value());
+      listeners->set(i, isolate->heap()->undefined_value());
     }
   }
 }

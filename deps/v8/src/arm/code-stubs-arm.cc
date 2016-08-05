@@ -800,7 +800,6 @@ void CodeStub::GenerateStubsAheadOfTime(Isolate* isolate) {
   BinaryOpICStub::GenerateAheadOfTime(isolate);
   BinaryOpICWithAllocationSiteStub::GenerateAheadOfTime(isolate);
   StoreFastElementStub::GenerateAheadOfTime(isolate);
-  TypeofStub::GenerateAheadOfTime(isolate);
 }
 
 
@@ -1105,12 +1104,6 @@ void JSEntryStub::Generate(MacroAssembler* masm) {
   // returns control to the code after the bl(&invoke) above, which
   // restores all kCalleeSaved registers (including cp and fp) to their
   // saved values before returning a failure to C.
-
-  // Clear any pending exceptions.
-  __ mov(r5, Operand(isolate()->factory()->the_hole_value()));
-  __ mov(ip, Operand(ExternalReference(Isolate::kPendingExceptionAddress,
-                                       isolate())));
-  __ str(r5, MemOperand(ip));
 
   // Invoke the function by calling through JS entry trampoline builtin.
   // Notice that we cannot store a reference to the trampoline code directly in
@@ -1634,9 +1627,11 @@ static void CallStubInRecordCallTarget(MacroAssembler* masm, CodeStub* stub) {
   // Number-of-arguments register must be smi-tagged to call out.
   __ SmiTag(r0);
   __ Push(r3, r2, r1, r0);
+  __ Push(cp);
 
   __ CallStub(stub);
 
+  __ Pop(cp);
   __ Pop(r3, r2, r1, r0);
   __ SmiUntag(r0);
 }
@@ -1936,9 +1931,9 @@ void CallICStub::Generate(MacroAssembler* masm) {
   {
     FrameScope scope(masm, StackFrame::INTERNAL);
     CreateWeakCellStub create_stub(masm->isolate());
-    __ Push(r1);
+    __ Push(cp, r1);
     __ CallStub(&create_stub);
-    __ Pop(r1);
+    __ Pop(cp, r1);
   }
 
   __ jmp(&call_function);

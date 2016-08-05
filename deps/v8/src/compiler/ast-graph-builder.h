@@ -74,7 +74,6 @@ class AstGraphBuilder : public AstVisitor<AstGraphBuilder> {
   class ControlScopeForCatch;
   class ControlScopeForFinally;
   class Environment;
-  class FrameStateBeforeAndAfter;
   friend class ControlBuilder;
 
   Isolate* isolate_;
@@ -100,9 +99,6 @@ class AstGraphBuilder : public AstVisitor<AstGraphBuilder> {
 
   // Tracks how many try-blocks are currently entered.
   int try_nesting_level_;
-
-  // Tracks the prediction of the innermost try-block.
-  HandlerTable::CatchPrediction try_catch_prediction_;
 
   // Temporary storage for building node input lists.
   int input_buffer_size_;
@@ -456,9 +452,6 @@ class AstGraphBuilder : public AstVisitor<AstGraphBuilder> {
   // Dispatched from VisitObjectLiteral.
   void VisitObjectLiteralAccessor(Node* home_object,
                                   ObjectLiteralProperty* property);
-
-  // Dispatched from VisitClassLiteral.
-  void VisitClassLiteralContents(ClassLiteral* expr);
 
   DEFINE_AST_VISITOR_SUBCLASS_MEMBERS();
   DISALLOW_COPY_AND_ASSIGN(AstGraphBuilder);

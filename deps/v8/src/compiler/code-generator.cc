@@ -228,10 +228,8 @@ Handle<Code> CodeGenerator::GenerateCode() {
             HandlerTable::LengthForReturn(static_cast<int>(handlers_.size())),
             TENURED));
     for (size_t i = 0; i < handlers_.size(); ++i) {
-      int position = handlers_[i].handler->pos();
       table->SetReturnOffset(static_cast<int>(i), handlers_[i].pc_offset);
-      table->SetReturnHandler(static_cast<int>(i), position,
-                              handlers_[i].catch_prediction);
+      table->SetReturnHandler(static_cast<int>(i), handlers_[i].handler->pos());
     }
     result->set_handler_table(*table);
   }
@@ -603,15 +601,8 @@ void CodeGenerator::RecordCallPosition(Instruction* instr) {
 
   if (flags & CallDescriptor::kHasExceptionHandler) {
     InstructionOperandConverter i(this, instr);
-    HandlerTable::CatchPrediction prediction = HandlerTable::UNCAUGHT;
-    if (flags & CallDescriptor::kHasLocalCatchHandler) {
-      prediction = HandlerTable::CAUGHT;
-    } else if (flags & CallDescriptor::kHasLocalCatchHandlerForPromiseReject) {
-      prediction = HandlerTable::PROMISE;
-    }
     RpoNumber handler_rpo = i.InputRpo(instr->InputCount() - 1);
-    handlers_.push_back(
-        {prediction, GetLabel(handler_rpo), masm()->pc_offset()});
+    handlers_.push_back({GetLabel(handler_rpo), masm()->pc_offset()});
   }
 
   if (needs_frame_state) {
@@ -777,6 +768,12 @@ void CodeGenerator::BuildTranslationForFrameStateDescriptor(
       translation->BeginConstructStubFrame(
           shared_info_id,
           static_cast<unsigned int>(descriptor->parameters_count()));
+      break;
+    case FrameStateType::kGetterStub:
+      translation->BeginGetterStubFrame(shared_info_id);
+      break;
+    case FrameStateType::kSetterStub:
+      translation->BeginSetterStubFrame(shared_info_id);
       break;
   }
 

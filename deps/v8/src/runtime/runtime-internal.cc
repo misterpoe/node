@@ -384,19 +384,6 @@ RUNTIME_FUNCTION(Runtime_MessageGetScript) {
 }
 
 
-RUNTIME_FUNCTION(Runtime_FormatMessageString) {
-  HandleScope scope(isolate);
-  DCHECK(args.length() == 4);
-  CONVERT_INT32_ARG_CHECKED(template_index, 0);
-  CONVERT_ARG_HANDLE_CHECKED(String, arg0, 1);
-  CONVERT_ARG_HANDLE_CHECKED(String, arg1, 2);
-  CONVERT_ARG_HANDLE_CHECKED(String, arg2, 3);
-  isolate->native_context()->IncrementErrorsThrown();
-  RETURN_RESULT_OR_FAILURE(isolate, MessageTemplate::FormatMessage(
-                                        template_index, arg0, arg1, arg2));
-}
-
-
 RUNTIME_FUNCTION(Runtime_IS_VAR) {
   UNREACHABLE();  // implemented as macro in the parser
   return NULL;
@@ -583,6 +570,13 @@ RUNTIME_FUNCTION(Runtime_IsWasmObject) {
   bool is_wasm_object =
       object->IsJSObject() && wasm::IsWasmObject(JSObject::cast(object));
   return *isolate->factory()->ToBoolean(is_wasm_object);
+}
+
+RUNTIME_FUNCTION(Runtime_Typeof) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
+  return *Object::TypeOf(isolate, object);
 }
 
 }  // namespace internal

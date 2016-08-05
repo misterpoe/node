@@ -103,6 +103,7 @@
   'test-heap/ObjectsInOptimizedCodeAreWeak': [PASS, NO_VARIANTS],
 
   # TurboFan cpu profiler result is different.
+  'test-cpu-profiler/CollectDeoptEvents': [PASS, NO_VARIANTS],
   'test-cpu-profiler/DeoptAtFirstLevelInlinedSource': [PASS, NO_VARIANTS],
   'test-cpu-profiler/DeoptAtSecondLevelInlinedSource': [PASS, NO_VARIANTS],
 
@@ -126,11 +127,6 @@
   'test-heap/TestCodeFlushingIncremental': [PASS, NO_IGNITION],
   'test-heap/TestCodeFlushingIncrementalAbort': [PASS, ['mode == debug or dcheck_always_on == True', NO_IGNITION]],
 
-  # TODO(rmcilroy,4680): Fails to find the correct function name for the
-  # anonymous function. Fails without ignition but with --no-lazy also, so seems
-  # to be an issue when eagerly parsing.
-  'test-func-name-inference/ReturnAnonymousFunction': [PASS, NO_IGNITION],
-
   # TODO(mythria,4780): Related to type feedback support for Array function.
   'test-feedback-vector/VectorCallFeedbackForArray': [PASS, NO_IGNITION],
 
@@ -147,28 +143,17 @@
   # in interpreter.
   'test-heap/CompilationCacheCachingBehavior': [PASS, NO_IGNITION],
 
-  # TODO(mstarzinger,4680): Fails due to the turbo-asm pipeline only being taken
-  # in compiler.cc GetLazyCode for uncompiled code, and no similar path for eager
-  # code.
-  'test-api/TurboAsmDisablesNeuter': [PASS, NO_IGNITION],
-
-  # TODO(mvstanton,4900): CHECK(!g_function->is_compiled());
-  'test-heap/TestUseOfIncrementalBarrierOnCompileLazy': [PASS, NO_IGNITION],
-
   # BUG(rmcilroy,4680): Function is optimized without type feedback and so immediately deopts again, causing check failure in the test.
   'test-heap/ResetSharedFunctionInfoCountersDuringIncrementalMarking': [PASS, NO_IGNITION],
   'test-heap/ResetSharedFunctionInfoCountersDuringMarkSweep': [PASS, NO_IGNITION],
 
   # BUG(4680): Missing type feedback makes optimistic optimizations fail.
-  'test-cpu-profiler/CollectDeoptEvents': [PASS, NO_IGNITION],
   'test-cpu-profiler/DeoptUntrackedFunction': [PASS, NO_IGNITION],
 
   # BUG(4680): Ignition doesn't support allocation sites currently.
   'test-heap/EnsureAllocationSiteDependentCodesProcessed': [PASS, NO_IGNITION],
   'test-heap/OptimizedPretenuringAllocationFolding': [PASS, NO_IGNITION],
   'test-heap/OptimizedPretenuringdoubleArrayLiterals': [PASS, NO_IGNITION],
-  'test-heap/OptimizedPretenuringDoubleArrayProperties': [PASS, NO_IGNITION],
-  'test-heap/OptimizedPretenuringMixedInObjectProperties': [PASS, NO_IGNITION],
   'test-heap/OptimizedPretenuringNestedDoubleLiterals': [PASS, NO_IGNITION],
   'test-heap/OptimizedPretenuringNestedMixedArrayLiterals': [PASS, NO_IGNITION],
   'test-heap/OptimizedPretenuringNestedObjectLiterals': [PASS, NO_IGNITION],
@@ -176,6 +161,10 @@
 
   # BUG(4751). Flaky with ignition.
   'test-cpu-profiler/JsNativeJsSample': [PASS, NO_IGNITION],
+
+  # TODO(ignition): Fails due to missing type info when optimizing from bytecode
+  # with crankshaft.
+  'test-cpu-profiler/TickLinesOptimized': [PASS, NO_IGNITION],
 }],  # ALWAYS
 
 ##############################################################################
@@ -299,9 +288,6 @@
   'test-api/Threading2': [PASS, SLOW],
   'test-api/Threading3': [PASS, SLOW],
   'test-api/Threading4': [PASS, SLOW],
-
-  # Implement ARM UnalignedLoad and UnalignedStore operators
-  'test-run-load-store/RunUnalignedLoadStoreUnalignedAccess': [SKIP],
 }],  # 'arch == arm'
 
 ##############################################################################
@@ -403,10 +389,8 @@
 }],  # 'arch == ppc64 and simulator_run == True'
 
 ##############################################################################
-['ignition or ignition_turbofan', {
-  # TODO(rmcilroy,4837): Inlining is currently disabled for the BytecodeGraphBuilder
-  # (see InliningPhase::Run). Also, we don't set a LoadContextSlot for a function as
-  # immutable in the BytecodeGraphBuilder, therefore no inlining happens.
+['variant == ignition_turbofan', {
+  # TODO(5251): Inlining is currently disabled for the BytecodeGraphBuilder.
   'test-run-inlining/InlineLoopGuardedTwice': [FAIL],
   'test-run-inlining/InlineSurplusArgumentsDeopt': [FAIL],
   'test-run-inlining/InlineTwice': [FAIL],
@@ -442,11 +426,6 @@
   'test-heap/TestCodeFlushingIncremental': [FAIL],
   'test-heap/TestCodeFlushingIncrementalAbort': [PASS, ['mode == debug or dcheck_always_on == True', FAIL]],
 
-  # TODO(rmcilroy,4680): Fails to find the correct function name for the
-  # anonymous function. Fails without ignition but with --no-lazy also, so seems
-  # to be an issue when eagerly parsing.
-  'test-func-name-inference/ReturnAnonymousFunction': [FAIL],
-
   # TODO(mythria,4780): Related to type feedback support for Array function.
   'test-feedback-vector/VectorCallFeedbackForArray': [FAIL],
 
@@ -463,14 +442,6 @@
   # in interpreter.
   'test-heap/CompilationCacheCachingBehavior': [FAIL],
 
-  # TODO(mstarzinger,4680): Fails due to the turbo-asm pipeline only being taken
-  # in compiler.cc GetLazyCode for uncompiled code, and no similar path for eager
-  # code.
-  'test-api/TurboAsmDisablesNeuter': [FAIL],
-
-  # TODO(mvstanton,4900): CHECK(!g_function->is_compiled());
-  'test-heap/TestUseOfIncrementalBarrierOnCompileLazy': [FAIL],
-
   # BUG(4680): Missing type feedback makes optimistic optimizations fail.
   'test-cpu-profiler/CollectDeoptEvents': [FAIL],
   'test-cpu-profiler/DeoptUntrackedFunction': [FAIL],
@@ -479,8 +450,6 @@
   'test-heap/EnsureAllocationSiteDependentCodesProcessed': [FAIL],
   'test-heap/OptimizedPretenuringAllocationFolding': [FAIL],
   'test-heap/OptimizedPretenuringdoubleArrayLiterals': [FAIL],
-  'test-heap/OptimizedPretenuringDoubleArrayProperties': [FAIL],
-  'test-heap/OptimizedPretenuringMixedInObjectProperties': [FAIL],
   'test-heap/OptimizedPretenuringNestedDoubleLiterals': [FAIL],
   'test-heap/OptimizedPretenuringNestedMixedArrayLiterals': [FAIL],
   'test-heap/OptimizedPretenuringNestedObjectLiterals': [FAIL],
@@ -488,6 +457,6 @@
 
   # BUG(4751). Flaky with Ignition.
   'test-cpu-profiler/JsNativeJsSample': [SKIP],
-}],  # ignition or ignition_turbofan
+}],  # variant == ignition_turbofan
 
 ]

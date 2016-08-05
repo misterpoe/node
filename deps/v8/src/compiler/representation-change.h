@@ -74,12 +74,19 @@ class Truncation final {
   static bool LessGeneral(TruncationKind rep1, TruncationKind rep2);
 };
 
-enum class TypeCheckKind : uint8_t { kNone, kSigned32, kNumberOrOddball };
+enum class TypeCheckKind : uint8_t {
+  kNone,
+  kSignedSmall,
+  kSigned32,
+  kNumberOrOddball
+};
 
 inline std::ostream& operator<<(std::ostream& os, TypeCheckKind type_check) {
   switch (type_check) {
     case TypeCheckKind::kNone:
       return os << "None";
+    case TypeCheckKind::kSignedSmall:
+      return os << "SignedSmall";
     case TypeCheckKind::kSigned32:
       return os << "Signed32";
     case TypeCheckKind::kNumberOrOddball:
@@ -131,12 +138,20 @@ class UseInfo {
   }
 
   // Possibly deoptimizing conversions.
+  static UseInfo CheckedSignedSmallAsWord32() {
+    return UseInfo(MachineRepresentation::kWord32, Truncation::Any(),
+                   TypeCheckKind::kSignedSmall);
+  }
   static UseInfo CheckedSigned32AsWord32() {
     return UseInfo(MachineRepresentation::kWord32, Truncation::Any(),
                    TypeCheckKind::kSigned32);
   }
   static UseInfo CheckedNumberOrOddballAsFloat64() {
     return UseInfo(MachineRepresentation::kFloat64, Truncation::Any(),
+                   TypeCheckKind::kNumberOrOddball);
+  }
+  static UseInfo CheckedNumberOrOddballAsWord32() {
+    return UseInfo(MachineRepresentation::kWord32, Truncation::Word32(),
                    TypeCheckKind::kNumberOrOddball);
   }
 
@@ -222,11 +237,6 @@ class RepresentationChanger final {
                                 Type* output_type);
   Node* GetWord64RepresentationFor(Node* node, MachineRepresentation output_rep,
                                    Type* output_type);
-  Node* GetCheckedWord32RepresentationFor(Node* node,
-                                          MachineRepresentation output_rep,
-                                          Type* output_type, Node* use_node,
-                                          Truncation truncation,
-                                          TypeCheckKind check);
   Node* TypeError(Node* node, MachineRepresentation output_rep,
                   Type* output_type, MachineRepresentation use);
   Node* MakeTruncatedInt32Constant(double value);

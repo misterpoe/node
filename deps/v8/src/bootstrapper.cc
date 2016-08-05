@@ -372,6 +372,7 @@ Handle<JSFunction> InstallGetter(Handle<JSObject> target,
   Handle<Object> setter = target->GetIsolate()->factory()->undefined_value();
   JSObject::DefineAccessor(target, property_name, getter, setter, attributes)
       .Check();
+  getter->shared()->set_native(true);
   return getter;
 }
 
@@ -819,8 +820,8 @@ void Genesis::CreateRoots() {
 
   // Allocate the message listeners object.
   {
-    v8::NeanderArray listeners(isolate());
-    native_context()->set_message_listeners(*listeners.value());
+    Handle<TemplateList> list = TemplateList::New(isolate(), 1);
+    native_context()->set_message_listeners(*list);
   }
 }
 
@@ -1002,12 +1003,19 @@ static void InstallError(Isolate* isolate, Handle<JSObject> global,
     JSObject::AddProperty(prototype, factory->constructor_string(), error_fun,
                           DONT_ENUM);
 
-    Handle<JSFunction> to_string_fun =
-        SimpleInstallFunction(prototype, factory->toString_string(),
-                              Builtins::kErrorPrototypeToString, 0, true);
-    to_string_fun->shared()->set_native(true);
+    if (context_index == Context::ERROR_FUNCTION_INDEX) {
+      Handle<JSFunction> to_string_fun =
+          SimpleInstallFunction(prototype, factory->toString_string(),
+                                Builtins::kErrorPrototypeToString, 0, true);
+      to_string_fun->shared()->set_native(true);
+      isolate->native_context()->set_error_to_string(*to_string_fun);
+    } else {
+      DCHECK(context_index != Context::ERROR_FUNCTION_INDEX);
+      DCHECK(isolate->native_context()->error_to_string()->IsJSFunction());
 
-    if (context_index != Context::ERROR_FUNCTION_INDEX) {
+      InstallFunction(prototype, isolate->error_to_string(),
+                      factory->toString_string(), DONT_ENUM);
+
       Handle<JSFunction> global_error = isolate->error_function();
       CHECK(JSReceiver::SetPrototype(error_fun, global_error, false,
                                      Object::THROW_ON_ERROR)
@@ -1156,13 +1164,18 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     SimpleInstallFunction(prototype, factory->apply_string(),
                           Builtins::kFunctionPrototypeApply, 2, false);
 
-    FastFunctionBindStub bind_stub(isolate);
-    Handle<JSFunction> bind_function = factory->NewFunctionWithoutPrototype(
-        factory->bind_string(), bind_stub.GetCode(), false);
-    bind_function->shared()->DontAdaptArguments();
-    bind_function->shared()->set_length(1);
-    InstallFunction(prototype, bind_function, factory->bind_string(),
-                    DONT_ENUM);
+    if (FLAG_minimal) {
+      SimpleInstallFunction(prototype, factory->bind_string(),
+                            Builtins::kFunctionPrototypeBind, 1, false);
+    } else {
+      FastFunctionBindStub bind_stub(isolate);
+      Handle<JSFunction> bind_function = factory->NewFunctionWithoutPrototype(
+          factory->bind_string(), bind_stub.GetCode(), false);
+      bind_function->shared()->DontAdaptArguments();
+      bind_function->shared()->set_length(1);
+      InstallFunction(prototype, bind_function, factory->bind_string(),
+                      DONT_ENUM);
+    }
 
     SimpleInstallFunction(prototype, factory->call_string(),
                           Builtins::kFunctionPrototypeCall, 1, false);
@@ -2638,11 +2651,17 @@ void Bootstrapper::ExportFromRuntime(Isolate* isolate,
   {  // -- C a l l S i t e
     // Builtin functions for CallSite.
 
+    // CallSites are a special case; the constructor is for our private use
+    // only, therefore we set it up as a builtin that throws. Internally, we use
+    // CallSiteUtils::Construct to create CallSite objects.
+
     Handle<JSFunction> callsite_fun = InstallFunction(
         container, "CallSite", JS_OBJECT_TYPE, JSObject::kHeaderSize,
-        isolate->initial_object_prototype(), Builtins::kCallSiteConstructor);
+        isolate->initial_object_prototype(), Builtins::kUnsupportedThrower);
     callsite_fun->shared()->DontAdaptArguments();
     callsite_fun->shared()->set_native(true);
+
+    isolate->native_context()->set_callsite_function(*callsite_fun);
 
     {
       Handle<JSObject> proto =
@@ -2671,7 +2690,8 @@ void Bootstrapper::ExportFromRuntime(Isolate* isolate,
           {"isConstructor", Builtins::kCallSitePrototypeIsConstructor},
           {"isEval", Builtins::kCallSitePrototypeIsEval},
           {"isNative", Builtins::kCallSitePrototypeIsNative},
-          {"isToplevel", Builtins::kCallSitePrototypeIsToplevel}};
+          {"isToplevel", Builtins::kCallSitePrototypeIsToplevel},
+          {"toString", Builtins::kCallSitePrototypeToString}};
 
       PropertyAttributes attrs =
           static_cast<PropertyAttributes>(DONT_ENUM | DONT_DELETE | READ_ONLY);
@@ -2684,6 +2704,13 @@ void Bootstrapper::ExportFromRuntime(Isolate* isolate,
 
       Accessors::FunctionSetPrototype(callsite_fun, proto).Assert();
     }
+  }
+
+  {  // -- E r r o r
+    Handle<JSFunction> make_err_fun = InstallFunction(
+        container, "make_generic_error", JS_OBJECT_TYPE, JSObject::kHeaderSize,
+        isolate->initial_object_prototype(), Builtins::kMakeGenericError);
+    make_err_fun->shared()->DontAdaptArguments();
   }
 }
 
@@ -2720,7 +2747,6 @@ EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(intl_extra)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_explicit_tailcalls)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_tailcalls)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_restrictive_declarations)
-EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_exponentiation_operator)
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_string_padding)
 #ifdef V8_I18N_SUPPORT
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(icu_case_mapping)
@@ -2990,11 +3016,15 @@ bool Genesis::InstallNatives(GlobalContextType context_type) {
   }
 
   if (!CallUtilsFunction(isolate(), "PostNatives")) return false;
+  auto fast_template_instantiations_cache = isolate()->factory()->NewFixedArray(
+      TemplateInfo::kFastTemplateInstantiationsCacheSize);
+  native_context()->set_fast_template_instantiations_cache(
+      *fast_template_instantiations_cache);
 
-  auto template_instantiations_cache = UnseededNumberDictionary::New(
+  auto slow_template_instantiations_cache = UnseededNumberDictionary::New(
       isolate(), ApiNatives::kInitialFunctionCacheSize);
-  native_context()->set_template_instantiations_cache(
-      *template_instantiations_cache);
+  native_context()->set_slow_template_instantiations_cache(
+      *slow_template_instantiations_cache);
 
   // Store the map for the %ObjectPrototype% after the natives has been compiled
   // and the Object function has been set up.
@@ -3305,7 +3335,6 @@ bool Genesis::InstallExperimentalNatives() {
   static const char* harmony_object_own_property_descriptors_natives[] = {
       nullptr};
   static const char* harmony_array_prototype_values_natives[] = {nullptr};
-  static const char* harmony_exponentiation_operator_natives[] = {nullptr};
   static const char* harmony_string_padding_natives[] = {
       "native harmony-string-padding.js", nullptr};
 #ifdef V8_I18N_SUPPORT

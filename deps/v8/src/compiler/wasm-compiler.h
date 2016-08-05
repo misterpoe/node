@@ -168,7 +168,7 @@ class WasmGraphBuilder {
   Node* ToJS(Node* node, Node* context, wasm::LocalType type);
   Node* FromJS(Node* node, Node* context, wasm::LocalType type);
   Node* Invert(Node* node);
-  Node* FunctionTable();
+  Node* FunctionTable(uint32_t index);
   Node* ChangeToRuntimeCall(Node* node, Runtime::FunctionId function_id,
                             Signature<Conversion>* signature);
 
@@ -176,8 +176,8 @@ class WasmGraphBuilder {
   // Operations that concern the linear memory.
   //-----------------------------------------------------------------------
   Node* MemSize(uint32_t offset);
-  Node* LoadGlobal(uint32_t index);
-  Node* StoreGlobal(uint32_t index, Node* val);
+  Node* GetGlobal(uint32_t index);
+  Node* SetGlobal(uint32_t index, Node* val);
   Node* LoadMem(wasm::LocalType type, MachineType memtype, Node* index,
                 uint32_t offset, uint32_t alignment,
                 wasm::WasmCodePosition position);
@@ -215,7 +215,7 @@ class WasmGraphBuilder {
   wasm::ModuleEnv* module_;
   Node* mem_buffer_;
   Node* mem_size_;
-  Node* function_table_;
+  NodeVector function_tables_;
   Node** control_;
   Node** effect_;
   Node** cur_buffer_;

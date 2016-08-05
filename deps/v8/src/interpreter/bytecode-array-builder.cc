@@ -329,11 +329,15 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::StoreKeyedProperty(
   return *this;
 }
 
-BytecodeArrayBuilder& BytecodeArrayBuilder::CreateClosure(
-    Handle<SharedFunctionInfo> shared_info, int flags) {
-  size_t entry = GetConstantPoolEntry(shared_info);
+BytecodeArrayBuilder& BytecodeArrayBuilder::CreateClosure(size_t entry,
+                                                          int flags) {
   Output(Bytecode::kCreateClosure, UnsignedOperand(entry),
          UnsignedOperand(flags));
+  return *this;
+}
+
+BytecodeArrayBuilder& BytecodeArrayBuilder::CreateFunctionContext(int slots) {
+  Output(Bytecode::kCreateFunctionContext, UnsignedOperand(slots));
   return *this;
 }
 
@@ -383,8 +387,9 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::PopContext(Register context) {
   return *this;
 }
 
-BytecodeArrayBuilder& BytecodeArrayBuilder::CastAccumulatorToJSObject() {
-  Output(Bytecode::kToObject);
+BytecodeArrayBuilder& BytecodeArrayBuilder::CastAccumulatorToJSObject(
+    Register out) {
+  Output(Bytecode::kToObject, RegisterOperand(out));
   return *this;
 }
 
@@ -470,6 +475,11 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::StackCheck(int position) {
   return *this;
 }
 
+BytecodeArrayBuilder& BytecodeArrayBuilder::OsrPoll(int loop_depth) {
+  Output(Bytecode::kOsrPoll, UnsignedOperand(loop_depth));
+  return *this;
+}
+
 BytecodeArrayBuilder& BytecodeArrayBuilder::Throw() {
   Output(Bytecode::kThrow);
   return *this;
@@ -493,8 +503,9 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::Debugger() {
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::ForInPrepare(
-    Register cache_info_triple) {
-  Output(Bytecode::kForInPrepare, RegisterOperand(cache_info_triple));
+    Register receiver, Register cache_info_triple) {
+  Output(Bytecode::kForInPrepare, RegisterOperand(receiver),
+         RegisterOperand(cache_info_triple));
   return *this;
 }
 

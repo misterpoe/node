@@ -31,7 +31,7 @@ class JSBinopReduction final {
     if (lowering_->flags() & JSTypedLowering::kDeoptimizationEnabled) {
       DCHECK_NE(0, node_->op()->ControlOutputCount());
       DCHECK_EQ(1, node_->op()->EffectOutputCount());
-      DCHECK_LE(1, OperatorProperties::GetFrameStateInputCount(node_->op()));
+      DCHECK_EQ(1, OperatorProperties::GetFrameStateInputCount(node_->op()));
       BinaryOperationHints hints = BinaryOperationHintsOf(node_->op());
       BinaryOperationHints::Hint combined = hints.combined();
       if (combined == BinaryOperationHints::kSignedSmall ||
@@ -151,7 +151,7 @@ class JSBinopReduction final {
     DCHECK_EQ(1, node_->op()->EffectOutputCount());
     DCHECK_EQ(1, node_->op()->ControlInputCount());
     DCHECK_LT(1, node_->op()->ControlOutputCount());
-    DCHECK_LE(1, OperatorProperties::GetFrameStateInputCount(node_->op()));
+    DCHECK_EQ(1, OperatorProperties::GetFrameStateInputCount(node_->op()));
     DCHECK_EQ(2, node_->op()->ValueInputCount());
 
     // Reconnect the control output to bypass the IfSuccess node and
@@ -170,10 +170,7 @@ class JSBinopReduction final {
       }
     }
 
-    // Remove both bailout frame states and the context.
-    if (OperatorProperties::GetFrameStateInputCount(node_->op()) == 2) {
-      node_->RemoveInput(NodeProperties::FirstFrameStateIndex(node_) + 1);
-    }
+    // Remove the frame state and the context.
     node_->RemoveInput(NodeProperties::FirstFrameStateIndex(node_));
     node_->RemoveInput(NodeProperties::FirstContextIndex(node_));
 
@@ -227,88 +224,17 @@ class JSBinopReduction final {
   Node* node_;                 // The original node.
 
   Node* CreateFrameStateForLeftInput() {
-    if (OperatorProperties::GetFrameStateInputCount(node_->op()) < 2) {
-      // Deoptimization is disabled => return dummy frame state instead.
-      Node* dummy_state = NodeProperties::GetFrameStateInput(node_, 0);
-      DCHECK(OpParameter<FrameStateInfo>(dummy_state).bailout_id().IsNone());
-      return dummy_state;
-    }
-
-    Node* frame_state = NodeProperties::GetFrameStateInput(node_, 1);
-    FrameStateInfo state_info = OpParameter<FrameStateInfo>(frame_state);
-
-    if (state_info.bailout_id() == BailoutId::None()) {
-      // Dummy frame state => just leave it as is.
-      return frame_state;
-    }
-
-    // If the frame state is already the right one, just return it.
-    if (state_info.state_combine().kind() == OutputFrameStateCombine::kPokeAt &&
-        state_info.state_combine().GetOffsetToPokeAt() == 1) {
-      return frame_state;
-    }
-
-    // Here, we smash the result of the conversion into the slot just below
-    // the stack top. This is the slot that full code uses to store the
-    // left operand.
-    const Operator* op = jsgraph()->common()->FrameState(
-        state_info.bailout_id(), OutputFrameStateCombine::PokeAt(1),
-        state_info.function_info());
-
-    return graph()->NewNode(op,
-                            frame_state->InputAt(kFrameStateParametersInput),
-                            frame_state->InputAt(kFrameStateLocalsInput),
-                            frame_state->InputAt(kFrameStateStackInput),
-                            frame_state->InputAt(kFrameStateContextInput),
-                            frame_state->InputAt(kFrameStateFunctionInput),
-                            frame_state->InputAt(kFrameStateOuterStateInput));
+    // Deoptimization is disabled => return dummy frame state instead.
+    Node* dummy_state = NodeProperties::GetFrameStateInput(node_);
+    DCHECK(OpParameter<FrameStateInfo>(dummy_state).bailout_id().IsNone());
+    return dummy_state;
   }
 
   Node* CreateFrameStateForRightInput(Node* converted_left) {
-    if (OperatorProperties::GetFrameStateInputCount(node_->op()) < 2) {
-      // Deoptimization is disabled => return dummy frame state instead.
-      Node* dummy_state = NodeProperties::GetFrameStateInput(node_, 0);
-      DCHECK(OpParameter<FrameStateInfo>(dummy_state).bailout_id().IsNone());
-      return dummy_state;
-    }
-
-    Node* frame_state = NodeProperties::GetFrameStateInput(node_, 1);
-    FrameStateInfo state_info = OpParameter<FrameStateInfo>(frame_state);
-
-    if (state_info.bailout_id() == BailoutId::None()) {
-      // Dummy frame state => just leave it as is.
-      return frame_state;
-    }
-
-    // Create a frame state that stores the result of the operation to the
-    // top of the stack (i.e., the slot used for the right operand).
-    const Operator* op = jsgraph()->common()->FrameState(
-        state_info.bailout_id(), OutputFrameStateCombine::PokeAt(0),
-        state_info.function_info());
-
-    // Change the left operand {converted_left} on the expression stack.
-    Node* stack = frame_state->InputAt(2);
-    DCHECK_EQ(stack->opcode(), IrOpcode::kStateValues);
-    DCHECK_GE(stack->InputCount(), 2);
-
-    // TODO(jarin) Allocate in a local zone or a reusable buffer.
-    NodeVector new_values(stack->InputCount(), zone());
-    for (int i = 0; i < stack->InputCount(); i++) {
-      if (i == stack->InputCount() - 2) {
-        new_values[i] = converted_left;
-      } else {
-        new_values[i] = stack->InputAt(i);
-      }
-    }
-    Node* new_stack =
-        graph()->NewNode(stack->op(), stack->InputCount(), &new_values.front());
-
-    return graph()->NewNode(
-        op, frame_state->InputAt(kFrameStateParametersInput),
-        frame_state->InputAt(kFrameStateLocalsInput), new_stack,
-        frame_state->InputAt(kFrameStateContextInput),
-        frame_state->InputAt(kFrameStateFunctionInput),
-        frame_state->InputAt(kFrameStateOuterStateInput));
+    // Deoptimization is disabled => return dummy frame state instead.
+    Node* dummy_state = NodeProperties::GetFrameStateInput(node_);
+    DCHECK(OpParameter<FrameStateInfo>(dummy_state).bailout_id().IsNone());
+    return dummy_state;
   }
 
   Node* ConvertPlainPrimitiveToNumber(Node* node) {
@@ -338,7 +264,6 @@ class JSBinopReduction final {
 
     // Find {IfSuccess} and {IfException} continuations of the operation.
     NodeProperties::CollectControlProjections(node_, projections, 2);
-    IfExceptionHint hint = OpParameter<IfExceptionHint>(projections[1]);
     Node* if_exception = projections[1];
     Node* if_success = projections[0];
 
@@ -353,9 +278,9 @@ class JSBinopReduction final {
         graph()->NewNode(javascript()->ToNumber(), right(), context(),
                          right_state, left_conv, left_success);
     Node* left_exception =
-        graph()->NewNode(common()->IfException(hint), left_conv, left_conv);
+        graph()->NewNode(common()->IfException(), left_conv, left_conv);
     Node* right_exception =
-        graph()->NewNode(common()->IfException(hint), right_conv, right_conv);
+        graph()->NewNode(common()->IfException(), right_conv, right_conv);
     NodeProperties::ReplaceControlInput(if_success, right_conv);
     update_effect(right_conv);
 
@@ -581,33 +506,29 @@ Reduction JSTypedLowering::ReduceJSModulus(Node* node) {
   return NoChange();
 }
 
-Reduction JSTypedLowering::ReduceInt32Binop(Node* node, const Operator* intOp) {
-  if (flags() & kDisableIntegerBinaryOpReduction) return NoChange();
-
-  JSBinopReduction r(this, node);
-  r.ConvertInputsToNumber();
-  r.ConvertInputsToUI32(kSigned, kSigned);
-  return r.ChangeToPureOperator(intOp, Type::Integral32());
-}
-
-Reduction JSTypedLowering::ReduceShiftLeft(Node* node) {
-  if (flags() & kDisableIntegerBinaryOpReduction) return NoChange();
-
+Reduction JSTypedLowering::ReduceInt32Binop(Node* node,
+                                            const Operator* int_op) {
   JSBinopReduction r(this, node);
   BinaryOperationHints::Hint feedback = r.GetNumberBinaryOperationFeedback();
-  if (feedback == BinaryOperationHints::kSigned32 ||
-      feedback == BinaryOperationHints::kSignedSmall) {
-    return r.ChangeToSpeculativeOperator(
-        simplified()->SpeculativeNumberShiftLeft(feedback), Type::Signed32());
+  if (feedback != BinaryOperationHints::kAny) {
+    Operator const* speculative_op;
+    if (int_op->opcode() == IrOpcode::kNumberBitwiseAnd) {
+      speculative_op = simplified()->SpeculativeNumberBitwiseAnd(feedback);
+    } else if (int_op->opcode() == IrOpcode::kNumberBitwiseOr) {
+      speculative_op = simplified()->SpeculativeNumberBitwiseOr(feedback);
+    } else {
+      DCHECK_EQ(IrOpcode::kNumberBitwiseXor, int_op->opcode());
+      speculative_op = simplified()->SpeculativeNumberBitwiseXor(feedback);
+    }
+    return r.ChangeToSpeculativeOperator(speculative_op, Type::Signed32());
   }
 
   // If deoptimization is enabled we rely on type feedback.
   if (r.BothInputsAre(Type::PlainPrimitive()) ||
       !(flags() & kDeoptimizationEnabled)) {
     r.ConvertInputsToNumber();
-    r.ConvertInputsToUI32(kSigned, kUnsigned);
-    return r.ChangeToPureOperator(simplified()->NumberShiftLeft(),
-                                  Type::Number());
+    r.ConvertInputsToUI32(kSigned, kSigned);
+    return r.ChangeToPureOperator(int_op, Type::Signed32());
   }
   return NoChange();
 }
@@ -615,14 +536,34 @@ Reduction JSTypedLowering::ReduceShiftLeft(Node* node) {
 Reduction JSTypedLowering::ReduceUI32Shift(Node* node,
                                            Signedness left_signedness,
                                            const Operator* shift_op) {
-  if (flags() & kDisableIntegerBinaryOpReduction) return NoChange();
-
   JSBinopReduction r(this, node);
-  r.ConvertInputsToNumber();
-  r.ConvertInputsToUI32(left_signedness, kUnsigned);
-  return r.ChangeToPureOperator(shift_op);
-}
+  BinaryOperationHints::Hint feedback = r.GetNumberBinaryOperationFeedback();
+  if (feedback != BinaryOperationHints::kAny) {
+    Operator const* speculative_op;
+    if (shift_op->opcode() == IrOpcode::kNumberShiftLeft) {
+      speculative_op = simplified()->SpeculativeNumberShiftLeft(feedback);
+    } else if (shift_op->opcode() == IrOpcode::kNumberShiftRightLogical) {
+      speculative_op =
+          simplified()->SpeculativeNumberShiftRightLogical(feedback);
+    } else {
+      DCHECK_EQ(IrOpcode::kNumberShiftRight, shift_op->opcode());
+      speculative_op = simplified()->SpeculativeNumberShiftRight(feedback);
+    }
+    return r.ChangeToSpeculativeOperator(
+        speculative_op, shift_op->opcode() == IrOpcode::kNumberShiftRightLogical
+                            ? Type::Unsigned32()
+                            : Type::Signed32());
+  }
 
+  // If deoptimization is enabled we rely on type feedback.
+  if (r.BothInputsAre(Type::PlainPrimitive()) ||
+      !(flags() & kDeoptimizationEnabled)) {
+    r.ConvertInputsToNumber();
+    r.ConvertInputsToUI32(left_signedness, kUnsigned);
+    return r.ChangeToPureOperator(shift_op);
+  }
+  return NoChange();
+}
 
 Reduction JSTypedLowering::ReduceJSComparison(Node* node) {
   JSBinopReduction r(this, node);
@@ -656,7 +597,11 @@ Reduction JSTypedLowering::ReduceJSComparison(Node* node) {
       r.OneInputCannotBe(Type::StringOrReceiver())) {
     const Operator* less_than;
     const Operator* less_than_or_equal;
-    if (hint != CompareOperationHints::kAny) {
+    if (r.BothInputsAre(Type::Signed32()) ||
+        r.BothInputsAre(Type::Unsigned32())) {
+      less_than = simplified()->NumberLessThan();
+      less_than_or_equal = simplified()->NumberLessThanOrEqual();
+    } else if (hint != CompareOperationHints::kAny) {
       less_than = simplified()->SpeculativeNumberLessThan(hint);
       less_than_or_equal = simplified()->SpeculativeNumberLessThanOrEqual(hint);
     } else if (r.BothInputsAre(Type::PlainPrimitive()) ||
@@ -1015,7 +960,7 @@ Reduction JSTypedLowering::ReduceJSToObject(Node* node) {
   Node* receiver = NodeProperties::GetValueInput(node, 0);
   Type* receiver_type = NodeProperties::GetType(receiver);
   Node* context = NodeProperties::GetContextInput(node);
-  Node* frame_state = NodeProperties::GetFrameStateInput(node, 0);
+  Node* frame_state = NodeProperties::GetFrameStateInput(node);
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
   if (receiver_type->Is(Type::Receiver())) {
@@ -1217,7 +1162,7 @@ Reduction JSTypedLowering::ReduceJSStoreProperty(Node* node) {
 Reduction JSTypedLowering::ReduceJSInstanceOf(Node* node) {
   DCHECK_EQ(IrOpcode::kJSInstanceOf, node->opcode());
   Node* const context = NodeProperties::GetContextInput(node);
-  Node* const frame_state = NodeProperties::GetFrameStateInput(node, 0);
+  Node* const frame_state = NodeProperties::GetFrameStateInput(node);
 
   // If deoptimization is disabled, we cannot optimize.
   if (!(flags() & kDeoptimizationEnabled)) return NoChange();
@@ -1438,7 +1383,7 @@ Reduction JSTypedLowering::ReduceJSConvertReceiver(Node* node) {
   Type* receiver_type = NodeProperties::GetType(receiver);
   Node* context = NodeProperties::GetContextInput(node);
   Type* context_type = NodeProperties::GetType(context);
-  Node* frame_state = NodeProperties::GetFrameStateInput(node, 0);
+  Node* frame_state = NodeProperties::GetFrameStateInput(node);
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
   if (!receiver_type->Is(Type::Receiver())) {
@@ -1712,7 +1657,7 @@ Reduction JSTypedLowering::ReduceJSForInNext(Node* node) {
   Node* cache_type = NodeProperties::GetValueInput(node, 2);
   Node* index = NodeProperties::GetValueInput(node, 3);
   Node* context = NodeProperties::GetContextInput(node);
-  Node* frame_state = NodeProperties::GetFrameStateInput(node, 0);
+  Node* frame_state = NodeProperties::GetFrameStateInput(node);
   Node* effect = NodeProperties::GetEffectInput(node);
   Node* control = NodeProperties::GetControlInput(node);
 
@@ -1886,6 +1831,96 @@ Reduction JSTypedLowering::ReduceSelect(Node* node) {
   return NoChange();
 }
 
+namespace {
+
+MaybeHandle<Map> GetStableMapFromObjectType(Type* object_type) {
+  if (object_type->IsConstant() &&
+      object_type->AsConstant()->Value()->IsHeapObject()) {
+    Handle<Map> object_map(
+        Handle<HeapObject>::cast(object_type->AsConstant()->Value())->map());
+    if (object_map->is_stable()) return object_map;
+  } else if (object_type->IsClass()) {
+    Handle<Map> object_map = object_type->AsClass()->Map();
+    if (object_map->is_stable()) return object_map;
+  }
+  return MaybeHandle<Map>();
+}
+
+}  // namespace
+
+Reduction JSTypedLowering::ReduceCheckMaps(Node* node) {
+  // TODO(bmeurer): Find a better home for this thing!
+  // The CheckMaps(o, ...map...) can be eliminated if map is stable and
+  // either
+  //  (a) o has type Constant(object) and map == object->map, or
+  //  (b) o has type Class(map),
+  // and either
+  //  (1) map cannot transition further, or
+  //  (2) we can add a code dependency on the stability of map
+  //      (to guard the Constant type information).
+  Node* const object = NodeProperties::GetValueInput(node, 0);
+  Type* const object_type = NodeProperties::GetType(object);
+  Node* const effect = NodeProperties::GetEffectInput(node);
+  Handle<Map> object_map;
+  if (GetStableMapFromObjectType(object_type).ToHandle(&object_map)) {
+    for (int i = 1; i < node->op()->ValueInputCount(); ++i) {
+      Node* const map = NodeProperties::GetValueInput(node, i);
+      Type* const map_type = NodeProperties::GetType(map);
+      if (map_type->IsConstant() &&
+          map_type->AsConstant()->Value().is_identical_to(object_map)) {
+        if (object_map->CanTransition()) {
+          DCHECK(flags() & kDeoptimizationEnabled);
+          dependencies()->AssumeMapStable(object_map);
+        }
+        return Replace(effect);
+      }
+    }
+  }
+  return NoChange();
+}
+
+Reduction JSTypedLowering::ReduceCheckString(Node* node) {
+  // TODO(bmeurer): Find a better home for this thing!
+  Node* const input = NodeProperties::GetValueInput(node, 0);
+  Type* const input_type = NodeProperties::GetType(input);
+  if (input_type->Is(Type::String())) {
+    ReplaceWithValue(node, input);
+    return Replace(input);
+  }
+  return NoChange();
+}
+
+Reduction JSTypedLowering::ReduceLoadField(Node* node) {
+  // TODO(bmeurer): Find a better home for this thing!
+  Node* const object = NodeProperties::GetValueInput(node, 0);
+  Type* const object_type = NodeProperties::GetType(object);
+  FieldAccess const& access = FieldAccessOf(node->op());
+  if (access.base_is_tagged == kTaggedBase &&
+      access.offset == HeapObject::kMapOffset) {
+    // We can replace LoadField[Map](o) with map if is stable and either
+    //  (a) o has type Constant(object) and map == object->map, or
+    //  (b) o has type Class(map),
+    // and either
+    //  (1) map cannot transition further, or
+    //  (2) deoptimization is enabled and we can add a code dependency on the
+    //      stability of map (to guard the Constant type information).
+    Handle<Map> object_map;
+    if (GetStableMapFromObjectType(object_type).ToHandle(&object_map)) {
+      if (object_map->CanTransition()) {
+        if (flags() & kDeoptimizationEnabled) {
+          dependencies()->AssumeMapStable(object_map);
+        } else {
+          return NoChange();
+        }
+      }
+      Node* const value = jsgraph()->HeapConstant(object_map);
+      ReplaceWithValue(node, value);
+      return Replace(value);
+    }
+  }
+  return NoChange();
+}
+
 Reduction JSTypedLowering::ReduceNumberRoundop(Node* node) {
   // TODO(bmeurer): Find a better home for this thing!
   Node* const input = NodeProperties::GetValueInput(node, 0);
@@ -1956,7 +1991,7 @@ Reduction JSTypedLowering::Reduce(Node* node) {
     case IrOpcode::kJSBitwiseAnd:
       return ReduceInt32Binop(node, simplified()->NumberBitwiseAnd());
     case IrOpcode::kJSShiftLeft:
-      return ReduceShiftLeft(node);
+      return ReduceUI32Shift(node, kSigned, simplified()->NumberShiftLeft());
     case IrOpcode::kJSShiftRight:
       return ReduceUI32Shift(node, kSigned, simplified()->NumberShiftRight());
     case IrOpcode::kJSShiftRightLogical:
@@ -2016,25 +2051,23 @@ Reduction JSTypedLowering::Reduce(Node* node) {
       return ReduceJSGeneratorRestoreRegister(node);
     case IrOpcode::kSelect:
       return ReduceSelect(node);
+    case IrOpcode::kCheckMaps:
+      return ReduceCheckMaps(node);
+    case IrOpcode::kCheckString:
+      return ReduceCheckString(node);
     case IrOpcode::kNumberCeil:
     case IrOpcode::kNumberFloor:
     case IrOpcode::kNumberRound:
     case IrOpcode::kNumberTrunc:
       return ReduceNumberRoundop(node);
+    case IrOpcode::kLoadField:
+      return ReduceLoadField(node);
     default:
       break;
   }
   return NoChange();
 }
 
-Node* JSTypedLowering::EmptyFrameState() {
-  return graph()->NewNode(
-      common()->FrameState(BailoutId::None(), OutputFrameStateCombine::Ignore(),
-                           nullptr),
-      jsgraph()->EmptyStateValues(), jsgraph()->EmptyStateValues(),
-      jsgraph()->EmptyStateValues(), jsgraph()->NoContextConstant(),
-      jsgraph()->UndefinedConstant(), graph()->start());
-}
 
 Factory* JSTypedLowering::factory() const { return jsgraph()->factory(); }
 

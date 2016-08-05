@@ -51,6 +51,10 @@ bool MustAlias(Node* a, Node* b) { return QueryAlias(a, b) == kMustAlias; }
 
 Reduction LoadElimination::Reduce(Node* node) {
   switch (node->opcode()) {
+    case IrOpcode::kCheckMaps:
+      return ReduceCheckMaps(node);
+    case IrOpcode::kTransitionElementsKind:
+      return ReduceTransitionElementsKind(node);
     case IrOpcode::kLoadField:
       return ReduceLoadField(node);
     case IrOpcode::kStoreField:
@@ -59,6 +63,8 @@ Reduction LoadElimination::Reduce(Node* node) {
       return ReduceLoadElement(node);
     case IrOpcode::kStoreElement:
       return ReduceStoreElement(node);
+    case IrOpcode::kStoreTypedElement:
+      return ReduceStoreTypedElement(node);
     case IrOpcode::kEffectPhi:
       return ReduceEffectPhi(node);
     case IrOpcode::kDead:
@@ -301,6 +307,52 @@ void LoadElimination::AbstractStateForEffectNodes::Set(
   info_for_node_[id] = state;
 }
 
+Reduction LoadElimination::ReduceCheckMaps(Node* node) {
+  Node* const object = NodeProperties::GetValueInput(node, 0);
+  Node* const effect = NodeProperties::GetEffectInput(node);
+  AbstractState const* state = node_states_.Get(effect);
+  if (state == nullptr) return NoChange();
+  int const map_input_count = node->op()->ValueInputCount() - 1;
+  if (Node* const object_map = state->LookupField(object, 0)) {
+    for (int i = 0; i < map_input_count; ++i) {
+      Node* map = NodeProperties::GetValueInput(node, 1 + i);
+      if (map == object_map) return Replace(effect);
+    }
+  }
+  if (map_input_count == 1) {
+    Node* const map0 = NodeProperties::GetValueInput(node, 1);
+    state = state->AddField(object, 0, map0, zone());
+  }
+  return UpdateState(node, state);
+}
+
+Reduction LoadElimination::ReduceTransitionElementsKind(Node* node) {
+  Node* const object = NodeProperties::GetValueInput(node, 0);
+  Node* const source_map = NodeProperties::GetValueInput(node, 1);
+  Node* const target_map = NodeProperties::GetValueInput(node, 2);
+  Node* const effect = NodeProperties::GetEffectInput(node);
+  AbstractState const* state = node_states_.Get(effect);
+  if (state == nullptr) return NoChange();
+  if (Node* const object_map = state->LookupField(object, 0)) {
+    state = state->KillField(object, 0, zone());
+    if (source_map == object_map) {
+      state = state->AddField(object, 0, target_map, zone());
+    }
+  } else {
+    state = state->KillField(object, 0, zone());
+  }
+  ElementsTransition transition = ElementsTransitionOf(node->op());
+  switch (transition) {
+    case ElementsTransition::kFastTransition:
+      break;
+    case ElementsTransition::kSlowTransition:
+      // Kill the elements as well.
+      state = state->KillField(object, 2, zone());
+      break;
+  }
+  return UpdateState(node, state);
+}
+
 Reduction LoadElimination::ReduceLoadField(Node* node) {
   FieldAccess const& access = FieldAccessOf(node->op());
   Node* const object = NodeProperties::GetValueInput(node, 0);
@@ -312,10 +364,10 @@ Reduction LoadElimination::ReduceLoadField(Node* node) {
     if (Node* const replacement = state->LookupField(object, field_index)) {
       // Make sure the {replacement} has at least as good type
       // as the original {node}.
-      if (NodeProperties::GetType(replacement)
+      if (!replacement->IsDead() &&
+          NodeProperties::GetType(replacement)
               ->Is(NodeProperties::GetType(node))) {
         ReplaceWithValue(node, replacement, effect);
-        DCHECK(!replacement->IsDead());
         return Replace(replacement);
       }
     }
@@ -357,10 +409,10 @@ Reduction LoadElimination::ReduceLoadElement(Node* node) {
   if (Node* const replacement = state->LookupElement(object, index)) {
     // Make sure the {replacement} has at least as good type
     // as the original {node}.
-    if (NodeProperties::GetType(replacement)
+    if (!replacement->IsDead() &&
+        NodeProperties::GetType(replacement)
             ->Is(NodeProperties::GetType(node))) {
       ReplaceWithValue(node, replacement, effect);
-      DCHECK(!replacement->IsDead());
       return Replace(replacement);
     }
   }
@@ -402,6 +454,13 @@ Reduction LoadElimination::ReduceStoreElement(Node* node) {
       state = state->AddElement(object, index, new_value, zone());
       break;
   }
+  return UpdateState(node, state);
+}
+
+Reduction LoadElimination::ReduceStoreTypedElement(Node* node) {
+  Node* const effect = NodeProperties::GetEffectInput(node);
+  AbstractState const* state = node_states_.Get(effect);
+  if (state == nullptr) return NoChange();
   return UpdateState(node, state);
 }
 
@@ -521,15 +580,20 @@ LoadElimination::AbstractState const* LoadElimination::ComputeLoopState(
 
 // static
 int LoadElimination::FieldIndexOf(FieldAccess const& access) {
-  switch (access.machine_type.representation()) {
+  MachineRepresentation rep = access.machine_type.representation();
+  switch (rep) {
     case MachineRepresentation::kNone:
     case MachineRepresentation::kBit:
       UNREACHABLE();
       break;
-    case MachineRepresentation::kWord8:
-    case MachineRepresentation::kWord16:
     case MachineRepresentation::kWord32:
     case MachineRepresentation::kWord64:
+      if (rep != MachineType::PointerRepresentation()) {
+        return -1;  // We currently only track pointer size fields.
+      }
+      break;
+    case MachineRepresentation::kWord8:
+    case MachineRepresentation::kWord16:
     case MachineRepresentation::kFloat32:
       return -1;  // Currently untracked.
     case MachineRepresentation::kFloat64:

@@ -75,36 +75,6 @@ DeoptimizeParameters const& DeoptimizeParametersOf(Operator const* const op) {
   return OpParameter<DeoptimizeParameters>(op);
 }
 
-IfExceptionHint ExceptionHintFromCatchPrediction(
-    HandlerTable::CatchPrediction prediction) {
-  switch (prediction) {
-    case HandlerTable::UNCAUGHT:
-      return IfExceptionHint::kLocallyUncaught;
-    case HandlerTable::CAUGHT:
-      return IfExceptionHint::kLocallyCaught;
-    case HandlerTable::PROMISE:
-      return IfExceptionHint::kLocallyCaughtForPromiseReject;
-  }
-  UNREACHABLE();
-  return IfExceptionHint::kLocallyUncaught;
-}
-
-size_t hash_value(IfExceptionHint hint) { return static_cast<size_t>(hint); }
-
-
-std::ostream& operator<<(std::ostream& os, IfExceptionHint hint) {
-  switch (hint) {
-    case IfExceptionHint::kLocallyUncaught:
-      return os << "Uncaught";
-    case IfExceptionHint::kLocallyCaught:
-      return os << "Caught";
-    case IfExceptionHint::kLocallyCaughtForPromiseReject:
-      return os << "CaughtForPromiseReject";
-  }
-  UNREACHABLE();
-  return os;
-}
-
 
 bool operator==(SelectParameters const& lhs, SelectParameters const& rhs) {
   return lhs.representation() == rhs.representation() &&
@@ -235,21 +205,23 @@ std::ostream& operator<<(std::ostream& os,
   return os;
 }
 
-#define CACHED_OP_LIST(V)                                    \
-  V(Dead, Operator::kFoldable, 0, 0, 0, 1, 1, 1)             \
-  V(IfTrue, Operator::kKontrol, 0, 0, 1, 0, 0, 1)            \
-  V(IfFalse, Operator::kKontrol, 0, 0, 1, 0, 0, 1)           \
-  V(IfSuccess, Operator::kKontrol, 0, 0, 1, 0, 0, 1)         \
-  V(IfDefault, Operator::kKontrol, 0, 0, 1, 0, 0, 1)         \
-  V(Throw, Operator::kKontrol, 1, 1, 1, 0, 0, 1)             \
-  V(Terminate, Operator::kKontrol, 0, 1, 1, 0, 0, 1)         \
-  V(OsrNormalEntry, Operator::kFoldable, 0, 1, 1, 0, 1, 1)   \
-  V(OsrLoopEntry, Operator::kFoldable, 0, 1, 1, 0, 1, 1)     \
-  V(LoopExit, Operator::kKontrol, 0, 0, 2, 0, 0, 1)          \
-  V(LoopExitValue, Operator::kPure, 1, 0, 1, 1, 0, 0)        \
-  V(LoopExitEffect, Operator::kNoThrow, 0, 1, 1, 0, 1, 0)    \
-  V(Checkpoint, Operator::kKontrol, 0, 1, 1, 0, 1, 0)        \
-  V(FinishRegion, Operator::kKontrol, 1, 1, 0, 1, 1, 0)
+#define CACHED_OP_LIST(V)                                  \
+  V(Dead, Operator::kFoldable, 0, 0, 0, 1, 1, 1)           \
+  V(IfTrue, Operator::kKontrol, 0, 0, 1, 0, 0, 1)          \
+  V(IfFalse, Operator::kKontrol, 0, 0, 1, 0, 0, 1)         \
+  V(IfSuccess, Operator::kKontrol, 0, 0, 1, 0, 0, 1)       \
+  V(IfException, Operator::kKontrol, 0, 1, 1, 1, 1, 1)     \
+  V(IfDefault, Operator::kKontrol, 0, 0, 1, 0, 0, 1)       \
+  V(Throw, Operator::kKontrol, 1, 1, 1, 0, 0, 1)           \
+  V(Terminate, Operator::kKontrol, 0, 1, 1, 0, 0, 1)       \
+  V(OsrNormalEntry, Operator::kFoldable, 0, 1, 1, 0, 1, 1) \
+  V(OsrLoopEntry, Operator::kFoldable, 0, 1, 1, 0, 1, 1)   \
+  V(LoopExit, Operator::kKontrol, 0, 0, 2, 0, 0, 1)        \
+  V(LoopExitValue, Operator::kPure, 1, 0, 1, 1, 0, 0)      \
+  V(LoopExitEffect, Operator::kNoThrow, 0, 1, 1, 0, 1, 0)  \
+  V(Checkpoint, Operator::kKontrol, 0, 1, 1, 0, 1, 0)      \
+  V(FinishRegion, Operator::kKontrol, 1, 1, 0, 1, 1, 0)    \
+  V(Retain, Operator::kKontrol, 1, 1, 0, 0, 1, 0)
 
 #define CACHED_RETURN_LIST(V) \
   V(1)                        \
@@ -276,6 +248,11 @@ std::ostream& operator<<(std::ostream& os,
   V(5)                            \
   V(6)
 
+#define CACHED_INDUCTION_VARIABLE_PHI_LIST(V) \
+  V(4)                                        \
+  V(5)                                        \
+  V(6)                                        \
+  V(7)
 
 #define CACHED_LOOP_LIST(V) \
   V(1)                      \
@@ -351,20 +328,6 @@ struct CommonOperatorGlobalCache final {
   Name##Operator k##Name##Operator;
   CACHED_OP_LIST(CACHED)
 #undef CACHED
-
-  template <IfExceptionHint kCaughtLocally>
-  struct IfExceptionOperator final : public Operator1<IfExceptionHint> {
-    IfExceptionOperator()
-        : Operator1<IfExceptionHint>(                      // --
-              IrOpcode::kIfException, Operator::kKontrol,  // opcode
-              "IfException",                               // name
-              0, 1, 1, 1, 1, 1,                            // counts
-              kCaughtLocally) {}                           // parameter
-  };
-  IfExceptionOperator<IfExceptionHint::kLocallyUncaught> kIfExceptionUOperator;
-  IfExceptionOperator<IfExceptionHint::kLocallyCaught> kIfExceptionCOperator;
-  IfExceptionOperator<IfExceptionHint::kLocallyCaughtForPromiseReject>
-      kIfExceptionPOperator;
 
   template <size_t kInputCount>
   struct EndOperator final : public Operator {
@@ -472,6 +435,20 @@ struct CommonOperatorGlobalCache final {
       kPhi##rep##input_count##Operator;
   CACHED_PHI_LIST(CACHED_PHI)
 #undef CACHED_PHI
+
+  template <int kInputCount>
+  struct InductionVariablePhiOperator final : public Operator {
+    InductionVariablePhiOperator()
+        : Operator(                                              //--
+              IrOpcode::kInductionVariablePhi, Operator::kPure,  // opcode
+              "InductionVariablePhi",                            // name
+              kInputCount, 0, 1, 1, 0, 0) {}                     // counts
+  };
+#define CACHED_INDUCTION_VARIABLE_PHI(input_count) \
+  InductionVariablePhiOperator<input_count>        \
+      kInductionVariablePhi##input_count##Operator;
+  CACHED_INDUCTION_VARIABLE_PHI_LIST(CACHED_INDUCTION_VARIABLE_PHI)
+#undef CACHED_INDUCTION_VARIABLE_PHI
 
   template <int kIndex>
   struct ParameterOperator final : public Operator1<ParameterInfo> {
@@ -616,19 +593,6 @@ const Operator* CommonOperatorBuilder::DeoptimizeUnless(
       "DeoptimizeUnless",                           // name
       2, 1, 1, 0, 1, 1,                             // counts
       reason);                                      // parameter
-}
-
-const Operator* CommonOperatorBuilder::IfException(IfExceptionHint hint) {
-  switch (hint) {
-    case IfExceptionHint::kLocallyUncaught:
-      return &cache_.kIfExceptionUOperator;
-    case IfExceptionHint::kLocallyCaught:
-      return &cache_.kIfExceptionCOperator;
-    case IfExceptionHint::kLocallyCaughtForPromiseReject:
-      return &cache_.kIfExceptionPOperator;
-  }
-  UNREACHABLE();
-  return nullptr;
 }
 
 
@@ -851,6 +815,25 @@ const Operator* CommonOperatorBuilder::EffectPhi(int effect_input_count) {
       IrOpcode::kEffectPhi, Operator::kKontrol,  // opcode
       "EffectPhi",                               // name
       0, effect_input_count, 1, 0, 1, 0);        // counts
+}
+
+const Operator* CommonOperatorBuilder::InductionVariablePhi(int input_count) {
+  DCHECK(input_count >= 4);  // There must be always the entry, backedge,
+                             // increment and at least one bound.
+  switch (input_count) {
+#define CACHED_INDUCTION_VARIABLE_PHI(input_count) \
+  case input_count:                                \
+    return &cache_.kInductionVariablePhi##input_count##Operator;
+    CACHED_INDUCTION_VARIABLE_PHI_LIST(CACHED_INDUCTION_VARIABLE_PHI)
+#undef CACHED_INDUCTION_VARIABLE_PHI
+    default:
+      break;
+  }
+  // Uncached.
+  return new (zone()) Operator(                          // --
+      IrOpcode::kInductionVariablePhi, Operator::kPure,  // opcode
+      "InductionVariablePhi",                            // name
+      input_count, 0, 1, 1, 0, 0);                       // counts
 }
 
 const Operator* CommonOperatorBuilder::BeginRegion(

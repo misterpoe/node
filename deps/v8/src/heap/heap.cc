@@ -6,7 +6,7 @@
 
 #include "src/accessors.h"
 #include "src/api.h"
-#include "src/ast/scopeinfo.h"
+#include "src/ast/context-slot-cache.h"
 #include "src/base/bits.h"
 #include "src/base/once.h"
 #include "src/base/utils/random-number-generator.h"
@@ -137,7 +137,7 @@ Heap::Heap()
       scavenge_collector_(nullptr),
       mark_compact_collector_(nullptr),
       memory_allocator_(nullptr),
-      store_buffer_(this),
+      store_buffer_(nullptr),
       incremental_marking_(nullptr),
       gc_idle_time_handler_(nullptr),
       memory_reducer_(nullptr),
@@ -2532,12 +2532,7 @@ void Heap::CreateApiObjects() {
   // appears to be no benefit for optimize this case.
   new_neander_map->set_elements_kind(TERMINAL_FAST_ELEMENTS_KIND);
   set_neander_map(*new_neander_map);
-
-  Handle<JSObject> listeners = factory->NewNeanderObject();
-  Handle<FixedArray> elements = factory->NewFixedArray(2);
-  elements->set(0, Smi::FromInt(0));
-  listeners->set_elements(*elements);
-  set_message_listeners(*listeners);
+  set_message_listeners(*TemplateList::New(isolate(), 2));
 }
 
 
@@ -3066,6 +3061,16 @@ void Heap::CreateFillerObjectAt(Address addr, int size,
   if (mode == ClearRecordedSlots::kYes) {
     ClearRecordedSlotRange(addr, addr + size);
   }
+
+  // If the location where the filler is created is within a black area we have
+  // to clear the mark bits of the filler space.
+  if (incremental_marking()->black_allocation() &&
+      Marking::IsBlackOrGrey(ObjectMarking::MarkBitFrom(addr))) {
+    Page* page = Page::FromAddress(addr);
+    page->markbits()->ClearRange(page->AddressToMarkbitIndex(addr),
+                                 page->AddressToMarkbitIndex(addr + size));
+  }
+
   // At this point, we may be deserializing the heap from a snapshot, and
   // none of the maps have been created yet and are NULL.
   DCHECK((filler->map() == NULL && !deserialization_complete_) ||
@@ -3083,14 +3088,8 @@ bool Heap::CanMoveObjectStart(HeapObject* object) {
 
   if (lo_space()->Contains(object)) return false;
 
-  Page* page = Page::FromAddress(address);
-  // We can move the object start if:
-  // (1) the object is not in old space,
-  // (2) the page of the object was already swept,
-  // (3) the page was already concurrently swept. This case is an optimization
-  // for concurrent sweeping. The WasSwept predicate for concurrently swept
-  // pages is set after sweeping all pages.
-  return !InOldSpace(object) || page->SweepingDone();
+  // We can move the object start if the page was already swept.
+  return Page::FromAddress(address)->SweepingDone();
 }
 
 
@@ -3136,13 +3135,20 @@ FixedArrayBase* Heap::LeftTrimFixedArray(FixedArrayBase* object,
   DCHECK(elements_to_trim <= len);
 
   // Calculate location of new array start.
-  Address new_start = object->address() + bytes_to_trim;
+  Address old_start = object->address();
+  Address new_start = old_start + bytes_to_trim;
+
+  // Transfer the mark bits to their new location if the object is not within
+  // a black area.
+  if (!incremental_marking()->black_allocation() ||
+      !Marking::IsBlack(ObjectMarking::MarkBitFrom(new_start))) {
+    IncrementalMarking::TransferMark(this, old_start, new_start);
+  }
 
   // Technically in new space this write might be omitted (except for
   // debug mode which iterates through the heap), but to play safer
   // we still do it.
-  CreateFillerObjectAt(object->address(), bytes_to_trim,
-                       ClearRecordedSlots::kYes);
+  CreateFillerObjectAt(old_start, bytes_to_trim, ClearRecordedSlots::kYes);
   // Initialize header of the trimmed array. Since left trimming is only
   // performed on pages which are not concurrently swept creating a filler
   // object does not require synchronization.
@@ -3151,17 +3157,17 @@ FixedArrayBase* Heap::LeftTrimFixedArray(FixedArrayBase* object,
   int new_start_index = elements_to_trim * (element_size / kPointerSize);
   former_start[new_start_index] = map;
   former_start[new_start_index + 1] = Smi::FromInt(len - elements_to_trim);
+
   FixedArrayBase* new_object =
       FixedArrayBase::cast(HeapObject::FromAddress(new_start));
+
+  // Maintain consistency of live bytes during incremental marking
+  AdjustLiveBytes(new_object, -bytes_to_trim, Heap::CONCURRENT_TO_SWEEPER);
 
   // Remove recorded slots for the new map and length offset.
   ClearRecordedSlot(new_object, HeapObject::RawField(new_object, 0));
   ClearRecordedSlot(new_object, HeapObject::RawField(
                                     new_object, FixedArrayBase::kLengthOffset));
-
-  // Maintain consistency of live bytes during incremental marking
-  IncrementalMarking::TransferMark(this, object->address(), new_start);
-  AdjustLiveBytes(new_object, -bytes_to_trim, Heap::CONCURRENT_TO_SWEEPER);
 
   // Notify the heap profiler of change in object layout.
   OnMoveEvent(new_object, object, new_object->Size());
@@ -3367,6 +3373,8 @@ AllocationResult Heap::CopyCode(Code* code) {
   // We have to iterate over the object and process its pointers when black
   // allocation is on.
   incremental_marking()->IterateBlackObject(new_code);
+  // Record all references to embedded objects in the new code object.
+  RecordWritesIntoCode(new_code);
   return new_code;
 }
 
@@ -3828,17 +3836,20 @@ AllocationResult Heap::CopyFixedArrayWithMap(FixedArray* src, Map* map) {
     if (!allocation.To(&obj)) return allocation;
   }
   obj->set_map_no_write_barrier(map);
-  if (InNewSpace(obj)) {
+
+  FixedArray* result = FixedArray::cast(obj);
+  DisallowHeapAllocation no_gc;
+  WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
+
+  // Eliminate the write barrier if possible.
+  if (mode == SKIP_WRITE_BARRIER) {
     CopyBlock(obj->address() + kPointerSize, src->address() + kPointerSize,
               FixedArray::SizeFor(len) - kPointerSize);
     return obj;
   }
-  FixedArray* result = FixedArray::cast(obj);
-  result->set_length(len);
 
-  // Copy the content.
-  DisallowHeapAllocation no_gc;
-  WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
+  // Slow case: Just copy the content one-by-one.
+  result->set_length(len);
   for (int i = 0; i < len; i++) result->set(i, src->get(i), mode);
   return result;
 }
@@ -4177,14 +4188,13 @@ void Heap::RegisterReservationsForBlackAllocation(Reservation* reservations) {
   // Hence we have to color all objects of the reservation first black to avoid
   // unnecessary marking deque load.
   if (incremental_marking()->black_allocation()) {
-    for (int i = CODE_SPACE; i < Serializer::kNumberOfSpaces; i++) {
+    for (int i = OLD_SPACE; i < Serializer::kNumberOfSpaces; i++) {
       const Heap::Reservation& res = reservations[i];
       for (auto& chunk : res) {
         Address addr = chunk.start;
         while (addr < chunk.end) {
           HeapObject* obj = HeapObject::FromAddress(addr);
           Marking::MarkBlack(ObjectMarking::MarkBitFrom(obj));
-          MemoryChunk::IncrementLiveBytesFromGC(obj, obj->Size());
           addr += obj->Size();
         }
       }
@@ -4688,7 +4698,7 @@ class IteratePromotedObjectsVisitor final : public ObjectVisitor {
     // promoted objects.
     if (heap_->incremental_marking()->black_allocation()) {
       Code* code = Code::cast(Code::GetObjectFromEntryAddress(code_entry_slot));
-      IncrementalMarking::MarkObject(heap_, code);
+      IncrementalMarking::MarkGrey(heap_, code);
     }
   }
 
@@ -4724,7 +4734,7 @@ void Heap::IteratePromotedObject(HeapObject* target, int size,
   // regular visiting and IteratePromotedObjectPointers.
   if (!was_marked_black) {
     if (incremental_marking()->black_allocation()) {
-      IncrementalMarking::MarkObject(this, target->map());
+      IncrementalMarking::MarkGrey(this, target->map());
       incremental_marking()->IterateBlackObject(target);
     }
   }
@@ -5268,6 +5278,9 @@ bool Heap::SetUp() {
                                 code_range_size_))
     return false;
 
+  // Initialize store buffer.
+  store_buffer_ = new StoreBuffer(this);
+
   // Initialize incremental marking.
   incremental_marking_ = new IncrementalMarking(this);
 
@@ -5541,6 +5554,9 @@ void Heap::TearDown() {
   }
   strong_roots_list_ = NULL;
 
+  delete store_buffer_;
+  store_buffer_ = nullptr;
+
   delete memory_allocator_;
   memory_allocator_ = nullptr;
 }
@@ -5774,6 +5790,13 @@ void Heap::RecordWriteIntoCodeSlow(Code* host, RelocInfo* rinfo,
       source_page, reinterpret_cast<Address>(host), slot_type, addr);
 }
 
+void Heap::RecordWritesIntoCode(Code* code) {
+  for (RelocIterator it(code, RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT));
+       !it.done(); it.next()) {
+    RecordWriteIntoCode(code, it.rinfo(), it.rinfo()->target_object());
+  }
+}
+
 Space* AllSpaces::next() {
   switch (counter_++) {
     case NEW_SPACE:
@@ -5790,7 +5813,6 @@ Space* AllSpaces::next() {
       return NULL;
   }
 }
-
 
 PagedSpace* PagedSpaces::next() {
   switch (counter_++) {

@@ -173,6 +173,7 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
   USE(performSTFLE);  // To avoid assert
 #endif
   supported_ |= (1u << FPU);
+  supported_ |= (1u << UNALIGNED_ACCESSES);
 }
 
 void CpuFeatures::PrintTarget() {
@@ -1418,7 +1419,10 @@ RIL1_FORM_EMIT(llilf, LLILF)
 RRE_FORM_EMIT(lngr, LNGR)
 RR_FORM_EMIT(lnr, LNR)
 RSY1_FORM_EMIT(loc, LOC)
+RRE_FORM_EMIT(lrvr, LRVR)
+RRE_FORM_EMIT(lrvgr, LRVGR)
 RXY_FORM_EMIT(lrv, LRV)
+RXY_FORM_EMIT(lrvg, LRVG)
 RXY_FORM_EMIT(lrvh, LRVH)
 SS1_FORM_EMIT(mvn, MVN)
 SS1_FORM_EMIT(nc, NC)
@@ -1434,7 +1438,9 @@ RRE_FORM_EMIT(popcnt, POPCNT_Z)
 RIL1_FORM_EMIT(slfi, SLFI)
 RXY_FORM_EMIT(slgf, SLGF)
 RIL1_FORM_EMIT(slgfi, SLGFI)
+RXY_FORM_EMIT(strvh, STRVH)
 RXY_FORM_EMIT(strv, STRV)
+RXY_FORM_EMIT(strvg, STRVG)
 RI1_FORM_EMIT(tmll, TMLL)
 SS1_FORM_EMIT(tr, TR)
 S_FORM_EMIT(ts, TS)

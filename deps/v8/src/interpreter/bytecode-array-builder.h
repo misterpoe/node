@@ -131,9 +131,12 @@ class BytecodeArrayBuilder final : public ZoneObject {
   BytecodeArrayBuilder& StoreLookupSlot(const Handle<String> name,
                                         LanguageMode language_mode);
 
-  // Create a new closure for the SharedFunctionInfo.
-  BytecodeArrayBuilder& CreateClosure(Handle<SharedFunctionInfo> shared_info,
-                                      int flags);
+  // Create a new closure for a SharedFunctionInfo which will be inserted at
+  // constant pool index |entry|.
+  BytecodeArrayBuilder& CreateClosure(size_t entry, int flags);
+
+  // Create a new context with size |slots|.
+  BytecodeArrayBuilder& CreateFunctionContext(int slots);
 
   // Create a new arguments object in the accumulator.
   BytecodeArrayBuilder& CreateArguments(CreateArgumentsType type);
@@ -214,9 +217,9 @@ class BytecodeArrayBuilder final : public ZoneObject {
 
   // Casts accumulator and stores result in accumulator.
   BytecodeArrayBuilder& CastAccumulatorToBoolean();
-  BytecodeArrayBuilder& CastAccumulatorToJSObject();
 
   // Casts accumulator and stores result in register |out|.
+  BytecodeArrayBuilder& CastAccumulatorToJSObject(Register out);
   BytecodeArrayBuilder& CastAccumulatorToName(Register out);
   BytecodeArrayBuilder& CastAccumulatorToNumber(Register out);
 
@@ -233,6 +236,8 @@ class BytecodeArrayBuilder final : public ZoneObject {
 
   BytecodeArrayBuilder& StackCheck(int position);
 
+  BytecodeArrayBuilder& OsrPoll(int loop_depth);
+
   BytecodeArrayBuilder& Throw();
   BytecodeArrayBuilder& ReThrow();
   BytecodeArrayBuilder& Return();
@@ -241,7 +246,8 @@ class BytecodeArrayBuilder final : public ZoneObject {
   BytecodeArrayBuilder& Debugger();
 
   // Complex flow control.
-  BytecodeArrayBuilder& ForInPrepare(Register cache_info_triple);
+  BytecodeArrayBuilder& ForInPrepare(Register receiver,
+                                     Register cache_info_triple);
   BytecodeArrayBuilder& ForInDone(Register index, Register cache_length);
   BytecodeArrayBuilder& ForInNext(Register receiver, Register index,
                                   Register cache_type_array_pair,

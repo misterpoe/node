@@ -126,6 +126,16 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
 #define RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, T) \
   RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, MaybeHandle<T>())
 
+#define RETURN_RESULT(isolate, call, T)           \
+  do {                                            \
+    Handle<T> __result__;                         \
+    if (!(call).ToHandle(&__result__)) {          \
+      DCHECK((isolate)->has_pending_exception()); \
+      return MaybeHandle<T>();                    \
+    }                                             \
+    return __result__;                            \
+  } while (false)
+
 #define RETURN_RESULT_OR_FAILURE(isolate, call)     \
   do {                                              \
     Handle<Object> __result__;                      \
@@ -424,6 +434,8 @@ typedef List<HeapObject*> DebugObjectCache;
   V(int, bytecode_and_metadata_size, 0)                                       \
   /* true if being profiled. Causes collection of extra compile info. */      \
   V(bool, is_profiling, false)                                                \
+  /* true if a trace is being formatted through Error.prepareStackTrace. */   \
+  V(bool, formatting_stack_trace, false)                                      \
   ISOLATE_INIT_SIMULATOR_LIST(V)
 
 #define THREAD_LOCAL_TOP_ACCESSOR(type, name)                        \
@@ -736,7 +748,12 @@ class Isolate {
   // Tries to predict whether an exception will be caught. Note that this can
   // only produce an estimate, because it is undecidable whether a finally
   // clause will consume or re-throw an exception.
-  enum CatchType { NOT_CAUGHT, CAUGHT_BY_JAVASCRIPT, CAUGHT_BY_EXTERNAL };
+  enum CatchType {
+    NOT_CAUGHT,
+    CAUGHT_BY_JAVASCRIPT,
+    CAUGHT_BY_EXTERNAL,
+    CAUGHT_BY_DESUGARING
+  };
   CatchType PredictExceptionCatcher();
 
   void ScheduleThrow(Object* exception);
@@ -778,7 +795,8 @@ class Isolate {
   void IterateThread(ThreadVisitor* v, char* t);
 
   // Returns the current native context.
-  Handle<Context> native_context();
+  inline Handle<Context> native_context();
+  inline Context* raw_native_context();
 
   // Returns the native context of the calling JavaScript code.  That
   // is, the native context of the top-most JavaScript frame.
@@ -869,8 +887,8 @@ class Isolate {
     DCHECK(handle_scope_implementer_);
     return handle_scope_implementer_;
   }
-  Zone* runtime_zone() { return &runtime_zone_; }
-  Zone* interface_descriptor_zone() { return &interface_descriptor_zone_; }
+  Zone* runtime_zone() { return runtime_zone_; }
+  Zone* interface_descriptor_zone() { return interface_descriptor_zone_; }
 
   UnicodeCache* unicode_cache() {
     return unicode_cache_;
@@ -1079,7 +1097,7 @@ class Isolate {
 
   void AddBeforeCallEnteredCallback(BeforeCallEnteredCallback callback);
   void RemoveBeforeCallEnteredCallback(BeforeCallEnteredCallback callback);
-  void FireBeforeCallEnteredCallback();
+  inline void FireBeforeCallEnteredCallback();
 
   void AddMicrotasksCompletedCallback(MicrotasksCompletedCallback callback);
   void RemoveMicrotasksCompletedCallback(MicrotasksCompletedCallback callback);
@@ -1134,7 +1152,7 @@ class Isolate {
 
   interpreter::Interpreter* interpreter() const { return interpreter_; }
 
-  base::AccountingAllocator* allocator() { return &allocator_; }
+  base::AccountingAllocator* allocator() { return allocator_; }
 
   bool IsInAnyContext(Object* object, uint32_t index);
 
@@ -1298,9 +1316,9 @@ class Isolate {
   HandleScopeData handle_scope_data_;
   HandleScopeImplementer* handle_scope_implementer_;
   UnicodeCache* unicode_cache_;
-  base::AccountingAllocator allocator_;
-  Zone runtime_zone_;
-  Zone interface_descriptor_zone_;
+  base::AccountingAllocator* allocator_;
+  Zone* runtime_zone_;
+  Zone* interface_descriptor_zone_;
   InnerPointerToCodeCache* inner_pointer_to_code_cache_;
   GlobalHandles* global_handles_;
   EternalHandles* eternal_handles_;
@@ -1455,8 +1473,8 @@ class PromiseOnStack {
 // versions of GCC. See V8 issue 122 for details.
 class SaveContext BASE_EMBEDDED {
  public:
-  explicit SaveContext(Isolate* isolate);
-  ~SaveContext();
+  explicit inline SaveContext(Isolate* isolate);
+  inline ~SaveContext();
 
   Handle<Context> context() { return context_; }
   SaveContext* prev() { return prev_; }
@@ -1465,6 +1483,8 @@ class SaveContext BASE_EMBEDDED {
   bool IsBelowFrame(StandardFrame* frame) {
     return (c_entry_fp_ == 0) || (c_entry_fp_ > frame->sp());
   }
+
+  Isolate* isolate() { return isolate_; }
 
  private:
   Isolate* isolate_;

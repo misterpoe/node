@@ -705,6 +705,8 @@ bool HeapObject::IsJSWeakCollection() const {
   return IsJSWeakMap() || IsJSWeakSet();
 }
 
+bool HeapObject::IsJSCollection() const { return IsJSMap() || IsJSSet(); }
+
 bool HeapObject::IsDescriptorArray() const { return IsFixedArray(); }
 
 bool HeapObject::IsArrayList() const { return IsFixedArray(); }
@@ -747,6 +749,14 @@ bool HeapObject::IsHandlerTable() const {
   if (!IsFixedArray()) return false;
   // There's actually no way to see the difference between a fixed array and
   // a handler table array.
+  return true;
+}
+
+bool HeapObject::IsTemplateList() const {
+  if (!IsFixedArray()) return false;
+  // There's actually no way to see the difference between a fixed array and
+  // a template list.
+  if (FixedArray::cast(this)->length() < 1) return false;
   return true;
 }
 
@@ -1132,6 +1142,20 @@ MUST_USE_RESULT MaybeHandle<FixedArray> JSReceiver::OwnPropertyKeys(
   return KeyAccumulator::GetKeys(object, KeyCollectionMode::kOwnOnly,
                                  ALL_PROPERTIES,
                                  GetKeysConversion::kConvertToString);
+}
+
+bool JSObject::PrototypeHasNoElements(Isolate* isolate, JSObject* object) {
+  DisallowHeapAllocation no_gc;
+  HeapObject* prototype = HeapObject::cast(object->map()->prototype());
+  HeapObject* null = isolate->heap()->null_value();
+  HeapObject* empty = isolate->heap()->empty_fixed_array();
+  while (prototype != null) {
+    Map* map = prototype->map();
+    if (map->instance_type() <= LAST_CUSTOM_ELEMENTS_RECEIVER) return false;
+    if (JSObject::cast(prototype)->elements() != empty) return false;
+    prototype = HeapObject::cast(map->prototype());
+  }
+  return true;
 }
 
 #define FIELD_ADDR(p, offset) \
@@ -1993,10 +2017,9 @@ void WeakCell::initialize(HeapObject* val) {
   // We just have to execute the generational barrier here because we never
   // mark through a weak cell and collect evacuation candidates when we process
   // all weak cells.
-  WriteBarrierMode mode =
-      Page::FromAddress(this->address())->IsFlagSet(Page::BLACK_PAGE)
-          ? UPDATE_WRITE_BARRIER
-          : UPDATE_WEAK_WRITE_BARRIER;
+  WriteBarrierMode mode = Marking::IsBlack(ObjectMarking::MarkBitFrom(this))
+                              ? UPDATE_WRITE_BARRIER
+                              : UPDATE_WEAK_WRITE_BARRIER;
   CONDITIONAL_WRITE_BARRIER(GetHeap(), this, kValueOffset, val, mode);
 }
 
@@ -2316,17 +2339,17 @@ Handle<Object> FixedArray::get(FixedArray* array, int index, Isolate* isolate) {
 }
 
 template <class T>
-MaybeHandle<T> FixedArray::GetValue(int index) const {
+MaybeHandle<T> FixedArray::GetValue(Isolate* isolate, int index) const {
   Object* obj = get(index);
-  if (obj->IsUndefined(GetIsolate())) return MaybeHandle<T>();
-  return Handle<T>(T::cast(obj));
+  if (obj->IsUndefined(isolate)) return MaybeHandle<T>();
+  return Handle<T>(T::cast(obj), isolate);
 }
 
 template <class T>
-Handle<T> FixedArray::GetValueChecked(int index) const {
+Handle<T> FixedArray::GetValueChecked(Isolate* isolate, int index) const {
   Object* obj = get(index);
-  CHECK(!obj->IsUndefined(GetIsolate()));
-  return Handle<T>(T::cast(obj));
+  CHECK(!obj->IsUndefined(isolate));
+  return Handle<T>(T::cast(obj), isolate);
 }
 
 bool FixedArray::is_the_hole(int index) {
@@ -3242,6 +3265,7 @@ CAST_ACCESSOR(Oddball)
 CAST_ACCESSOR(OrderedHashMap)
 CAST_ACCESSOR(OrderedHashSet)
 CAST_ACCESSOR(PropertyCell)
+CAST_ACCESSOR(TemplateList)
 CAST_ACCESSOR(ScopeInfo)
 CAST_ACCESSOR(SeededNumberDictionary)
 CAST_ACCESSOR(SeqOneByteString)
@@ -3440,12 +3464,6 @@ int HandlerTable::GetRangeData(int index) const {
   return Smi::cast(get(index * kRangeEntrySize + kRangeDataIndex))->value();
 }
 
-HandlerTable::CatchPrediction HandlerTable::GetRangePrediction(
-    int index) const {
-  return HandlerPredictionField::decode(
-      Smi::cast(get(index * kRangeEntrySize + kRangeHandlerIndex))->value());
-}
-
 void HandlerTable::SetRangeStart(int index, int value) {
   set(index * kRangeEntrySize + kRangeStartIndex, Smi::FromInt(value));
 }
@@ -3472,11 +3490,8 @@ void HandlerTable::SetReturnOffset(int index, int value) {
   set(index * kReturnEntrySize + kReturnOffsetIndex, Smi::FromInt(value));
 }
 
-
-void HandlerTable::SetReturnHandler(int index, int offset,
-                                    CatchPrediction prediction) {
-  int value = HandlerOffsetField::encode(offset) |
-              HandlerPredictionField::encode(prediction);
+void HandlerTable::SetReturnHandler(int index, int offset) {
+  int value = HandlerOffsetField::encode(offset);
   set(index * kReturnEntrySize + kReturnHandlerIndex, Smi::FromInt(value));
 }
 
@@ -4097,12 +4112,13 @@ void BytecodeArray::set_interrupt_budget(int interrupt_budget) {
 }
 
 int BytecodeArray::osr_loop_nesting_level() const {
-  return READ_INT_FIELD(this, kOSRNestingLevelOffset);
+  return READ_INT8_FIELD(this, kOSRNestingLevelOffset);
 }
 
 void BytecodeArray::set_osr_loop_nesting_level(int depth) {
   DCHECK(0 <= depth && depth <= AbstractCode::kMaxLoopNestingMarker);
-  WRITE_INT_FIELD(this, kOSRNestingLevelOffset, depth);
+  STATIC_ASSERT(AbstractCode::kMaxLoopNestingMarker < kMaxInt8);
+  WRITE_INT8_FIELD(this, kOSRNestingLevelOffset, depth);
 }
 
 int BytecodeArray::parameter_count() const {
@@ -5324,6 +5340,16 @@ ByteArray* AbstractCode::source_position_table() {
   }
 }
 
+int AbstractCode::LookupRangeInHandlerTable(
+    int code_offset, int* data, HandlerTable::CatchPrediction* prediction) {
+  if (IsCode()) {
+    return GetCode()->LookupRangeInHandlerTable(code_offset, data, prediction);
+  } else {
+    return GetBytecodeArray()->LookupRangeInHandlerTable(code_offset, data,
+                                                         prediction);
+  }
+}
+
 int AbstractCode::SizeIncludingMetadata() {
   if (IsCode()) {
     return GetCode()->SizeIncludingMetadata();
@@ -5389,13 +5415,13 @@ void Map::set_prototype(Object* value, WriteBarrierMode mode) {
 
 
 LayoutDescriptor* Map::layout_descriptor_gc_safe() {
-  Object* layout_desc = READ_FIELD(this, kLayoutDecriptorOffset);
+  Object* layout_desc = READ_FIELD(this, kLayoutDescriptorOffset);
   return LayoutDescriptor::cast_gc_safe(layout_desc);
 }
 
 
 bool Map::HasFastPointerLayout() const {
-  Object* layout_desc = READ_FIELD(this, kLayoutDecriptorOffset);
+  Object* layout_desc = READ_FIELD(this, kLayoutDescriptorOffset);
   return LayoutDescriptor::IsFastPointerLayout(layout_desc);
 }
 
@@ -5443,8 +5469,7 @@ void Map::InitializeDescriptors(DescriptorArray* descriptors,
 
 
 ACCESSORS(Map, instance_descriptors, DescriptorArray, kDescriptorsOffset)
-ACCESSORS(Map, layout_descriptor, LayoutDescriptor, kLayoutDecriptorOffset)
-
+ACCESSORS(Map, layout_descriptor, LayoutDescriptor, kLayoutDescriptorOffset)
 
 void Map::set_bit_field3(uint32_t bits) {
   if (kInt32Size != kPointerSize) {
@@ -5600,6 +5625,27 @@ bool FunctionTemplateInfo::instantiated() {
   return shared_function_info()->IsSharedFunctionInfo();
 }
 
+FunctionTemplateInfo* FunctionTemplateInfo::GetParent(Isolate* isolate) {
+  Object* parent = parent_template();
+  return parent->IsUndefined(isolate) ? nullptr
+                                      : FunctionTemplateInfo::cast(parent);
+}
+
+ObjectTemplateInfo* ObjectTemplateInfo::GetParent(Isolate* isolate) {
+  Object* maybe_ctor = constructor();
+  if (maybe_ctor->IsUndefined(isolate)) return nullptr;
+  FunctionTemplateInfo* constructor = FunctionTemplateInfo::cast(maybe_ctor);
+  while (true) {
+    constructor = constructor->GetParent(isolate);
+    if (constructor == nullptr) return nullptr;
+    Object* maybe_obj = constructor->instance_template();
+    if (!maybe_obj->IsUndefined(isolate)) {
+      return ObjectTemplateInfo::cast(maybe_obj);
+    }
+  }
+  return nullptr;
+}
+
 ACCESSORS(PrototypeInfo, prototype_users, Object, kPrototypeUsersOffset)
 ACCESSORS(PrototypeInfo, object_create_map, Object, kObjectCreateMap)
 SMI_ACCESSORS(PrototypeInfo, registry_slot, kRegistrySlotOffset)
@@ -5666,23 +5712,39 @@ SMI_ACCESSORS(FunctionTemplateInfo, flag, kFlagOffset)
 
 ACCESSORS(ObjectTemplateInfo, constructor, Object, kConstructorOffset)
 ACCESSORS(ObjectTemplateInfo, data, Object, kDataOffset)
+
 int ObjectTemplateInfo::internal_field_count() const {
   Object* value = data();
   DCHECK(value->IsSmi());
   return InternalFieldCount::decode(Smi::cast(value)->value());
 }
+
 void ObjectTemplateInfo::set_internal_field_count(int count) {
   return set_data(Smi::FromInt(
       InternalFieldCount::update(Smi::cast(data())->value(), count)));
 }
+
 bool ObjectTemplateInfo::immutable_proto() const {
   Object* value = data();
   DCHECK(value->IsSmi());
   return IsImmutablePrototype::decode(Smi::cast(value)->value());
 }
+
 void ObjectTemplateInfo::set_immutable_proto(bool immutable) {
   return set_data(Smi::FromInt(
       IsImmutablePrototype::update(Smi::cast(data())->value(), immutable)));
+}
+
+int TemplateList::length() const {
+  return Smi::cast(FixedArray::cast(this)->get(kLengthIndex))->value();
+}
+
+Object* TemplateList::get(int index) const {
+  return FixedArray::cast(this)->get(kFirstElementIndex + index);
+}
+
+void TemplateList::set(int index, Object* value) {
+  FixedArray::cast(this)->set(kFirstElementIndex + index, value);
 }
 
 ACCESSORS(AllocationSite, transition_info, Object, kTransitionInfoOffset)

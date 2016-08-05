@@ -26,6 +26,7 @@ namespace interpreter {
 using compiler::Node;
 typedef CodeStubAssembler::Label Label;
 typedef CodeStubAssembler::Variable Variable;
+typedef InterpreterAssembler::Arg Arg;
 
 #define __ assembler->
 
@@ -128,8 +129,6 @@ void Interpreter::IterateDispatchTable(ObjectVisitor* v) {
 
 // static
 int Interpreter::InterruptBudget() {
-  // TODO(ignition): Tune code size multiplier.
-  const int kCodeSizeMultiplier = 32;
   return FLAG_interrupt_budget * kCodeSizeMultiplier;
 }
 
@@ -383,6 +382,7 @@ void Interpreter::DoMov(InterpreterAssembler* assembler) {
 
 Node* Interpreter::BuildLoadGlobal(Callable ic,
                                    InterpreterAssembler* assembler) {
+  typedef LoadGlobalWithVectorDescriptor Descriptor;
   // Get the global object.
   Node* context = __ GetContext();
 
@@ -391,8 +391,9 @@ Node* Interpreter::BuildLoadGlobal(Callable ic,
   Node* raw_slot = __ BytecodeOperandIdx(0);
   Node* smi_slot = __ SmiTag(raw_slot);
   Node* type_feedback_vector = __ LoadTypeFeedbackVector();
-  return __ CallStub(ic.descriptor(), code_target, context, smi_slot,
-                     type_feedback_vector);
+  return __ CallStub(ic.descriptor(), code_target, context,
+                     Arg(Descriptor::kSlot, smi_slot),
+                     Arg(Descriptor::kVector, type_feedback_vector));
 }
 
 // LdaGlobal <slot>
@@ -433,6 +434,7 @@ void Interpreter::DoLdaGlobalInsideTypeof(InterpreterAssembler* assembler) {
 }
 
 void Interpreter::DoStaGlobal(Callable ic, InterpreterAssembler* assembler) {
+  typedef StoreWithVectorDescriptor Descriptor;
   // Get the global object.
   Node* context = __ GetContext();
   Node* native_context =
@@ -447,8 +449,10 @@ void Interpreter::DoStaGlobal(Callable ic, InterpreterAssembler* assembler) {
   Node* raw_slot = __ BytecodeOperandIdx(1);
   Node* smi_slot = __ SmiTag(raw_slot);
   Node* type_feedback_vector = __ LoadTypeFeedbackVector();
-  __ CallStub(ic.descriptor(), code_target, context, global, name, value,
-              smi_slot, type_feedback_vector);
+  __ CallStub(ic.descriptor(), code_target, context,
+              Arg(Descriptor::kReceiver, global), Arg(Descriptor::kName, name),
+              Arg(Descriptor::kValue, value), Arg(Descriptor::kSlot, smi_slot),
+              Arg(Descriptor::kVector, type_feedback_vector));
   __ Dispatch();
 }
 
@@ -567,6 +571,7 @@ void Interpreter::DoStaLookupSlotStrict(InterpreterAssembler* assembler) {
 
 Node* Interpreter::BuildLoadNamedProperty(Callable ic,
                                           InterpreterAssembler* assembler) {
+  typedef LoadWithVectorDescriptor Descriptor;
   Node* code_target = __ HeapConstant(ic.code());
   Node* register_index = __ BytecodeOperandReg(0);
   Node* object = __ LoadRegister(register_index);
@@ -576,8 +581,10 @@ Node* Interpreter::BuildLoadNamedProperty(Callable ic,
   Node* smi_slot = __ SmiTag(raw_slot);
   Node* type_feedback_vector = __ LoadTypeFeedbackVector();
   Node* context = __ GetContext();
-  return __ CallStub(ic.descriptor(), code_target, context, object, name,
-                     smi_slot, type_feedback_vector);
+  return __ CallStub(
+      ic.descriptor(), code_target, context, Arg(Descriptor::kReceiver, object),
+      Arg(Descriptor::kName, name), Arg(Descriptor::kSlot, smi_slot),
+      Arg(Descriptor::kVector, type_feedback_vector));
 }
 
 // LdaNamedProperty <object> <name_index> <slot>
@@ -605,6 +612,7 @@ void Interpreter::DoLdrNamedProperty(InterpreterAssembler* assembler) {
 
 Node* Interpreter::BuildLoadKeyedProperty(Callable ic,
                                           InterpreterAssembler* assembler) {
+  typedef LoadWithVectorDescriptor Descriptor;
   Node* code_target = __ HeapConstant(ic.code());
   Node* reg_index = __ BytecodeOperandReg(0);
   Node* object = __ LoadRegister(reg_index);
@@ -613,8 +621,10 @@ Node* Interpreter::BuildLoadKeyedProperty(Callable ic,
   Node* smi_slot = __ SmiTag(raw_slot);
   Node* type_feedback_vector = __ LoadTypeFeedbackVector();
   Node* context = __ GetContext();
-  return __ CallStub(ic.descriptor(), code_target, context, object, name,
-                     smi_slot, type_feedback_vector);
+  return __ CallStub(
+      ic.descriptor(), code_target, context, Arg(Descriptor::kReceiver, object),
+      Arg(Descriptor::kName, name), Arg(Descriptor::kSlot, smi_slot),
+      Arg(Descriptor::kVector, type_feedback_vector));
 }
 
 // KeyedLoadIC <object> <slot>
@@ -641,6 +651,7 @@ void Interpreter::DoLdrKeyedProperty(InterpreterAssembler* assembler) {
 }
 
 void Interpreter::DoStoreIC(Callable ic, InterpreterAssembler* assembler) {
+  typedef StoreWithVectorDescriptor Descriptor;
   Node* code_target = __ HeapConstant(ic.code());
   Node* object_reg_index = __ BytecodeOperandReg(0);
   Node* object = __ LoadRegister(object_reg_index);
@@ -651,8 +662,10 @@ void Interpreter::DoStoreIC(Callable ic, InterpreterAssembler* assembler) {
   Node* smi_slot = __ SmiTag(raw_slot);
   Node* type_feedback_vector = __ LoadTypeFeedbackVector();
   Node* context = __ GetContext();
-  __ CallStub(ic.descriptor(), code_target, context, object, name, value,
-              smi_slot, type_feedback_vector);
+  __ CallStub(ic.descriptor(), code_target, context,
+              Arg(Descriptor::kReceiver, object), Arg(Descriptor::kName, name),
+              Arg(Descriptor::kValue, value), Arg(Descriptor::kSlot, smi_slot),
+              Arg(Descriptor::kVector, type_feedback_vector));
   __ Dispatch();
 }
 
@@ -677,6 +690,7 @@ void Interpreter::DoStaNamedPropertyStrict(InterpreterAssembler* assembler) {
 }
 
 void Interpreter::DoKeyedStoreIC(Callable ic, InterpreterAssembler* assembler) {
+  typedef StoreWithVectorDescriptor Descriptor;
   Node* code_target = __ HeapConstant(ic.code());
   Node* object_reg_index = __ BytecodeOperandReg(0);
   Node* object = __ LoadRegister(object_reg_index);
@@ -687,8 +701,10 @@ void Interpreter::DoKeyedStoreIC(Callable ic, InterpreterAssembler* assembler) {
   Node* smi_slot = __ SmiTag(raw_slot);
   Node* type_feedback_vector = __ LoadTypeFeedbackVector();
   Node* context = __ GetContext();
-  __ CallStub(ic.descriptor(), code_target, context, object, name, value,
-              smi_slot, type_feedback_vector);
+  __ CallStub(ic.descriptor(), code_target, context,
+              Arg(Descriptor::kReceiver, object), Arg(Descriptor::kName, name),
+              Arg(Descriptor::kValue, value), Arg(Descriptor::kSlot, smi_slot),
+              Arg(Descriptor::kVector, type_feedback_vector));
   __ Dispatch();
 }
 
@@ -1006,13 +1022,6 @@ Node* Interpreter::BuildUnaryOp(Callable callable,
   return __ CallStub(callable.descriptor(), target, context, accumulator);
 }
 
-void Interpreter::DoUnaryOp(Callable callable,
-                            InterpreterAssembler* assembler) {
-  Node* result = BuildUnaryOp(callable, assembler);
-  __ SetAccumulator(result);
-  __ Dispatch();
-}
-
 template <class Generator>
 void Interpreter::DoUnaryOp(InterpreterAssembler* assembler) {
   Node* value = __ GetAccumulator();
@@ -1044,7 +1053,9 @@ void Interpreter::DoToNumber(InterpreterAssembler* assembler) {
 //
 // Cast the object referenced by the accumulator to a JSObject.
 void Interpreter::DoToObject(InterpreterAssembler* assembler) {
-  DoUnaryOp(CodeFactory::ToObject(isolate_), assembler);
+  Node* result = BuildUnaryOp(CodeFactory::ToObject(isolate_), assembler);
+  __ StoreRegister(result, __ BytecodeOperandReg(0));
+  __ Dispatch();
 }
 
 // Inc
@@ -1123,7 +1134,7 @@ void Interpreter::DoLogicalNot(InterpreterAssembler* assembler) {
 // Load the accumulator with the string representating type of the
 // object in the accumulator.
 void Interpreter::DoTypeOf(InterpreterAssembler* assembler) {
-  DoUnaryOp(CodeFactory::Typeof(isolate_), assembler);
+  DoUnaryOp<TypeofStub>(assembler);
 }
 
 void Interpreter::DoDelete(Runtime::FunctionId function_id,
@@ -1706,6 +1717,18 @@ void Interpreter::DoCreateClosure(InterpreterAssembler* assembler) {
   }
 }
 
+// CreateFunctionContext <slots>
+//
+// Creates a new context with number of |slots| for the function closure.
+void Interpreter::DoCreateFunctionContext(InterpreterAssembler* assembler) {
+  Node* closure = __ LoadRegister(Register::function_closure());
+  Node* slots = __ BytecodeOperandIdx(0);
+  Node* context = __ GetContext();
+  __ SetAccumulator(
+      FastNewFunctionContextStub::Generate(assembler, closure, slots, context));
+  __ Dispatch();
+}
+
 // CreateMappedArguments
 //
 // Creates a new mapped arguments object.
@@ -1796,6 +1819,32 @@ void Interpreter::DoStackCheck(InterpreterAssembler* assembler) {
   }
 }
 
+// OsrPoll <loop_depth>
+//
+// Performs a loop nesting check and potentially triggers OSR.
+void Interpreter::DoOsrPoll(InterpreterAssembler* assembler) {
+  Node* loop_depth = __ BytecodeOperandImm(0);
+  Node* osr_level = __ LoadOSRNestingLevel();
+
+  // Check if OSR points at the given {loop_depth} are armed by comparing it to
+  // the current {osr_level} loaded from the header of the BytecodeArray.
+  Label ok(assembler), osr_armed(assembler, Label::kDeferred);
+  Node* condition = __ Int32GreaterThanOrEqual(loop_depth, osr_level);
+  __ Branch(condition, &ok, &osr_armed);
+
+  __ Bind(&ok);
+  __ Dispatch();
+
+  __ Bind(&osr_armed);
+  {
+    Callable callable = CodeFactory::InterpreterOnStackReplacement(isolate_);
+    Node* target = __ HeapConstant(callable.code());
+    Node* context = __ GetContext();
+    __ CallStub(callable.descriptor(), target, context);
+    __ Dispatch();
+  }
+}
+
 // Throw
 //
 // Throws the exception in the accumulator.
@@ -1868,7 +1917,8 @@ void Interpreter::BuildForInPrepareResult(Node* output_register,
 // |cache_info_triple + 2|, with the registers holding cache_type, cache_array,
 // and cache_length respectively.
 void Interpreter::DoForInPrepare(InterpreterAssembler* assembler) {
-  Node* object = __ GetAccumulator();
+  Node* object_reg = __ BytecodeOperandReg(0);
+  Node* object = __ LoadRegister(object_reg);
   Node* context = __ GetContext();
   Node* const zero_smi = __ SmiConstant(Smi::FromInt(0));
 
@@ -1929,7 +1979,7 @@ void Interpreter::DoForInPrepare(InterpreterAssembler* assembler) {
         __ LoadObjectField(descriptors, DescriptorArray::kEnumCacheOffset);
     Node* cache_array = __ LoadObjectField(
         cache_offset, DescriptorArray::kEnumCacheBridgeCacheOffset);
-    Node* output_register = __ BytecodeOperandReg(0);
+    Node* output_register = __ BytecodeOperandReg(1);
     BuildForInPrepareResult(output_register, cache_type, cache_array,
                             cache_length, assembler);
     __ Dispatch();
@@ -1942,7 +1992,7 @@ void Interpreter::DoForInPrepare(InterpreterAssembler* assembler) {
     Node* cache_type = __ Projection(0, result_triple);
     Node* cache_array = __ Projection(1, result_triple);
     Node* cache_length = __ Projection(2, result_triple);
-    Node* output_register = __ BytecodeOperandReg(0);
+    Node* output_register = __ BytecodeOperandReg(1);
     BuildForInPrepareResult(output_register, cache_type, cache_array,
                             cache_length, assembler);
     __ Dispatch();
@@ -1951,7 +2001,7 @@ void Interpreter::DoForInPrepare(InterpreterAssembler* assembler) {
   __ Bind(&nothing_to_iterate);
   {
     // Receiver is null or undefined or descriptors are zero length.
-    Node* output_register = __ BytecodeOperandReg(0);
+    Node* output_register = __ BytecodeOperandReg(1);
     BuildForInPrepareResult(output_register, zero_smi, zero_smi, zero_smi,
                             assembler);
     __ Dispatch();
@@ -1997,8 +2047,8 @@ void Interpreter::DoForInNext(InterpreterAssembler* assembler) {
 
     // Need to filter the {key} for the {receiver}.
     Node* context = __ GetContext();
-    Node* result =
-        __ CallRuntime(Runtime::kForInFilter, context, receiver, key);
+    Callable callable = CodeFactory::ForInFilter(assembler->isolate());
+    Node* result = __ CallStub(callable, context, key, receiver);
     __ SetAccumulator(result);
     __ Dispatch();
   }

@@ -99,6 +99,48 @@ static void CheckNumber(Isolate* isolate, double value, const char* string) {
   CHECK(String::cast(*print_string)->IsUtf8EqualTo(CStrVector(string)));
 }
 
+void CheckEmbeddedObjectsAreEqual(Handle<Code> lhs, Handle<Code> rhs) {
+  int mode_mask = RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT);
+  RelocIterator lhs_it(*lhs, mode_mask);
+  RelocIterator rhs_it(*rhs, mode_mask);
+  while (!lhs_it.done() && !rhs_it.done()) {
+    CHECK(lhs_it.rinfo()->target_object() == rhs_it.rinfo()->target_object());
+
+    lhs_it.next();
+    rhs_it.next();
+  }
+  CHECK(lhs_it.done() == rhs_it.done());
+}
+
+HEAP_TEST(TestNewSpaceRefsInCopiedCode) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Factory* factory = isolate->factory();
+  Heap* heap = isolate->heap();
+  HandleScope sc(isolate);
+
+  Handle<Object> value = factory->NewNumber(1.000123);
+  CHECK(heap->InNewSpace(*value));
+
+  i::byte buffer[i::Assembler::kMinimalBufferSize];
+  MacroAssembler masm(isolate, buffer, sizeof(buffer),
+                      v8::internal::CodeObjectRequired::kYes);
+  // Add a new-space reference to the code.
+  masm.Push(value);
+
+  CodeDesc desc;
+  masm.GetCode(&desc);
+  Handle<Code> code = isolate->factory()->NewCode(
+      desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
+
+  Code* tmp = nullptr;
+  heap->CopyCode(*code).To(&tmp);
+  Handle<Code> copy(tmp);
+
+  CheckEmbeddedObjectsAreEqual(code, copy);
+  heap->CollectAllAvailableGarbage();
+  CheckEmbeddedObjectsAreEqual(code, copy);
+}
 
 static void CheckFindCodeObject(Isolate* isolate) {
   // Test FindCodeObject
@@ -4264,7 +4306,7 @@ TEST(Regress513507) {
   Handle<TypeFeedbackVector> vector =
       TypeFeedbackVector::New(isolate, handle(shared->feedback_metadata()));
   Handle<LiteralsArray> lit =
-      LiteralsArray::New(isolate, vector, shared->num_literals(), TENURED);
+      LiteralsArray::New(isolate, vector, shared->num_literals());
   Handle<Context> context(isolate->context());
 
   // Add the new code several times to the optimized code map and also set an
@@ -4342,8 +4384,7 @@ TEST(Regress514122) {
     heap::SimulateFullSpace(heap->old_space());
 
     // Make sure there the number of literals is > 0.
-    Handle<LiteralsArray> lit =
-        LiteralsArray::New(isolate, vector, 23, TENURED);
+    Handle<LiteralsArray> lit = LiteralsArray::New(isolate, vector, 23);
 
     evac_page = Page::FromAddress(lit->address());
     BailoutId id = BailoutId(100);
@@ -6787,6 +6828,164 @@ TEST(Regress615489) {
   CHECK_LE(size_after, size_before);
 }
 
+TEST(LeftTrimFixedArrayInBlackArea) {
+  FLAG_black_allocation = true;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
+  Heap* heap = CcTest::heap();
+  Isolate* isolate = heap->isolate();
+  heap->CollectAllGarbage();
+
+  i::MarkCompactCollector* collector = heap->mark_compact_collector();
+  i::IncrementalMarking* marking = heap->incremental_marking();
+  if (collector->sweeping_in_progress()) {
+    collector->EnsureSweepingCompleted();
+  }
+  CHECK(marking->IsMarking() || marking->IsStopped());
+  if (marking->IsStopped()) {
+    heap->StartIncrementalMarking();
+  }
+  CHECK(marking->IsMarking());
+  marking->StartBlackAllocationForTesting();
+
+  // Ensure that we allocate a new page, set up a bump pointer area, and
+  // perform the allocation in a black area.
+  heap::SimulateFullSpace(heap->old_space());
+  isolate->factory()->NewFixedArray(4, TENURED);
+  Handle<FixedArray> array = isolate->factory()->NewFixedArray(50, TENURED);
+  CHECK(heap->old_space()->Contains(*array));
+  CHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(*array)));
+
+  // Now left trim the allocated black area. A filler has to be installed
+  // for the trimmed area and all mark bits of the trimmed area have to be
+  // cleared.
+  FixedArrayBase* trimmed = heap->LeftTrimFixedArray(*array, 10);
+  CHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(trimmed)));
+
+  heap::GcAndSweep(heap, OLD_SPACE);
+}
+
+TEST(ContinuousLeftTrimFixedArrayInBlackArea) {
+  FLAG_black_allocation = true;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
+  Heap* heap = CcTest::heap();
+  Isolate* isolate = heap->isolate();
+  heap->CollectAllGarbage();
+
+  i::MarkCompactCollector* collector = heap->mark_compact_collector();
+  i::IncrementalMarking* marking = heap->incremental_marking();
+  if (collector->sweeping_in_progress()) {
+    collector->EnsureSweepingCompleted();
+  }
+  CHECK(marking->IsMarking() || marking->IsStopped());
+  if (marking->IsStopped()) {
+    heap->StartIncrementalMarking();
+  }
+  CHECK(marking->IsMarking());
+  marking->StartBlackAllocationForTesting();
+
+  // Ensure that we allocate a new page, set up a bump pointer area, and
+  // perform the allocation in a black area.
+  heap::SimulateFullSpace(heap->old_space());
+  isolate->factory()->NewFixedArray(10, TENURED);
+
+  // Allocate the fixed array that will be trimmed later.
+  Handle<FixedArray> array = isolate->factory()->NewFixedArray(100, TENURED);
+  Address start_address = array->address();
+  Address end_address = start_address + array->Size();
+  Page* page = Page::FromAddress(start_address);
+  CHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(*array)));
+  CHECK(page->markbits()->AllBitsSetInRange(
+      page->AddressToMarkbitIndex(start_address),
+      page->AddressToMarkbitIndex(end_address)));
+  CHECK(heap->old_space()->Contains(*array));
+
+  FixedArrayBase* previous = *array;
+  FixedArrayBase* trimmed;
+
+  // First trim in one word steps.
+  for (int i = 0; i < 10; i++) {
+    trimmed = heap->LeftTrimFixedArray(previous, 1);
+    HeapObject* filler = HeapObject::FromAddress(previous->address());
+    CHECK(filler->IsFiller());
+    CHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(trimmed)));
+    CHECK(Marking::IsImpossible(ObjectMarking::MarkBitFrom(previous)));
+    previous = trimmed;
+  }
+
+  // Then trim in two and three word steps.
+  for (int i = 2; i <= 3; i++) {
+    for (int j = 0; j < 10; j++) {
+      trimmed = heap->LeftTrimFixedArray(previous, i);
+      HeapObject* filler = HeapObject::FromAddress(previous->address());
+      CHECK(filler->IsFiller());
+      CHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(trimmed)));
+      CHECK(Marking::IsWhite(ObjectMarking::MarkBitFrom(previous)));
+      previous = trimmed;
+    }
+  }
+
+  heap::GcAndSweep(heap, OLD_SPACE);
+}
+
+TEST(ContinuousRightTrimFixedArrayInBlackArea) {
+  FLAG_black_allocation = true;
+  CcTest::InitializeVM();
+  v8::HandleScope scope(CcTest::isolate());
+  Heap* heap = CcTest::heap();
+  Isolate* isolate = heap->isolate();
+  heap->CollectAllGarbage();
+
+  i::MarkCompactCollector* collector = heap->mark_compact_collector();
+  i::IncrementalMarking* marking = heap->incremental_marking();
+  if (collector->sweeping_in_progress()) {
+    collector->EnsureSweepingCompleted();
+  }
+  CHECK(marking->IsMarking() || marking->IsStopped());
+  if (marking->IsStopped()) {
+    heap->StartIncrementalMarking();
+  }
+  CHECK(marking->IsMarking());
+  marking->StartBlackAllocationForTesting();
+
+  // Ensure that we allocate a new page, set up a bump pointer area, and
+  // perform the allocation in a black area.
+  heap::SimulateFullSpace(heap->old_space());
+  isolate->factory()->NewFixedArray(10, TENURED);
+
+  // Allocate the fixed array that will be trimmed later.
+  Handle<FixedArray> array = isolate->factory()->NewFixedArray(100, TENURED);
+  Address start_address = array->address();
+  Address end_address = start_address + array->Size();
+  Page* page = Page::FromAddress(start_address);
+  CHECK(Marking::IsBlack(ObjectMarking::MarkBitFrom(*array)));
+  CHECK(page->markbits()->AllBitsSetInRange(
+      page->AddressToMarkbitIndex(start_address),
+      page->AddressToMarkbitIndex(end_address)));
+  CHECK(heap->old_space()->Contains(*array));
+
+  // Trim it once by one word to make checking for white marking color uniform.
+  Address previous = end_address - kPointerSize;
+  heap->RightTrimFixedArray<Heap::SEQUENTIAL_TO_SWEEPER>(*array, 1);
+  HeapObject* filler = HeapObject::FromAddress(previous);
+  CHECK(filler->IsFiller());
+  CHECK(Marking::IsImpossible(ObjectMarking::MarkBitFrom(previous)));
+
+  // Trim 10 times by one, two, and three word.
+  for (int i = 1; i <= 3; i++) {
+    for (int j = 0; j < 10; j++) {
+      previous -= kPointerSize * i;
+      heap->RightTrimFixedArray<Heap::SEQUENTIAL_TO_SWEEPER>(*array, i);
+      HeapObject* filler = HeapObject::FromAddress(previous);
+      CHECK(filler->IsFiller());
+      CHECK(Marking::IsWhite(ObjectMarking::MarkBitFrom(previous)));
+    }
+  }
+
+  heap::GcAndSweep(heap, OLD_SPACE);
+}
+
 TEST(Regress618958) {
   CcTest::InitializeVM();
   v8::HandleScope scope(CcTest::isolate());
@@ -6835,7 +7034,8 @@ TEST(RememberedSetRemoveRange) {
   Heap* heap = CcTest::heap();
   Isolate* isolate = heap->isolate();
 
-  Handle<FixedArray> array = isolate->factory()->NewFixedArray(500000);
+  Handle<FixedArray> array = isolate->factory()->NewFixedArray(Page::kPageSize /
+                                                              kPointerSize);
   MemoryChunk* chunk = MemoryChunk::FromAddress(array->address());
   CHECK(chunk->owner()->identity() == LO_SPACE);
   Address start = array->address();

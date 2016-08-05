@@ -961,6 +961,18 @@ class MacroAssembler: public Assembler {
   AVX_OP2_XO(Andpd, andpd)
   AVX_OP2_XO(Orpd, orpd)
   AVX_OP2_XO(Xorpd, xorpd)
+  AVX_OP2_XO(Cmpeqps, cmpeqps)
+  AVX_OP2_XO(Cmpltps, cmpltps)
+  AVX_OP2_XO(Cmpleps, cmpleps)
+  AVX_OP2_XO(Cmpneqps, cmpneqps)
+  AVX_OP2_XO(Cmpnltps, cmpnltps)
+  AVX_OP2_XO(Cmpnleps, cmpnleps)
+  AVX_OP2_XO(Cmpeqpd, cmpeqpd)
+  AVX_OP2_XO(Cmpltpd, cmpltpd)
+  AVX_OP2_XO(Cmplepd, cmplepd)
+  AVX_OP2_XO(Cmpneqpd, cmpneqpd)
+  AVX_OP2_XO(Cmpnltpd, cmpnltpd)
+  AVX_OP2_XO(Cmpnlepd, cmpnlepd)
   AVX_OP2_X(Pcmpeqd, pcmpeqd)
   AVX_OP2_WITH_TYPE(Psllq, psllq, byte)
   AVX_OP2_WITH_TYPE(Psrlq, psrlq, byte)
@@ -1776,26 +1788,7 @@ inline Operand StackOperandForReturnAddress(int32_t disp) {
   return Operand(rsp, disp);
 }
 
-
-#ifdef GENERATED_CODE_COVERAGE
-extern void LogGeneratedCodeCoverage(const char* file_line);
-#define CODE_COVERAGE_STRINGIFY(x) #x
-#define CODE_COVERAGE_TOSTRING(x) CODE_COVERAGE_STRINGIFY(x)
-#define __FILE_LINE__ __FILE__ ":" CODE_COVERAGE_TOSTRING(__LINE__)
-#define ACCESS_MASM(masm) {                                                  \
-    Address x64_coverage_function = FUNCTION_ADDR(LogGeneratedCodeCoverage); \
-    masm->pushfq();                                                          \
-    masm->Pushad();                                                          \
-    masm->Push(Immediate(reinterpret_cast<int>(&__FILE_LINE__)));            \
-    masm->Call(x64_coverage_function, RelocInfo::EXTERNAL_REFERENCE);        \
-    masm->Pop(rax);                                                          \
-    masm->Popad();                                                           \
-    masm->popfq();                                                           \
-  }                                                                          \
-  masm->
-#else
 #define ACCESS_MASM(masm) masm->
-#endif
 
 }  // namespace internal
 }  // namespace v8
